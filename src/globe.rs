@@ -12,6 +12,7 @@ use bevy::shader::ShaderRef;
 use crate::frame::{FrameSet, ReferenceFrame};
 use crate::geo::equirectangular_sphere;
 use crate::sun::Sun;
+use crate::wms::WmsSettings;
 
 /// Radius of the globe in world units. Everything else is expressed in Earth radii.
 pub const GLOBE_RADIUS: f32 = 1.0;
@@ -19,6 +20,8 @@ pub const GLOBE_RADIUS: f32 = 1.0;
 pub const ATMOSPHERE_RADIUS: f32 = GLOBE_RADIUS * 1.025;
 /// Far enough away to read as "infinitely distant" without leaving the far plane.
 const STARFIELD_RADIUS: f32 = 400.0;
+/// How brightly the base globe's city lights burn on its night side.
+const NIGHT_INTENSITY: f32 = 1.6;
 
 /// Marks the entity carrying the Earth surface mesh.
 #[derive(Component)]
@@ -66,7 +69,7 @@ impl Default for GlobeUniform {
         Self {
             sun_direction: Vec3::X,
             cloud_offset: 0.0,
-            night_intensity: 1.6,
+            night_intensity: NIGHT_INTENSITY,
             cloud_opacity: 0.85,
             rim_strength: 0.55,
             terminator_softness: 0.12,
@@ -256,6 +259,7 @@ fn drive_materials(
     time: Res<Time>,
     sun: Res<Sun>,
     frame: Res<ReferenceFrame>,
+    wms: Res<WmsSettings>,
     mut globe_materials: ResMut<Assets<GlobeMaterial>>,
     mut atmosphere_materials: ResMut<Assets<AtmosphereMaterial>>,
     mut starfield_materials: ResMut<Assets<StarfieldMaterial>>,
@@ -265,8 +269,16 @@ fn drive_materials(
     // to be carried into whichever frame the scene is being drawn in.
     let sun_direction = frame.earth_to_world() * sun.direction_ecef;
 
+    // The city lights belong to the Blue Marble night texture, and nothing in a
+    // WMS layer knows about them: where imagery covers the globe they would
+    // burn through a scene that has its own idea of what the ground looks like,
+    // and where it has not arrived yet they would light only the gaps. So the
+    // night side goes dark for as long as imagery is on.
+    let night_intensity = if wms.enabled { 0.0 } else { NIGHT_INTENSITY };
+
     for (_, material) in globe_materials.iter_mut() {
         material.uniform.sun_direction = sun_direction;
+        material.uniform.night_intensity = night_intensity;
         // Clouds drift a little faster than the planet turns beneath them.
         material.uniform.cloud_offset = (elapsed * 0.002).fract();
     }
