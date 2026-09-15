@@ -61,6 +61,43 @@ impl LatLon {
     }
 }
 
+/// An axis-aligned latitude/longitude rectangle, as WMS understands a bounding box.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GeoBounds {
+    pub lat_min: f32,
+    pub lat_max: f32,
+    pub lon_min: f32,
+    pub lon_max: f32,
+}
+
+impl GeoBounds {
+    #[allow(
+        dead_code,
+        reason = "the whole-world box, for callers building custom requests; exercised only by tests"
+    )]
+    pub const WORLD: Self = Self {
+        lat_min: -90.0,
+        lat_max: 90.0,
+        lon_min: -180.0,
+        lon_max: 180.0,
+    };
+
+    pub fn center(self) -> LatLon {
+        LatLon::new(
+            (self.lat_min + self.lat_max) * 0.5,
+            (self.lon_min + self.lon_max) * 0.5,
+        )
+    }
+
+    pub fn lat_span(self) -> f32 {
+        self.lat_max - self.lat_min
+    }
+
+    pub fn lon_span(self) -> f32 {
+        self.lon_max - self.lon_min
+    }
+}
+
 /// Returns the near-side intersection of a ray with a sphere centered on the origin,
 /// or `None` when the ray misses it.
 pub fn ray_sphere_intersection(origin: Vec3, dir: Vec3, radius: f32) -> Option<Vec3> {

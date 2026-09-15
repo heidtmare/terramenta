@@ -9,6 +9,8 @@ use crate::camera::OrbitCamera;
 use crate::geo::{EARTH_RADIUS_KM, LatLon, ray_sphere_intersection};
 use crate::globe::GLOBE_RADIUS;
 use crate::sun::Sun;
+use crate::tiles::TileCache;
+use crate::wms::WmsSettings;
 
 const HELP_TEXT: &str = "drag  orbit\n\
                          scroll / pinch  zoom\n\
@@ -17,6 +19,7 @@ const HELP_TEXT: &str = "drag  orbit\n\
                          space  auto-rotate\n\
                          R  reset view\n\
                          P  pause sun    , .  sun speed    N  now\n\
+                         T  WMS imagery    L  next layer\n\
                          H  hide this";
 
 pub struct HudPlugin;
@@ -81,6 +84,8 @@ fn update_readout(
     camera: Single<(&Camera, &GlobalTransform, &OrbitCamera)>,
     windows: Query<&Window>,
     sun: Res<Sun>,
+    wms: Res<WmsSettings>,
+    tiles: Res<TileCache>,
     mut readout: Single<&mut Text, With<ReadoutText>>,
 ) {
     let (camera, camera_transform, orbit) = *camera;
@@ -98,12 +103,25 @@ fn update_readout(
         None => "—".to_string(),
     };
 
+    let imagery = if wms.enabled {
+        format!(
+            "{}\n           level {} · {} drawn · {} loading",
+            wms.label(),
+            tiles.deepest_level,
+            tiles.visible_tiles,
+            tiles.loading_tiles,
+        )
+    } else {
+        "off".to_string()
+    };
+
     readout.0 = format!(
         "TERRAMENTA\n\
          cursor    {cursor}\n\
          altitude  {altitude_km:.0} km\n\
          sun over  {}\n\
-         clock     {}{}",
+         clock     {}{}\n\
+         imagery   {imagery}",
         sun.subsolar.format(),
         sun.format_utc(),
         if sun.paused { "  (paused)" } else { "" },
