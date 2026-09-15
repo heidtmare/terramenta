@@ -173,7 +173,9 @@ pub struct TileUniform {
     pub sun_direction: Vec3,
     pub rim_strength: f32,
     pub terminator_softness: f32,
-    pub _padding: Vec3,
+    /// Matches [`crate::globe::GlobeUniform::sun_shading`].
+    pub sun_shading: f32,
+    pub _padding: Vec2,
 }
 
 impl Default for TileUniform {
@@ -184,7 +186,8 @@ impl Default for TileUniform {
             // `globe.wgsl`, so a tile and the globe beneath it are shaded alike.
             rim_strength: 0.55,
             terminator_softness: 0.12,
-            _padding: Vec3::ZERO,
+            sun_shading: 1.0,
+            _padding: Vec2::ZERO,
         }
     }
 }
@@ -691,7 +694,9 @@ fn sync_tile_sun(
     mut materials: ResMut<Assets<TileMaterial>>,
 ) {
     let sun_direction = frame.earth_to_world() * sun.direction_ecef;
+    let sun_shading = sun.shading();
     for (_, material) in materials.iter_mut() {
         material.uniform.sun_direction = sun_direction;
+        material.uniform.sun_shading = sun_shading;
     }
 }

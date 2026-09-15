@@ -13,7 +13,8 @@ struct TileUniform {
     sun_direction: vec3<f32>,
     rim_strength: f32,
     terminator_softness: f32,
-    padding: vec3<f32>,
+    sun_shading: f32,
+    padding: vec2<f32>,
 };
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> tile: TileUniform;
@@ -37,8 +38,11 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let albedo = textureSample(imagery_texture, imagery_sampler, in.uv);
 
     let sun_dot = dot(normal, to_sun);
-    let daylight = smoothstep(-tile.terminator_softness, tile.terminator_softness, sun_dot);
-    let diffuse = max(sun_dot, 0.0);
+    let terminator = smoothstep(-tile.terminator_softness, tile.terminator_softness, sun_dot);
+    // Shading off lights the imagery flatly, which is the only way to read a
+    // layer over ground that happens to be in darkness.
+    let daylight = mix(1.0, terminator, tile.sun_shading);
+    let diffuse = mix(1.0, max(sun_dot, 0.0), tile.sun_shading);
 
     var color = albedo.rgb * (AMBIENT + SUN_COLOR * diffuse);
     color = mix(albedo.rgb * NIGHT_FLOOR, color, daylight);

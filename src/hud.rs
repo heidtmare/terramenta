@@ -20,6 +20,7 @@ const HELP_TEXT: &str = "drag  orbit\n\
                          space  ECI / ECEF frame\n\
                          R  reset view\n\
                          P  pause sun    , .  sun speed    N  now\n\
+                         I  full illumination\n\
                          T  WMS imagery    L  next layer\n\
                          H  hide this";
 
@@ -125,11 +126,12 @@ fn update_readout(
          cursor    {cursor}\n\
          altitude  {altitude_km:.0} km\n\
          frame     {}\n\
-         sun over  {}\n\
+         sun over  {}{}\n\
          clock     {}{}\n\
          imagery   {imagery}",
         frame.mode.label(),
         sun.subsolar.format(),
+        if sun.shaded { "" } else { "  (unshaded)" },
         sun.format_utc(),
         if sun.paused { "  (paused)" } else { "" },
     );

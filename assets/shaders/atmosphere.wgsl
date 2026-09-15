@@ -12,6 +12,7 @@ struct AtmosphereUniform {
     density: f32,
     color: vec3<f32>,
     falloff: f32,
+    sun_shading: f32,
 };
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> atmosphere: AtmosphereUniform;
@@ -29,7 +30,9 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // Only air that the sun reaches glows, with a soft wrap so the glow tapers
     // past the terminator into a thin twilight arc instead of ending abruptly.
     let sun_dot = dot(normal, to_sun);
-    let lit = smoothstep(-0.45, 0.25, sun_dot);
+    // Follows the surface: with shading off the whole limb glows, rather than
+    // leaving a terminator hanging in the air over a globe that has none.
+    let lit = mix(1.0, smoothstep(-0.45, 0.25, sun_dot), atmosphere.sun_shading);
 
     // Forward scattering: looking toward the sun through the limb is brightest.
     let forward = pow(clamp(dot(to_view, -to_sun) * 0.5 + 0.5, 0.0, 1.0), 2.0);

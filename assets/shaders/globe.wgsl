@@ -14,6 +14,7 @@ struct GlobeUniform {
     cloud_opacity: f32,
     rim_strength: f32,
     terminator_softness: f32,
+    sun_shading: f32,
 };
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> globe: GlobeUniform;
@@ -45,7 +46,10 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let sun_dot = dot(normal, to_sun);
     // A soft terminator: the sun is a disc, not a point, and the atmosphere
     // scatters light some way past the geometric edge.
-    let daylight = smoothstep(-globe.terminator_softness, globe.terminator_softness, sun_dot);
+    let terminator = smoothstep(-globe.terminator_softness, globe.terminator_softness, sun_dot);
+    // With shading turned off every face is treated as though the sun were
+    // straight above it: no terminator, no night side, and so no city lights.
+    let daylight = mix(1.0, terminator, globe.sun_shading);
 
     let albedo = textureSample(day_texture, day_sampler, in.uv).rgb;
     let city_lights = textureSample(night_texture, night_sampler, in.uv).rgb;
@@ -60,7 +64,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Diffuse term, wrapped slightly so the low-angle light near the terminator
     // stays warm instead of falling off a cliff.
-    let diffuse = max(sun_dot, 0.0);
+    let diffuse = mix(1.0, max(sun_dot, 0.0), globe.sun_shading);
     var color = albedo * (AMBIENT + SUN_COLOR * diffuse);
 
     // Sun glint off the water, only where it can actually be seen.

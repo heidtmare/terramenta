@@ -75,6 +75,7 @@ cargo run --release
 | `P` | Pause the sun |
 | `,` `.` | Halve / double the sun's speed |
 | `N` | Snap the clock back to now |
+| `I` | Drop the terminator and light the whole globe |
 | `T` | Toggle WMS imagery |
 | `L` | Next imagery layer |
 | `H` | Hide the control legend |

@@ -35,6 +35,11 @@ pub struct Sun {
     /// Simulated seconds per real second.
     pub time_scale: f32,
     pub paused: bool,
+    /// Whether the sun lights the globe at all. Turned off, there is no
+    /// terminator and no night side: every face is lit as though the sun were
+    /// straight overhead, which is how you read imagery of a place that
+    /// happens to be in darkness.
+    pub shaded: bool,
 }
 
 impl Default for Sun {
@@ -45,6 +50,7 @@ impl Default for Sun {
             unix_seconds: wall_clock_unix_seconds(),
             time_scale: DEFAULT_TIME_SCALE,
             paused: false,
+            shaded: true,
         };
         sun.recompute();
         sun
@@ -52,6 +58,12 @@ impl Default for Sun {
 }
 
 impl Sun {
+    /// What the shaders scale their sunlight terms by: the real terminator at
+    /// `1.0`, flat full daylight at `0.0`.
+    pub fn shading(&self) -> f32 {
+        if self.shaded { 1.0 } else { 0.0 }
+    }
+
     /// Hour of the UTC day, in `0.0..24.0`.
     pub fn utc_hours(&self) -> f32 {
         (self.unix_seconds.rem_euclid(SECONDS_PER_DAY) / 3600.0) as f32
@@ -109,6 +121,9 @@ fn sun_controls(keys: Res<ButtonInput<KeyCode>>, mut sun: ResMut<Sun>) {
     }
     if keys.just_pressed(KeyCode::KeyN) {
         sun.snap_to_now();
+    }
+    if keys.just_pressed(KeyCode::KeyI) {
+        sun.shaded = !sun.shaded;
     }
 }
 

@@ -62,6 +62,9 @@ pub struct GlobeUniform {
     pub rim_strength: f32,
     /// Width of the day/night terminator, as a dot-product range.
     pub terminator_softness: f32,
+    /// Scales every sunlight term: `1.0` is the real terminator, `0.0` floods
+    /// the whole globe with daylight.
+    pub sun_shading: f32,
 }
 
 impl Default for GlobeUniform {
@@ -73,6 +76,7 @@ impl Default for GlobeUniform {
             cloud_opacity: 0.85,
             rim_strength: 0.55,
             terminator_softness: 0.12,
+            sun_shading: 1.0,
         }
     }
 }
@@ -108,6 +112,9 @@ pub struct AtmosphereUniform {
     pub density: f32,
     pub color: Vec3,
     pub falloff: f32,
+    /// Matches [`GlobeUniform::sun_shading`], so the glow does not keep a
+    /// terminator the surface underneath has lost.
+    pub sun_shading: f32,
 }
 
 impl Default for AtmosphereUniform {
@@ -117,6 +124,7 @@ impl Default for AtmosphereUniform {
             density: 1.0,
             color: Vec3::new(0.29, 0.52, 1.0),
             falloff: 3.4,
+            sun_shading: 1.0,
         }
     }
 }
@@ -275,16 +283,19 @@ fn drive_materials(
     // and where it has not arrived yet they would light only the gaps. So the
     // night side goes dark for as long as imagery is on.
     let night_intensity = if wms.enabled { 0.0 } else { NIGHT_INTENSITY };
+    let sun_shading = sun.shading();
 
     for (_, material) in globe_materials.iter_mut() {
         material.uniform.sun_direction = sun_direction;
         material.uniform.night_intensity = night_intensity;
+        material.uniform.sun_shading = sun_shading;
         // Clouds drift a little faster than the planet turns beneath them.
         material.uniform.cloud_offset = (elapsed * 0.002).fract();
     }
 
     for (_, material) in atmosphere_materials.iter_mut() {
         material.uniform.sun_direction = sun_direction;
+        material.uniform.sun_shading = sun_shading;
     }
 
     for (_, material) in starfield_materials.iter_mut() {
