@@ -1,0 +1,5 @@
+/target
+/web/dist
+# Earth imagery is fetched by scripts/fetch-assets.sh, not committed.
+/assets/textures/*.jpg
+/assets/textures/*.png

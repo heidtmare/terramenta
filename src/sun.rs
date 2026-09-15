@@ -1,0 +1,127 @@
+//! Where the sun is, so the terminator falls in the right place.
+//!
+//! This is a low-precision solar position model — declination from the day of
+//! year, hour angle from UTC, no equation of time — which puts the terminator
+//! within roughly a degree of the real one. That is plenty for a globe you look
+//! at, and it avoids pulling in an ephemeris.
+
+use bevy::prelude::*;
+
+use crate::geo::LatLon;
+
+const SECONDS_PER_DAY: f64 = 86_400.0;
+const DAYS_PER_YEAR: f32 = 365.2422;
+/// Earth's axial tilt.
+const OBLIQUITY_DEG: f32 = 23.44;
+/// Simulated seconds that pass per real second by default: one day every four minutes.
+const DEFAULT_TIME_SCALE: f32 = 360.0;
+
+/// The simulated clock and the resulting sun direction.
+#[derive(Resource, Debug, Clone)]
+pub struct Sun {
+    /// Unit vector from the globe's center toward the sun, in world space.
+    pub direction: Vec3,
+    /// The point on Earth directly beneath the sun.
+    pub subsolar: LatLon,
+    /// Seconds since the Unix epoch, as simulated.
+    pub unix_seconds: f64,
+    /// Simulated seconds per real second.
+    pub time_scale: f32,
+    pub paused: bool,
+}
+
+impl Default for Sun {
+    fn default() -> Self {
+        let mut sun = Self {
+            direction: Vec3::X,
+            subsolar: LatLon::new(0.0, 0.0),
+            unix_seconds: wall_clock_unix_seconds(),
+            time_scale: DEFAULT_TIME_SCALE,
+            paused: false,
+        };
+        sun.recompute();
+        sun
+    }
+}
+
+impl Sun {
+    /// Hour of the UTC day, in `0.0..24.0`.
+    pub fn utc_hours(&self) -> f32 {
+        (self.unix_seconds.rem_euclid(SECONDS_PER_DAY) / 3600.0) as f32
+    }
+
+    /// Formats the simulated clock as `14:32 UTC`.
+    pub fn format_utc(&self) -> String {
+        let hours = self.utc_hours();
+        let minutes = (hours.fract() * 60.0) as u32;
+        format!("{:02}:{:02} UTC", hours as u32, minutes)
+    }
+
+    /// Jumps the simulated clock back to the real one.
+    pub fn snap_to_now(&mut self) {
+        self.unix_seconds = wall_clock_unix_seconds();
+        self.recompute();
+    }
+
+    fn recompute(&mut self) {
+        let days_since_epoch = self.unix_seconds / SECONDS_PER_DAY;
+        // 1970-01-01 was day 1 of the year; the +10 offset places the solstice
+        // near the end of December, where it belongs.
+        let day_of_year = (days_since_epoch as f32).rem_euclid(DAYS_PER_YEAR) + 1.0;
+        let orbital_angle = std::f32::consts::TAU * (day_of_year + 10.0) / DAYS_PER_YEAR;
+        let declination = -OBLIQUITY_DEG * orbital_angle.cos();
+
+        // The subsolar meridian is noon: opposite the 00:00 UTC meridian, moving
+        // west at 15° per hour.
+        let longitude = 180.0 - self.utc_hours() * 15.0;
+        let longitude = (longitude + 180.0).rem_euclid(360.0) - 180.0;
+
+        self.subsolar = LatLon::new(declination, longitude);
+        self.direction = self.subsolar.to_direction();
+    }
+}
+
+pub struct SunPlugin;
+
+impl Plugin for SunPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<Sun>()
+            .add_systems(Update, (sun_controls, advance_sun).chain());
+    }
+}
+
+fn sun_controls(keys: Res<ButtonInput<KeyCode>>, mut sun: ResMut<Sun>) {
+    if keys.just_pressed(KeyCode::KeyP) {
+        sun.paused = !sun.paused;
+    }
+    if keys.just_pressed(KeyCode::Comma) {
+        sun.time_scale = (sun.time_scale / 2.0).max(1.0);
+    }
+    if keys.just_pressed(KeyCode::Period) {
+        sun.time_scale = (sun.time_scale * 2.0).min(86_400.0);
+    }
+    if keys.just_pressed(KeyCode::KeyN) {
+        sun.snap_to_now();
+    }
+}
+
+fn advance_sun(time: Res<Time>, mut sun: ResMut<Sun>) {
+    if sun.paused {
+        return;
+    }
+    sun.unix_seconds += (time.delta_secs() * sun.time_scale) as f64;
+    sun.recompute();
+}
+
+/// Seconds since the Unix epoch, falling back to zero if the platform has no clock.
+fn wall_clock_unix_seconds() -> f64 {
+    #[cfg(not(target_arch = "wasm32"))]
+    use std::time::{SystemTime, UNIX_EPOCH};
+    #[cfg(target_arch = "wasm32")]
+    use web_time::{SystemTime, UNIX_EPOCH};
+
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs_f64())
+        .unwrap_or_default()
+}
