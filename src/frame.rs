@@ -20,6 +20,12 @@
 //! so the switch announces itself with a [`FrameRealigned`] message: whatever
 //! is looking at the ground adds that angle to stay where it was, instead of
 //! being left staring at the other side of the planet.
+//!
+//! That single step is also why [`FrameSet`] exists. A switch only looks
+//! seamless if the frame, the camera and everything drawn from the two land on
+//! the same tick; read the frame half a tick early and the globe is drawn where
+//! it used to be, or the tile walk asks which tiles are in view of a camera
+//! that has not caught up yet and blinks the imagery out for a frame.
 
 use bevy::prelude::*;
 
@@ -117,12 +123,32 @@ impl ReferenceFrame {
     }
 }
 
+/// The order everything that touches the frame runs in, kept in one place
+/// because a switch has to reach all of it within the tick it happens on.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FrameSet {
+    /// Settles which frame this tick is drawn in, and announces a switch.
+    Settle,
+    /// Carries the camera across the switch, and finishes its transform.
+    Camera,
+    /// Everything read back out of the frame: the transforms the globe and its
+    /// tiles are drawn with, the sun direction the shaders are lit by, the tile
+    /// walk and the coordinate readout.
+    Apply,
+}
+
 pub struct FramePlugin;
 
 impl Plugin for FramePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ReferenceFrame>()
             .add_message::<FrameRealigned>()
+            .configure_sets(
+                Update,
+                (FrameSet::Settle, FrameSet::Camera, FrameSet::Apply)
+                    .chain()
+                    .after(crate::sun::advance_sun),
+            )
             .add_systems(
                 Update,
                 // The rotation is a function of the simulated clock, so it is
@@ -131,7 +157,7 @@ impl Plugin for FramePlugin {
                 // as it is now, not as it was last frame.
                 (sync_earth_rotation, frame_controls)
                     .chain()
-                    .after(crate::sun::advance_sun),
+                    .in_set(FrameSet::Settle),
             );
     }
 }

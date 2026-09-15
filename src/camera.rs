@@ -18,7 +18,7 @@ use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseSc
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 
-use crate::frame::FrameRealigned;
+use crate::frame::{FrameRealigned, FrameSet};
 use crate::globe::GLOBE_RADIUS;
 
 /// Closest approach, ~130 km above the surface.
@@ -44,9 +44,9 @@ impl Plugin for OrbitCameraPlugin {
                 (
                     (mouse_input, keyboard_input, touch_input),
                     // Whatever the frame switch did to the globe has to reach
-                    // the camera before the transform is rebuilt from it.
-                    follow_frame.after(crate::frame::frame_controls),
-                    apply_orbit,
+                    // the camera before the transform is rebuilt from it, and
+                    // the finished transform is what the tile walk reads.
+                    (follow_frame, apply_orbit).chain().in_set(FrameSet::Camera),
                 )
                     .chain(),
             );

@@ -24,7 +24,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{AsBindGroup, ShaderType};
 use bevy::shader::ShaderRef;
 
-use crate::frame::ReferenceFrame;
+use crate::frame::{FrameSet, ReferenceFrame};
 use crate::geo::{GeoBounds, LatLon};
 use crate::globe::GLOBE_RADIUS;
 use crate::sun::Sun;
@@ -436,7 +436,9 @@ impl Plugin for TilePlugin {
             .init_resource::<TileCache>()
             .add_systems(
                 Update,
-                (tile_controls, stream_tiles, orient_tiles, sync_tile_sun).chain(),
+                (tile_controls, stream_tiles, orient_tiles, sync_tile_sun)
+                    .chain()
+                    .in_set(FrameSet::Apply),
             );
     }
 }
@@ -456,7 +458,10 @@ fn tile_controls(keys: Res<ButtonInput<KeyCode>>, mut settings: ResMut<WmsSettin
 )]
 fn stream_tiles(
     mut commands: Commands,
-    camera: Single<(&Camera, &GlobalTransform, &Projection)>,
+    // The camera's own transform, not its global one: the global is a tick
+    // behind, and a tick behind is exactly wrong on the tick the frame
+    // switches, when the camera and the Earth move together.
+    camera: Single<(&Camera, &Transform, &Projection)>,
     frame: Res<ReferenceFrame>,
     settings: Res<WmsSettings>,
     mut cache: ResMut<TileCache>,
@@ -499,7 +504,7 @@ fn stream_tiles(
     // The quadtree is addressed in latitude and longitude, so the walk has to
     // happen in Earth-fixed coordinates however the world is turned.
     let earth_to_world = frame.earth_to_world();
-    let camera_position = earth_to_world.inverse() * camera_transform.translation();
+    let camera_position = earth_to_world.inverse() * camera_transform.translation;
     let camera_distance = camera_position.length().max(GLOBE_RADIUS * 1.0001);
     let field_of_view = match projection {
         Projection::Perspective(perspective) => perspective.fov,

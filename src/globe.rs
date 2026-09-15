@@ -9,7 +9,7 @@ use bevy::render::render_resource::{
 };
 use bevy::shader::ShaderRef;
 
-use crate::frame::ReferenceFrame;
+use crate::frame::{FrameSet, ReferenceFrame};
 use crate::geo::equirectangular_sphere;
 use crate::sun::Sun;
 
@@ -34,7 +34,10 @@ impl Plugin for GlobePlugin {
             MaterialPlugin::<StarfieldMaterial>::default(),
         ))
         .add_systems(Startup, spawn_globe)
-        .add_systems(Update, (orient_globe, drive_materials));
+        .add_systems(
+            Update,
+            (orient_globe, drive_materials).in_set(FrameSet::Apply),
+        );
     }
 }
 

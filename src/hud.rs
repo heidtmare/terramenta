@@ -6,7 +6,7 @@ use bevy::text::FontSize;
 use bevy::ui::widget::Text;
 
 use crate::camera::OrbitCamera;
-use crate::frame::ReferenceFrame;
+use crate::frame::{FrameSet, ReferenceFrame};
 use crate::geo::{EARTH_RADIUS_KM, LatLon, ray_sphere_intersection};
 use crate::globe::GLOBE_RADIUS;
 use crate::sun::Sun;
@@ -27,8 +27,10 @@ pub struct HudPlugin;
 
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_hud)
-            .add_systems(Update, (update_readout, toggle_help));
+        app.add_systems(Startup, spawn_hud).add_systems(
+            Update,
+            (update_readout.in_set(FrameSet::Apply), toggle_help),
+        );
     }
 }
 
