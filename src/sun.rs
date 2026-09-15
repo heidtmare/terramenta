@@ -4,6 +4,11 @@
 //! year, hour angle from UTC, no equation of time — which puts the terminator
 //! within roughly a degree of the real one. That is plenty for a globe you look
 //! at, and it avoids pulling in an ephemeris.
+//!
+//! Everything here is Earth-fixed: the subsolar point is a latitude and
+//! longitude, and the direction that falls out of it points at the sun in ECEF.
+//! Rotating that into whichever frame the scene is drawn in is the job of
+//! [`crate::frame::ReferenceFrame`].
 
 use bevy::prelude::*;
 
@@ -19,8 +24,10 @@ const DEFAULT_TIME_SCALE: f32 = 360.0;
 /// The simulated clock and the resulting sun direction.
 #[derive(Resource, Debug, Clone)]
 pub struct Sun {
-    /// Unit vector from the globe's center toward the sun, in world space.
-    pub direction: Vec3,
+    /// Unit vector from the globe's center toward the sun, in Earth-fixed
+    /// coordinates. Multiply by [`crate::frame::ReferenceFrame::earth_to_world`]
+    /// before handing it to a shader.
+    pub direction_ecef: Vec3,
     /// The point on Earth directly beneath the sun.
     pub subsolar: LatLon,
     /// Seconds since the Unix epoch, as simulated.
@@ -33,7 +40,7 @@ pub struct Sun {
 impl Default for Sun {
     fn default() -> Self {
         let mut sun = Self {
-            direction: Vec3::X,
+            direction_ecef: Vec3::X,
             subsolar: LatLon::new(0.0, 0.0),
             unix_seconds: wall_clock_unix_seconds(),
             time_scale: DEFAULT_TIME_SCALE,
@@ -77,7 +84,7 @@ impl Sun {
         let longitude = (longitude + 180.0).rem_euclid(360.0) - 180.0;
 
         self.subsolar = LatLon::new(declination, longitude);
-        self.direction = self.subsolar.to_direction();
+        self.direction_ecef = self.subsolar.to_direction();
     }
 }
 
@@ -105,7 +112,7 @@ fn sun_controls(keys: Res<ButtonInput<KeyCode>>, mut sun: ResMut<Sun>) {
     }
 }
 
-fn advance_sun(time: Res<Time>, mut sun: ResMut<Sun>) {
+pub(crate) fn advance_sun(time: Res<Time>, mut sun: ResMut<Sun>) {
     if sun.paused {
         return;
     }

@@ -8,6 +8,10 @@
 
 struct StarfieldUniform {
     time: f32,
+    // Radians the sky is turned through about the poles. The stars are
+    // inertial, so this turns them with the Earth-fixed frame and leaves them
+    // alone in the inertial one.
+    rotation: f32,
 };
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> starfield: StarfieldUniform;
@@ -28,7 +32,17 @@ fn hash3(cell: vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
-    let direction = normalize(in.world_position.xyz);
+    // Sample the sky in its own inertial frame: undo the rotation the world is
+    // being drawn with, rather than turning the mesh, which a sphere would not
+    // notice.
+    let world_direction = normalize(in.world_position.xyz);
+    let sin_rotation = sin(starfield.rotation);
+    let cos_rotation = cos(starfield.rotation);
+    let direction = vec3<f32>(
+        world_direction.x * cos_rotation - world_direction.z * sin_rotation,
+        world_direction.y,
+        world_direction.x * sin_rotation + world_direction.z * cos_rotation,
+    );
     let scaled = direction * CELLS;
     let cell = floor(scaled);
     let local = fract(scaled);

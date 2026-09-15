@@ -2,6 +2,7 @@
 //! through WebGPU in the browser or the native backend on the desktop.
 
 mod camera;
+mod frame;
 mod geo;
 mod globe;
 mod hud;
@@ -14,6 +15,7 @@ use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSamplerDescriptor};
 use bevy::prelude::*;
 
 use camera::OrbitCameraPlugin;
+use frame::FramePlugin;
 use globe::GlobePlugin;
 use hud::HudPlugin;
 use sun::SunPlugin;
@@ -69,6 +71,7 @@ fn main() {
             GlobePlugin,
             OrbitCameraPlugin,
             SunPlugin,
+            FramePlugin,
             TilePlugin,
             HudPlugin,
         ))

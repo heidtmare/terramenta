@@ -24,6 +24,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{AsBindGroup, ShaderType};
 use bevy::shader::ShaderRef;
 
+use crate::frame::ReferenceFrame;
 use crate::geo::{GeoBounds, LatLon};
 use crate::globe::GLOBE_RADIUS;
 use crate::sun::Sun;
@@ -425,13 +426,7 @@ fn select_tiles(
 /// Marks an entity that draws one tile, and records which one, so the tiles in
 /// the world can be inspected or queried by address.
 #[derive(Component)]
-pub struct TileEntity(
-    #[expect(
-        dead_code,
-        reason = "carried for inspection, not read by the streaming loop"
-    )]
-    pub TileId,
-);
+pub struct TileEntity(pub TileId);
 
 pub struct TilePlugin;
 
@@ -439,7 +434,10 @@ impl Plugin for TilePlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(MaterialPlugin::<TileMaterial>::default())
             .init_resource::<TileCache>()
-            .add_systems(Update, (tile_controls, stream_tiles, sync_tile_sun).chain());
+            .add_systems(
+                Update,
+                (tile_controls, stream_tiles, orient_tiles, sync_tile_sun).chain(),
+            );
     }
 }
 
@@ -459,6 +457,7 @@ fn tile_controls(keys: Res<ButtonInput<KeyCode>>, mut settings: ResMut<WmsSettin
 fn stream_tiles(
     mut commands: Commands,
     camera: Single<(&Camera, &GlobalTransform, &Projection)>,
+    frame: Res<ReferenceFrame>,
     settings: Res<WmsSettings>,
     mut cache: ResMut<TileCache>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -497,7 +496,10 @@ fn stream_tiles(
     }
 
     let (camera_component, camera_transform, projection) = *camera;
-    let camera_position = camera_transform.translation();
+    // The quadtree is addressed in latitude and longitude, so the walk has to
+    // happen in Earth-fixed coordinates however the world is turned.
+    let earth_to_world = frame.earth_to_world();
+    let camera_position = earth_to_world.inverse() * camera_transform.translation();
     let camera_distance = camera_position.length().max(GLOBE_RADIUS * 1.0001);
     let field_of_view = match projection {
         Projection::Perspective(perspective) => perspective.fov,
@@ -610,7 +612,12 @@ fn stream_tiles(
                     TileEntity(tile),
                     Mesh3d(mesh),
                     MeshMaterial3d(material.clone()),
-                    Transform::from_rotation(Quat::from_rotation_y(tile.longitude_offset())),
+                    // `orient_tiles` keeps this in step with the frame; the
+                    // spawn value only has to be right for the frame it is
+                    // spawned into.
+                    Transform::from_rotation(
+                        earth_to_world * Quat::from_rotation_y(tile.longitude_offset()),
+                    ),
                 ))
                 .id();
             slot.material = Some(material);
@@ -661,8 +668,25 @@ fn stream_tiles(
     cache.deepest_level = deepest;
 }
 
-fn sync_tile_sun(sun: Res<Sun>, mut materials: ResMut<Assets<TileMaterial>>) {
+/// Carries the tiles around with the globe they sit on.
+///
+/// Each tile's own rotation places it in its row; the frame rotation is what
+/// turns the whole Earth-fixed grid into world space, and both are rotations
+/// about the poles, so they simply compose.
+fn orient_tiles(frame: Res<ReferenceFrame>, mut tiles: Query<(&TileEntity, &mut Transform)>) {
+    let earth_to_world = frame.earth_to_world();
+    for (tile, mut transform) in &mut tiles {
+        transform.rotation = earth_to_world * Quat::from_rotation_y(tile.0.longitude_offset());
+    }
+}
+
+fn sync_tile_sun(
+    sun: Res<Sun>,
+    frame: Res<ReferenceFrame>,
+    mut materials: ResMut<Assets<TileMaterial>>,
+) {
+    let sun_direction = frame.earth_to_world() * sun.direction_ecef;
     for (_, material) in materials.iter_mut() {
-        material.uniform.sun_direction = sun.direction;
+        material.uniform.sun_direction = sun_direction;
     }
 }

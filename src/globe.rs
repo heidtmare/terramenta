@@ -9,6 +9,7 @@ use bevy::render::render_resource::{
 };
 use bevy::shader::ShaderRef;
 
+use crate::frame::ReferenceFrame;
 use crate::geo::equirectangular_sphere;
 use crate::sun::Sun;
 
@@ -33,7 +34,7 @@ impl Plugin for GlobePlugin {
             MaterialPlugin::<StarfieldMaterial>::default(),
         ))
         .add_systems(Startup, spawn_globe)
-        .add_systems(Update, drive_materials);
+        .add_systems(Update, (orient_globe, drive_materials));
     }
 }
 
@@ -158,6 +159,10 @@ impl Material for AtmosphereMaterial {
 pub struct StarfieldUniform {
     /// Drives the twinkle; fed from elapsed time.
     pub time: f32,
+    /// How far the sky is turned about the poles, in radians. The stars are
+    /// inertial, so this is zero in ECI and the Earth's rotation backwards in
+    /// ECEF.
+    pub rotation: f32,
 }
 
 /// A procedurally starred sky, drawn on the inside of a very large sphere.
@@ -235,27 +240,40 @@ fn spawn_globe(
     ));
 }
 
+/// Turns the globe to face the way the active frame says it should.
+///
+/// In ECEF this is the identity every frame: world space is the Earth-fixed
+/// frame, so the planet never moves and the sun sweeps past it instead.
+fn orient_globe(frame: Res<ReferenceFrame>, mut globe: Single<&mut Transform, With<Globe>>) {
+    globe.rotation = frame.earth_to_world();
+}
+
 /// Pushes the simulated sun direction and the animated offsets into the shaders.
 fn drive_materials(
     time: Res<Time>,
     sun: Res<Sun>,
+    frame: Res<ReferenceFrame>,
     mut globe_materials: ResMut<Assets<GlobeMaterial>>,
     mut atmosphere_materials: ResMut<Assets<AtmosphereMaterial>>,
     mut starfield_materials: ResMut<Assets<StarfieldMaterial>>,
 ) {
     let elapsed = time.elapsed_secs();
+    // The shaders light everything in world space, so the Earth-fixed sun has
+    // to be carried into whichever frame the scene is being drawn in.
+    let sun_direction = frame.earth_to_world() * sun.direction_ecef;
 
     for (_, material) in globe_materials.iter_mut() {
-        material.uniform.sun_direction = sun.direction;
+        material.uniform.sun_direction = sun_direction;
         // Clouds drift a little faster than the planet turns beneath them.
         material.uniform.cloud_offset = (elapsed * 0.002).fract();
     }
 
     for (_, material) in atmosphere_materials.iter_mut() {
-        material.uniform.sun_direction = sun.direction;
+        material.uniform.sun_direction = sun_direction;
     }
 
     for (_, material) in starfield_materials.iter_mut() {
         material.uniform.time = elapsed;
+        material.uniform.rotation = frame.sky_rotation();
     }
 }

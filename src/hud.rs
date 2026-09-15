@@ -6,6 +6,7 @@ use bevy::text::FontSize;
 use bevy::ui::widget::Text;
 
 use crate::camera::OrbitCamera;
+use crate::frame::ReferenceFrame;
 use crate::geo::{EARTH_RADIUS_KM, LatLon, ray_sphere_intersection};
 use crate::globe::GLOBE_RADIUS;
 use crate::sun::Sun;
@@ -16,7 +17,7 @@ const HELP_TEXT: &str = "drag  orbit\n\
                          scroll / pinch  zoom\n\
                          WASD / arrows  orbit\n\
                          +  -  zoom\n\
-                         space  auto-rotate\n\
+                         space  ECI / ECEF frame\n\
                          R  reset view\n\
                          P  pause sun    , .  sun speed    N  now\n\
                          T  WMS imagery    L  next layer\n\
@@ -84,6 +85,7 @@ fn update_readout(
     camera: Single<(&Camera, &GlobalTransform, &OrbitCamera)>,
     windows: Query<&Window>,
     sun: Res<Sun>,
+    frame: Res<ReferenceFrame>,
     wms: Res<WmsSettings>,
     tiles: Res<TileCache>,
     mut readout: Single<&mut Text, With<ReadoutText>>,
@@ -95,7 +97,8 @@ fn update_readout(
         .find_map(|window| window.cursor_position())
         .and_then(|cursor| camera.viewport_to_world(camera_transform, cursor).ok())
         .and_then(|ray| ray_sphere_intersection(ray.origin, *ray.direction, GLOBE_RADIUS))
-        .map(LatLon::from_direction);
+        // The hit is in world space; the coordinate under it is Earth-fixed.
+        .map(|hit| LatLon::from_direction(frame.world_to_earth() * hit));
 
     let altitude_km = (orbit.distance - GLOBE_RADIUS) * EARTH_RADIUS_KM;
     let cursor = match cursor_coordinate {
@@ -119,9 +122,11 @@ fn update_readout(
         "TERRAMENTA\n\
          cursor    {cursor}\n\
          altitude  {altitude_km:.0} km\n\
+         frame     {}\n\
          sun over  {}\n\
          clock     {}{}\n\
          imagery   {imagery}",
+        frame.mode.label(),
         sun.subsolar.format(),
         sun.format_utc(),
         if sun.paused { "  (paused)" } else { "" },

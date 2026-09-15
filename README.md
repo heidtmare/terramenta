@@ -70,7 +70,7 @@ cargo run --release
 | Scroll, pinch, two-finger pinch | Zoom |
 | `W` `A` `S` `D` or arrows | Orbit |
 | `+` `-` | Zoom |
-| `Space` | Toggle auto-rotation |
+| `Space` | Switch between the ECEF and ECI reference frames |
 | `R` | Reset the view |
 | `P` | Pause the sun |
 | `,` `.` | Halve / double the sun's speed |
@@ -107,11 +107,23 @@ scripts/
 ### Conventions worth knowing
 
 The globe is a unit sphere in Bevy's Y-up world space: `+Y` is the north pole,
-`+Z` is the prime meridian, `+X` is 90° east. Textures are equirectangular with
+`+Z` is the prime meridian, `+X` is 90° east — that is the Earth-fixed (ECEF)
+frame, which everything geographic is stored in. Textures are equirectangular with
 `v == 0` at the north pole. Bevy's built-in `Sphere` primitive is Z-up and wraps
 the other way, so [`geo::equirectangular_sphere`](src/geo.rs) generates its own
 grid instead — that one convention is what makes the coordinate readout, the
 texture alignment and the sun position agree.
+
+[`frame::ReferenceFrame`](src/frame.rs) decides which frame world space *is*.
+In ECEF it is the identity: the globe stands still and the sun sweeps around it
+once a day. In ECI, world space is inertial — the stars hold still, the sun
+holds still but for the degree a day the Earth's orbit moves it, and the globe
+turns underneath at the sidereal rate. Anything Earth-fixed (the globe mesh, the
+imagery tiles) is rotated into world space by `earth_to_world`, and anything
+read back out of the scene — the cursor coordinate, the tile quadtree walk — is
+rotated back by `world_to_earth`. The sun direction handed to the shaders is
+always a world-space vector, so the terminator lands on the same ground in
+either frame.
 
 The surface is lit in [`globe.wgsl`](assets/shaders/globe.wgsl) rather than
 through Bevy's PBR pipeline. There is no `DirectionalLight` in the scene at all:
