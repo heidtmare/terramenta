@@ -18,10 +18,13 @@ pub mod api;
 mod camera;
 mod frame;
 mod geo;
+mod geojson;
 mod globe;
 mod hud;
 mod imagery;
+mod overlays;
 mod sun;
+mod tessellate;
 mod tiles;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
@@ -38,6 +41,7 @@ use frame::FramePlugin;
 use globe::GlobePlugin;
 use hud::HudPlugin;
 use imagery::{ImageFormat, ImageryLayer, ImageryPlugin};
+use overlays::{OverlayPlugin, OverlayRequest, OverlaySourcePlugin};
 use sun::SunPlugin;
 use tiles::TilePlugin;
 use wms::WmsConfig;
@@ -57,6 +61,14 @@ pub struct GlobeConfig {
     /// so a globe at `globe/terramenta_globe.js` still loads its assets from
     /// `assets/` unless told otherwise.
     pub asset_path: String,
+    /// GeoJSON overlays to put up at startup.
+    ///
+    /// Empty by default, because an overlay is the embedder's data rather than
+    /// the globe's: the reference app adds its own through
+    /// [`api::GlobeCommand::AddOverlay`] once the module has loaded, which is
+    /// also the only route a web embedder has. This is here for a native host
+    /// building the `App` itself.
+    pub overlays: Vec<OverlayRequest>,
 }
 
 impl Default for GlobeConfig {
@@ -64,6 +76,7 @@ impl Default for GlobeConfig {
         Self {
             canvas_selector: "#terramenta".into(),
             asset_path: "assets".into(),
+            overlays: Vec::new(),
         }
     }
 }
@@ -80,11 +93,15 @@ pub fn app(config: GlobeConfig) -> App {
     let mut app = App::new();
     app.insert_resource(ClearColor(Color::BLACK));
     app
-        // The imagery asset source has to be registered before `AssetPlugin`
-        // builds, which is why this plugin goes in ahead of `DefaultPlugins`.
+        // Both of these register an asset source, and an asset source has to be
+        // registered before `AssetPlugin` builds — which is why they go in
+        // ahead of `DefaultPlugins` while the rest of each feature does not.
         .add_plugins(ImageryPlugin {
             presets: imagery_layers(),
             enabled: true,
+        })
+        .add_plugins(OverlaySourcePlugin {
+            initial: config.overlays.clone(),
         })
         .add_plugins(
             DefaultPlugins
@@ -130,6 +147,7 @@ pub fn app(config: GlobeConfig) -> App {
             SunPlugin,
             FramePlugin,
             TilePlugin,
+            OverlayPlugin,
             HudPlugin,
         ));
 

@@ -27,12 +27,23 @@ use serde::Serialize;
 
 use crate::camera::OrbitCamera;
 use crate::frame::{FrameMode, FrameRealigned, FrameSet, ReferenceFrame};
-use crate::geo::{LatLon, ray_sphere_intersection};
+use crate::geo::ray_sphere_intersection;
 use crate::globe::GLOBE_RADIUS;
 use crate::hud::HudSettings;
 use crate::imagery::{ImageryLayer, ImagerySettings};
+use crate::overlays::{self, OverlaySettings};
 use crate::sun::{self, Sun};
 use crate::tiles::TileCache;
+
+/// The types a command or a snapshot is stated in, re-exported so the control
+/// surface is nameable from one place. A native embedder sending a
+/// [`GlobeCommand::LookAt`] or an [`GlobeCommand::AddOverlay`] has to be able
+/// to name what it is sending, and which module the type lives in is the
+/// globe's own business.
+pub use crate::geo::LatLon;
+pub use crate::overlays::{
+    MIN_REFRESH_SECONDS, OverlayInfo, OverlayRequest, OverlaySource, OverlayStyle,
+};
 
 /// How often the state snapshot goes out, in seconds.
 ///
@@ -88,6 +99,30 @@ pub enum GlobeCommand {
     PreviousLayer,
     SetImageryEnabled(bool),
 
+    /// Puts a GeoJSON overlay up, replacing any already under the same id —
+    /// which is how a refreshed local file becomes an update rather than a
+    /// second copy of the layer.
+    AddOverlay(OverlayRequest),
+    RemoveOverlay(String),
+    SetOverlayVisible {
+        id: String,
+        visible: bool,
+    },
+    SetOverlayStyle {
+        id: String,
+        style: OverlayStyle,
+    },
+    /// Seconds between refetches, or `None` to stop refreshing. Ignored for a
+    /// layer the globe did not fetch and so cannot fetch again.
+    SetOverlayRefresh {
+        id: String,
+        seconds: Option<f32>,
+    },
+    /// Refetches now, whatever the period says.
+    RefreshOverlay(String),
+    /// Whether overlays are drawn at all. Off, every layer stays loaded.
+    SetOverlaysEnabled(bool),
+
     SetHudVisible(bool),
     SetHelpVisible(bool),
     /// Whether the globe's own keyboard shortcuts are live. An embedder that
@@ -128,6 +163,8 @@ pub struct GlobeState {
     pub frame: FrameState,
     pub sun: SunState,
     pub imagery: ImageryState,
+    /// Every GeoJSON overlay, in the order they were added.
+    pub overlays: OverlaysState,
     pub hud: HudState,
     /// The coordinate under the pointer, or `None` when it is off the globe.
     pub cursor: Option<LatLon>,
@@ -178,6 +215,16 @@ pub struct ImageryState {
     pub deepest_level: u8,
     pub visible_tiles: usize,
     pub loading_tiles: usize,
+}
+
+#[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct OverlaysState {
+    /// The master switch over all of them.
+    pub enabled: bool,
+    /// How many are on screen: loaded, visible, and the switch on.
+    pub drawn: usize,
+    pub layers: Vec<OverlayInfo>,
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -246,34 +293,43 @@ pub struct LatestState(pub Option<GlobeState>);
 
 /// The discrete part of the state — the fields a control flips rather than the
 /// ones that drift every frame. A change here publishes immediately.
-type Digest = (
-    &'static str,
-    bool,
-    bool,
-    bool,
-    usize,
-    bool,
-    bool,
-    bool,
-    u8,
-    usize,
-    usize,
-);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Digest {
+    frame: &'static str,
+    sun_paused: bool,
+    sun_shaded: bool,
+    imagery_enabled: bool,
+    layer_index: usize,
+    hud_visible: bool,
+    help_visible: bool,
+    keyboard: bool,
+    deepest_level: u8,
+    visible_tiles: usize,
+    loading_tiles: usize,
+    overlays_enabled: bool,
+    /// Overlays are a list rather than a handful of fields, so they keep a
+    /// counter of their own: anything an interface has a control for bumps it,
+    /// and the countdown to the next refresh — which changes every tick and has
+    /// no control on it — deliberately does not.
+    overlay_revision: u64,
+}
 
-fn digest(state: &GlobeState) -> Digest {
-    (
-        state.frame.mode,
-        state.sun.paused,
-        state.sun.shaded,
-        state.imagery.enabled,
-        state.imagery.layer_index,
-        state.hud.visible,
-        state.hud.help_visible,
-        state.keyboard,
-        state.imagery.deepest_level,
-        state.imagery.visible_tiles,
-        state.imagery.loading_tiles,
-    )
+fn digest(state: &GlobeState, overlay_revision: u64) -> Digest {
+    Digest {
+        frame: state.frame.mode,
+        sun_paused: state.sun.paused,
+        sun_shaded: state.sun.shaded,
+        imagery_enabled: state.imagery.enabled,
+        layer_index: state.imagery.layer_index,
+        hud_visible: state.hud.visible,
+        help_visible: state.hud.help_visible,
+        keyboard: state.keyboard,
+        deepest_level: state.imagery.deepest_level,
+        visible_tiles: state.imagery.visible_tiles,
+        loading_tiles: state.imagery.loading_tiles,
+        overlays_enabled: state.overlays.enabled,
+        overlay_revision,
+    }
 }
 
 /// Publishing state, throttled.
@@ -343,6 +399,10 @@ impl Plugin for ApiPlugin {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "commands reach every controllable part of the globe, so applying them necessarily borrows all of them"
+)]
 fn apply_commands(
     mut camera: Query<&mut OrbitCamera>,
     mut frame: ResMut<ReferenceFrame>,
@@ -350,6 +410,7 @@ fn apply_commands(
     mut sun: ResMut<Sun>,
     mut imagery: ResMut<ImagerySettings>,
     mut hud: ResMut<HudSettings>,
+    mut overlays: ResMut<OverlaySettings>,
     mut input: ResMut<GlobeInput>,
 ) {
     let commands = take_queued();
@@ -419,6 +480,27 @@ fn apply_commands(
             GlobeCommand::PreviousLayer => imagery.cycle_preset_back(),
             GlobeCommand::SetImageryEnabled(enabled) => imagery.enabled = enabled,
 
+            GlobeCommand::AddOverlay(request) => overlays.add(request),
+            // Naming an overlay that is not up is not an error. An interface
+            // can send one for a layer the user has just removed, and the layer
+            // being gone is the state it was asking for anyway.
+            GlobeCommand::RemoveOverlay(id) => {
+                overlays.remove(&id);
+            }
+            GlobeCommand::SetOverlayVisible { id, visible } => {
+                overlays.set_visible(&id, visible);
+            }
+            GlobeCommand::SetOverlayStyle { id, style } => {
+                overlays.set_style(&id, style);
+            }
+            GlobeCommand::SetOverlayRefresh { id, seconds } => {
+                overlays.set_refresh(&id, seconds);
+            }
+            GlobeCommand::RefreshOverlay(id) => {
+                overlays.refresh(&id);
+            }
+            GlobeCommand::SetOverlaysEnabled(enabled) => overlays.enabled = enabled,
+
             GlobeCommand::SetHudVisible(visible) => hud.visible = visible,
             GlobeCommand::SetHelpVisible(visible) => hud.help_visible = visible,
             GlobeCommand::SetKeyboardEnabled(enabled) => input.keyboard = enabled,
@@ -455,6 +537,7 @@ pub(crate) fn publish_state(
     sun: Res<Sun>,
     imagery: Res<ImagerySettings>,
     tiles: Res<TileCache>,
+    overlays: Res<OverlaySettings>,
     hud: Res<HudSettings>,
     input: Res<GlobeInput>,
     mut stream: ResMut<StateStream>,
@@ -501,6 +584,11 @@ pub(crate) fn publish_state(
             visible_tiles: tiles.visible_tiles,
             loading_tiles: tiles.loading_tiles,
         },
+        overlays: OverlaysState {
+            enabled: overlays.enabled,
+            drawn: overlays.drawn(),
+            layers: overlays::describe(&overlays),
+        },
         hud: HudState {
             visible: hud.visible,
             help_visible: hud.help_visible,
@@ -510,7 +598,7 @@ pub(crate) fn publish_state(
     };
 
     stream.since_publish += time.delta_secs();
-    let current = digest(&state);
+    let current = digest(&state, overlays.revision());
     let changed = stream.last_digest != Some(current);
     let due = stream.since_publish >= STATE_INTERVAL_SECONDS;
 

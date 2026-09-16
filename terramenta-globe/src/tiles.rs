@@ -45,6 +45,15 @@ use crate::sun::Sun;
 const TILE_BASE_RADIUS: f32 = GLOBE_RADIUS * 1.0004;
 const TILE_LEVEL_STEP: f32 = GLOBE_RADIUS * 2.0e-5;
 
+/// The highest [`TileGrid::radius`] ever puts a tile, over every level of every
+/// grid — which is not the deepest level, because the sag correction below
+/// dominates the per-level step and it is largest where a quad is widest.
+///
+/// It matters outside this module: anything else drawn on the surface has to
+/// clear it or the imagery will bury it. `assert_no_tile_rises_above_the_stated_ceiling`
+/// is what keeps this honest.
+pub const MAX_TILE_RADIUS: f32 = GLOBE_RADIUS * 1.0017;
+
 /// The largest angle a single quad of a tile's mesh may span.
 ///
 /// A flat quad chords across the sphere, so its middle sags below the true
@@ -868,6 +877,19 @@ mod tests {
     /// The grid NASA GIBS publishes its `EPSG:4326` imagery in.
     fn gibs_grid() -> TileGrid {
         TileGrid::from_scale_denominator(LatLon::new(90.0, -180.0), 223_632_905.611_487_1, 512)
+    }
+
+    #[test]
+    fn assert_no_tile_rises_above_the_stated_ceiling() {
+        for grid in [TileGrid::GEODETIC, gibs_grid()] {
+            for level in 0..=12 {
+                let radius = grid.radius(level);
+                assert!(
+                    radius <= MAX_TILE_RADIUS,
+                    "level {level} reaches {radius}, past {MAX_TILE_RADIUS}"
+                );
+            }
+        }
     }
 
     #[test]

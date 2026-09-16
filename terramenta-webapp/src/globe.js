@@ -143,6 +143,58 @@ export const previousLayer = () => required().previousLayer();
 /** Whether tiles are streamed at all. Off, the globe falls back to its base texture. */
 export const setImageryEnabled = (enabled) => required().setImageryEnabled(enabled);
 
+// --- GeoJSON overlays ------------------------------------------------------
+
+/**
+ * Puts a GeoJSON overlay up, or replaces the one already under this id.
+ *
+ * Exactly one of `url` and `text` says where the data comes from. A URL is the
+ * globe's to fetch, and the only kind it can refetch; `text` is for GeoJSON
+ * this app already has — a file the user picked, most of all — and re-sending
+ * it under the same id is what an update looks like.
+ *
+ * ```js
+ * addOverlay("quakes", {
+ *   url: "https://earthquake.usgs.gov/.../all_hour.geojson",
+ *   label: "Earthquakes, past hour",
+ *   refreshSeconds: 60,
+ *   pointColor: "#ff9e3d",
+ * });
+ * addOverlay("local", { text: await file.text() });
+ * ```
+ *
+ * Options: `label`, `refreshSeconds`, `visible`, and the style fields
+ * `pointColor`, `pointSizePx`, `lineColor`, `lineWidthPx`, `fillColor` —
+ * colours as hex, with an optional alpha pair, exactly as CSS writes them.
+ *
+ * Returns whether the options made sense. A layer that fails to *load* still
+ * returns `true`: that failure arrives on the state stream, with its reason,
+ * long after the call is over.
+ */
+export const addOverlay = (id, options) => required().addOverlay(id, options);
+
+export const removeOverlay = (id) => required().removeOverlay(id);
+
+export const setOverlayVisible = (id, visible) => required().setOverlayVisible(id, visible);
+
+/** Restyles a layer without refetching it. Anything left out returns to its default. */
+export const setOverlayStyle = (id, style) => required().setOverlayStyle(id, style);
+
+/**
+ * Seconds between refetches, or `null` to stop refreshing.
+ *
+ * Only a layer the globe fetched can refresh. One given as text has nowhere to
+ * fetch from and reports `refreshSeconds: null` whatever is asked here — see
+ * `overlays.js` for what this app does about that.
+ */
+export const setOverlayRefresh = (id, seconds) => required().setOverlayRefresh(id, seconds);
+
+/** Refetches now, whatever the period says. */
+export const refreshOverlay = (id) => required().refreshOverlay(id);
+
+/** Whether overlays are drawn at all. Off, every layer stays loaded. */
+export const setOverlaysEnabled = (enabled) => required().setOverlaysEnabled(enabled);
+
 // --- The globe's own chrome ------------------------------------------------
 
 /** Whether the globe draws its built-in readout. This app draws its own instead. */
@@ -165,7 +217,8 @@ export const setKeyboardEnabled = (enabled) => required().setKeyboardEnabled(ena
 /**
  * Registers the callback the globe reports its state to.
  *
- * The snapshot is `{camera, frame, sun, imagery, hud, cursor, keyboard}`; see
+ * The snapshot is `{camera, frame, sun, imagery, overlays, hud, cursor,
+ * keyboard}`; see
  * `readout.js` and `panel.js` for what is in each. Only one listener is kept,
  * so this app fans it out itself rather than registering twice.
  */

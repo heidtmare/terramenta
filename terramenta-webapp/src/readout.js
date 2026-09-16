@@ -21,6 +21,14 @@ const FIELDS = [
   ["rate", (state) => timeScale(state.sun.timeScale)],
   ["imagery", (state) => (state.imagery.enabled ? state.imagery.label : "off")],
   [
+    "overlays",
+    (state) =>
+      state.overlays.layers.length === 0
+        ? "none"
+        : `${state.overlays.drawn} of ${state.overlays.layers.length} drawn` +
+          (state.overlays.enabled ? "" : "  (off)"),
+  ],
+  [
     "tiles",
     (state) =>
       state.imagery.enabled

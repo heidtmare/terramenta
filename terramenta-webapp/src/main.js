@@ -9,6 +9,8 @@
  */
 
 import * as globe from "./globe.js";
+import { DEFAULT_FEED } from "./feeds.js";
+import { addFeed } from "./overlays.js";
 import { mountPanel } from "./panel.js";
 import { mountReadout } from "./readout.js";
 
@@ -76,6 +78,12 @@ async function boot() {
   // This app draws its own readout, so the globe's is switched off — the panel
   // can turn it back on, which is the quickest way to see they agree.
   globe.setHudVisible(false);
+
+  // A live GeoJSON feed, up before the first frame is drawn. Queued like every
+  // other command, so the fetch starts as soon as the globe does — and it
+  // refreshes itself from then on, which is the whole point of the feature and
+  // not something an empty panel would ever show.
+  addFeed(DEFAULT_FEED);
 
   try {
     await globe.start(CANVAS_SELECTOR);

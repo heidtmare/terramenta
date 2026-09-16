@@ -154,6 +154,21 @@ fn format_readout(state: &GlobeState) -> String {
         "off".to_string()
     };
 
+    // Only worth a line when there is something to say: a globe with no
+    // overlays should not carry a row reporting that there are none.
+    let overlays = match state.overlays.layers.len() {
+        0 => String::new(),
+        total => format!(
+            "\noverlays  {} of {total} drawn{}",
+            state.overlays.drawn,
+            if state.overlays.enabled {
+                ""
+            } else {
+                "  (off)"
+            },
+        ),
+    };
+
     format!(
         "TERRAMENTA\n\
          cursor    {cursor}\n\
@@ -161,7 +176,7 @@ fn format_readout(state: &GlobeState) -> String {
          frame     {}\n\
          sun over  {}{}\n\
          clock     {}{}\n\
-         imagery   {imagery}",
+         imagery   {imagery}{overlays}",
         state.camera.altitude_km,
         state.frame.label,
         state.sun.subsolar.format(),

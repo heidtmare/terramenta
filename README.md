@@ -40,6 +40,11 @@ interface, and the reference app is there to show what that takes.
 - **Streaming OGC imagery.** A quadtree of tiles fetched from any OGC Web Map
   Service (WMS) or Web Map Tile Service (WMTS), refined as you descend, with
   NASA GIBS layers wired up over both by default.
+- **GeoJSON overlays.** Vector data over the imagery, from a URL or a local
+  file, as screen-sized markers, lines and filled rings — several layers at
+  once, each with its own colours and its own refresh period. The reference app
+  starts with the USGS feed of earthquakes in the past hour, refetched every
+  minute.
 - **A live readout.** Latitude and longitude under the cursor, camera altitude in
   kilometres, the subsolar point, and what the tile streamer is doing.
 - **All of it under external control.** Layer, imagery, sun, clock, frame,
@@ -91,9 +96,11 @@ no build step at all. The only thing it builds is the globe.
   reproject rather than read a tile's bounds straight off as lat/lon.
 - Add a bathymetry/elevation map for a normal-mapped surface and real terrain
   relief.
-- Place markers, great-circle arcs or GeoJSON overlays — `geo::LatLon` already
-  converts both ways, and a command to add one would follow the same path as
-  every other.
+- Style a GeoJSON overlay per feature rather than per layer — colour the
+  earthquake markers by magnitude, which is the obvious next thing to want from
+  the feed the reference app ships with.
+- Pick a feature out of an overlay by clicking it, and show its properties:
+  they are read past at parse time today.
 - Click-to-fly: the cursor coordinate is already in the state stream, so the app
   could turn a click into a `lookAt` without the globe knowing.
 

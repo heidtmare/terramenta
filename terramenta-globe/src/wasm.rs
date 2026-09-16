@@ -10,10 +10,13 @@
 //! documentation is `terramenta-webapp/src/globe.js`, which wraps every one of
 //! these calls.
 
+use serde::Deserialize;
 use wasm_bindgen::prelude::*;
 
 use crate::GlobeConfig;
-use crate::api::{self, GlobeCommand, GlobeState, Limits};
+use crate::api::{
+    self, GlobeCommand, GlobeState, Limits, OverlayRequest, OverlaySource, OverlayStyle,
+};
 use crate::frame::FrameMode;
 use crate::geo::LatLon;
 
@@ -31,6 +34,9 @@ pub fn start(canvas_selector: Option<String>, asset_path: Option<String>) {
     crate::app(GlobeConfig {
         canvas_selector: canvas_selector.unwrap_or(defaults.canvas_selector),
         asset_path: asset_path.unwrap_or(defaults.asset_path),
+        // A web embedder adds its overlays through `addOverlay` once the module
+        // has loaded; the queue holds them until the globe is there to take them.
+        overlays: defaults.overlays,
     })
     .run();
 }
@@ -169,6 +175,148 @@ pub fn set_imagery_enabled(enabled: bool) {
 }
 
 // ---------------------------------------------------------------------------
+// GeoJSON overlays
+// ---------------------------------------------------------------------------
+
+/// The options an overlay is added with, as a plain JavaScript object.
+///
+/// Exactly one of `url` and `text` says where the data comes from — a URL the
+/// globe fetches and can keep refetching, or GeoJSON the embedder already has,
+/// which is how a file the user picked gets here. Everything else is optional,
+/// and colours are hex strings so a `<input type="color">` value can be passed
+/// straight through.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct OverlayOptions {
+    url: Option<String>,
+    text: Option<String>,
+    label: Option<String>,
+    /// Seconds between refetches. Omit or `null` to fetch once.
+    refresh_seconds: Option<f32>,
+    visible: Option<bool>,
+    #[serde(flatten)]
+    style: StyleOptions,
+}
+
+/// The parts of an overlay's appearance, each falling back to the default.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct StyleOptions {
+    point_color: Option<String>,
+    point_size_px: Option<f32>,
+    line_color: Option<String>,
+    line_width_px: Option<f32>,
+    fill_color: Option<String>,
+}
+
+impl StyleOptions {
+    /// Fills in whatever was left out. A colour that will not parse is left at
+    /// its default rather than failing the call: a layer in the wrong colour is
+    /// recoverable, and a layer that never appeared is a puzzle.
+    fn resolve(&self) -> OverlayStyle {
+        let defaults = OverlayStyle::default();
+        let color = |hex: &Option<String>, fallback| {
+            hex.as_deref()
+                .and_then(|hex| bevy::color::Srgba::hex(hex).ok())
+                .unwrap_or(fallback)
+        };
+        OverlayStyle {
+            point_color: color(&self.point_color, defaults.point_color),
+            point_size_px: self.point_size_px.unwrap_or(defaults.point_size_px),
+            line_color: color(&self.line_color, defaults.line_color),
+            line_width_px: self.line_width_px.unwrap_or(defaults.line_width_px),
+            fill_color: color(&self.fill_color, defaults.fill_color),
+        }
+    }
+}
+
+/// Puts a GeoJSON overlay up, or replaces the one already under this id.
+///
+/// ```js
+/// addOverlay("quakes", {
+///   url: "https://earthquake.usgs.gov/.../all_hour.geojson",
+///   label: "Earthquakes, past hour",
+///   refreshSeconds: 60,
+///   pointColor: "#ff9e3d",
+/// });
+/// addOverlay("local", { text: await file.text() });
+/// ```
+///
+/// Returns whether the options could be read. A layer that fails to *load*
+/// still returns `true` — the failure arrives on the state stream, with the
+/// reason, because by then the call is long over.
+#[wasm_bindgen(js_name = addOverlay)]
+pub fn add_overlay(id: String, options: JsValue) -> bool {
+    let Some(options) = from_js::<OverlayOptions>(&options) else {
+        return false;
+    };
+    // A URL wins if somehow both were given, because it is the one the globe
+    // can go back to.
+    let source = match (options.url, options.text) {
+        (Some(url), _) => OverlaySource::Url(url),
+        (None, Some(text)) => OverlaySource::Text(text),
+        (None, None) => return false,
+    };
+
+    api::send(GlobeCommand::AddOverlay(OverlayRequest {
+        id,
+        label: options.label.unwrap_or_default(),
+        source,
+        style: options.style.resolve(),
+        refresh_seconds: options.refresh_seconds,
+        visible: options.visible.unwrap_or(true),
+    }));
+    true
+}
+
+#[wasm_bindgen(js_name = removeOverlay)]
+pub fn remove_overlay(id: String) {
+    api::send(GlobeCommand::RemoveOverlay(id));
+}
+
+#[wasm_bindgen(js_name = setOverlayVisible)]
+pub fn set_overlay_visible(id: String, visible: bool) {
+    api::send(GlobeCommand::SetOverlayVisible { id, visible });
+}
+
+/// Restyles a layer without refetching or rebuilding it. Takes the same colour
+/// and size fields [`add_overlay`] does; anything left out goes back to its
+/// default.
+#[wasm_bindgen(js_name = setOverlayStyle)]
+pub fn set_overlay_style(id: String, style: JsValue) -> bool {
+    let Some(style) = from_js::<StyleOptions>(&style) else {
+        return false;
+    };
+    api::send(GlobeCommand::SetOverlayStyle {
+        id,
+        style: style.resolve(),
+    });
+    true
+}
+
+/// Sets how often a layer refetches, in seconds, or stops it refreshing when
+/// given nothing. Only a layer the globe fetched itself can refresh; one given
+/// as text has nowhere to fetch from, and reports `refreshSeconds: null`
+/// whatever is asked here.
+#[wasm_bindgen(js_name = setOverlayRefresh)]
+pub fn set_overlay_refresh(id: String, seconds: Option<f32>) {
+    api::send(GlobeCommand::SetOverlayRefresh { id, seconds });
+}
+
+/// Refetches now, whatever the period says.
+#[wasm_bindgen(js_name = refreshOverlay)]
+pub fn refresh_overlay(id: String) {
+    api::send(GlobeCommand::RefreshOverlay(id));
+}
+
+/// Whether overlays are drawn at all. Off, every layer stays loaded and simply
+/// stops being drawn, so switching back is instant.
+#[wasm_bindgen(js_name = setOverlaysEnabled)]
+pub fn set_overlays_enabled(enabled: bool) {
+    api::send(GlobeCommand::SetOverlaysEnabled(enabled));
+}
+
+// ---------------------------------------------------------------------------
 // Chrome and input
 // ---------------------------------------------------------------------------
 
@@ -233,4 +381,16 @@ fn to_js<T: serde::Serialize>(value: &T) -> JsValue {
         .ok()
         .and_then(|json| js_sys::JSON::parse(&json).ok())
         .unwrap_or(JsValue::NULL)
+}
+
+/// Reads a JavaScript object back the same way, for the calls that take a bag
+/// of options rather than a fixed argument list.
+fn from_js<T: serde::de::DeserializeOwned>(value: &JsValue) -> Option<T> {
+    // An absent argument is an empty options object, not a failure — every
+    // field of one is optional.
+    if value.is_undefined() || value.is_null() {
+        return serde_json::from_str("{}").ok();
+    }
+    let json = js_sys::JSON::stringify(value).ok()?;
+    serde_json::from_str(&String::from(json)).ok()
 }

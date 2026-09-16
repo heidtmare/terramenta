@@ -299,6 +299,117 @@ body.panel-collapsed #panel {
   font-variant-numeric: tabular-nums;
 }
 
+/* --- GeoJSON overlays ----------------------------------------------------- */
+
+/* The period box is a number and a unit, not a sentence. */
+.period {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.period input {
+  width: 5rem;
+}
+
+.period span {
+  color: var(--ink-faint);
+}
+
+.layers {
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 0.8rem;
+}
+
+.layers.empty {
+  margin-top: 0;
+}
+
+.layer {
+  padding: 0.5rem 0.6rem;
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  /* A status stripe down the side: loading, ready, or failed, without a row of
+     its own and without the eye having to read anything to see which. */
+  border-left: 2px solid var(--ink-faint);
+  border-radius: 2px;
+}
+
+.layer[data-status="ready"] {
+  border-left-color: var(--accent);
+}
+
+.layer[data-status="failed"] {
+  border-left-color: #ff7a7a;
+}
+
+.layer-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* The name takes the room; the swatch keeps its own. */
+.layer-head .toggle {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.layer-head .toggle span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.layer .detail {
+  margin-top: 0.25rem;
+}
+
+.layer .buttons {
+  margin-top: 0.5rem;
+  align-items: center;
+}
+
+.layer .buttons .toggle {
+  flex: 0 0 auto;
+  color: var(--ink-faint);
+}
+
+.layer .buttons .coordinate {
+  flex: 0 1 4.5rem;
+  padding: 0.25rem 0.3rem;
+}
+
+.layer .buttons .coordinate:disabled {
+  opacity: 0.4;
+}
+
+/* A colour input is a button-sized swatch, not a form field. */
+.swatch {
+  flex: 0 0 auto;
+  width: 1.7rem;
+  height: 1.7rem;
+  padding: 0;
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.swatch:hover {
+  border-color: var(--accent);
+}
+
+.swatch::-webkit-color-swatch-wrapper {
+  padding: 2px;
+}
+
+.swatch::-webkit-color-swatch {
+  border: none;
+  border-radius: 1px;
+}
+
 /* --- Loading and failure -------------------------------------------------- */
 
 #status {

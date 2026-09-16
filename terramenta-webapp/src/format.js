@@ -30,6 +30,21 @@ export function timeScale(scale) {
   return `${scale.toLocaleString()}× · 1 day / ${(realSeconds / 3600).toFixed(1)} h`;
 }
 
+/**
+ * A span of seconds, coarsened as it grows.
+ *
+ * Used for how stale a layer is and how long until it refreshes, where the
+ * difference between 47 and 48 seconds is noise but the difference between
+ * seconds and hours is the whole point.
+ */
+export function duration(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return "—";
+  if (seconds < 90) return `${Math.round(seconds)} s`;
+  if (seconds < 5400) return `${Math.round(seconds / 60)} min`;
+  if (seconds < 172_800) return `${(seconds / 3600).toFixed(1)} h`;
+  return `${Math.round(seconds / 86_400)} days`;
+}
+
 /** The simulated clock as a full date, since it can be days from today. */
 export function clock(unixSeconds) {
   const date = new Date(unixSeconds * 1000);

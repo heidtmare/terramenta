@@ -61,8 +61,13 @@ globe.layers();  // [{index, label, protocol, maxLevel, tileSize, format}, ...]
 globe.limits();  // {minAltitudeKm, maxAltitudeKm, minTimeScale, maxTimeScale}
 
 globe.onState((state) => {
-  // {camera: {center, altitudeKm}, frame: {mode, label}, sun, imagery, hud,
-  //  cursor, keyboard} — see `GlobeState` in src/api.rs
+  // {camera: {center, altitudeKm}, frame: {mode, label}, sun, imagery,
+  //  overlays, hud, cursor, keyboard} — see `GlobeState` in src/api.rs
+});
+
+globe.addOverlay("quakes", {
+  url: "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_hour.geojson",
+  refreshSeconds: 60,
 });
 
 globe.setHudVisible(false);        // queued; applied when the globe starts
@@ -90,6 +95,9 @@ to tell that apart from a real failure.
 | `setSunPaused(bool)` `setTimeScale(n)` `setClock(unixSeconds)` `snapClockToNow()` | The simulated clock |
 | `setSunShaded(bool)` | Terminator, or flat full daylight |
 | `setLayer(i)` `nextLayer()` `previousLayer()` `setImageryEnabled(bool)` | Streamed imagery |
+| `addOverlay(id, options)` `removeOverlay(id)` | GeoJSON overlays |
+| `setOverlayVisible(id, bool)` `setOverlayStyle(id, style)` `setOverlaysEnabled(bool)` | How an overlay is drawn |
+| `setOverlayRefresh(id, seconds)` `refreshOverlay(id)` | When it refetches |
 | `setHudVisible(bool)` `setHelpVisible(bool)` `setKeyboardEnabled(bool)` | The globe's own overlay and keys |
 | `onState(callback)` | The state stream. One listener; registering again replaces it |
 
@@ -99,6 +107,100 @@ A native embedder uses the same queue through `api::send`, and reads state
 straight out of the `World` from the `LatestState` resource rather than through
 a listener. `app(GlobeConfig { .. })` builds the `App` without running it, for a
 host that wants to add plugins of its own first.
+
+## GeoJSON overlays
+
+Vector data drawn over the imagery: markers, lines and filled rings from any
+[GeoJSON](https://datatracker.ietf.org/doc/html/rfc7946) document. Several
+layers can be up at once, each with its own colours, its own visibility and its
+own refresh period, and the state stream reports what every one of them holds
+and is doing.
+
+```js
+globe.addOverlay("quakes", {
+  url: "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_hour.geojson",
+  label: "Earthquakes, past hour",
+  refreshSeconds: 60,
+  pointColor: "#ff9e3d",
+  pointSizePx: 9,
+  lineColor: "#ff9e3d",
+  lineWidthPx: 2,
+  fillColor: "#ff9e3d3a",
+});
+
+// A file the user picked. The globe cannot fetch it, so it is handed the text.
+globe.addOverlay("local", { text: await file.text() });
+```
+
+An id is the layer. Adding a second overlay under one already in use replaces
+it, which is what makes re-sending a re-read file an update rather than a second
+copy of the layer.
+
+### The two kinds of source
+
+A **URL** is the globe's to fetch, over the same asset machinery the imagery
+tiles use — [`overlays.rs`](src/overlays.rs) registers a `geojson://` source
+whose reader turns a layer's path into its URL, so an overlay loads with an
+ordinary `asset_server.load` and gets asynchronous I/O on native and in the
+browser alike. Being able to fetch it is also what makes it refreshable.
+
+**Text** is the embedder's. A browser will not let the globe open a path off the
+user's machine, so a local file is read by the page and the GeoJSON handed over
+as a string. The globe cannot go back for more of it; refreshing a file is the
+embedder re-reading it and sending it again, which
+[`overlays.js`](../terramenta-webapp/src/overlays.js) in the reference app does
+on a timer of its own.
+
+### Refreshing
+
+`refreshSeconds` sets the period, `setOverlayRefresh(id, null)` stops it, and
+`refreshOverlay(id)` refetches now. The old geometry stays on screen until the
+new document lands, so a feed that goes down does not blank the layer; if the
+fetch fails, the layer reports `status: "failed"` with the reason and keeps
+drawing what it had.
+
+Refreshing has to get past two caches — Bevy's, which is keyed by asset path,
+and the browser's, which is keyed by URL. Both are handled the same way: the
+path carries a generation, and from the second fetch onward so does the request,
+as a `_terramenta=<n>` parameter. A layer that never refreshes never gets that
+parameter, so a signed or otherwise parameter-sensitive URL still works.
+
+### How it is drawn
+
+Markers and lines are sized in **pixels**, not on the ground. A dot six
+kilometres across is a continent from orbit and invisible from a low pass, so
+the mesh carries one anchor per marker and one spine per line and the corners
+are spread in [`vector.wgsl`](assets/shaders/vector.wgsl), from how much world
+one pixel covers at that depth. A layer never has to be rebuilt for a zoom.
+
+Rings are filled by ear clipping in [`tessellate.rs`](src/tessellate.rs), which
+splices holes into the outer ring along a bridge first. Two things about it are
+worth knowing:
+
+- A ring crossing the **antimeridian** is handled: longitudes are allowed to run
+  past ±180 so the ring stays the shape it looks like on a globe.
+- A ring enclosing a **pole** is not. It does not close in a latitude/longitude
+  plane at all, so Antarctica as a single polygon fills wrong. Its outline is
+  still right, and outlines are drawn whether or not the fill is.
+
+Past 8,000 corners a polygon is outlined but not filled, and past 2,000 its
+holes are dropped — ear clipping is quadratic, and a coastline dataset would
+otherwise stall a frame.
+
+Overlays are drawn unlit and above the deepest imagery tile. Unlit because an
+overlay is annotation rather than imagery: a track across the night side has to
+stay as readable as the same track at noon.
+
+### Things to get right
+
+- **CORS, again.** The browser needs `Access-Control-Allow-Origin` from whoever
+  serves the document. The USGS feeds send `*`; most other things do not.
+- **Order is longitude, then latitude.** RFC 7946 positions are `[lon, lat]`,
+  which is the opposite of how a coordinate is spoken. A third element —
+  elevation, or depth in the USGS feeds — is read past: everything is draped on
+  the surface.
+- **Properties are read past too.** Styling is per layer, so two feeds are told
+  apart by being two colours rather than by anything inside them.
 
 ## Controls
 
@@ -138,12 +240,16 @@ src/
   wms.rs       WMS GetMap request URLs
   wmts.rs      WMTS GetTile request URLs, REST and KVP
   tiles.rs     Tile grids, level-of-detail selection and streaming
+  geojson.rs   The GeoJSON document format, flattened to drawable geometry
+  tessellate.rs  Rings to triangles: ear clipping, holes and the antimeridian
+  overlays.rs  Overlay layers: sources, refresh, meshes and the `geojson://` source
   hud.rs       The built-in readout, formatted from the state snapshot
 assets/shaders/
   globe.wgsl        Day/night, city lights, ocean specular, clouds, limb haze
   atmosphere.wgsl   Additive scattering shell
   starfield.wgsl    Procedural stars and galactic band
   tile.wgsl         A single streamed imagery tile
+  vector.wgsl       Overlay markers, lines and fills, sized in pixels
 scripts/
   fetch-assets.sh  Downloads the NASA imagery
   build-wasm.sh    Builds the WebAssembly module and its assets

@@ -15,11 +15,10 @@
 
 import * as globe from "./globe.js";
 import { el, row, section } from "./dom.js";
-import { altitude, logScale, timeScale } from "./format.js";
+import { altitude, timeScale } from "./format.js";
+import { mountOverlays } from "./overlays.js";
 import { PLACES } from "./places.js";
-
-/** Slider positions are `0..1` at this resolution, and the range is applied on top. */
-const SLIDER_STEPS = 1000;
+import { button, choice, slider, toggle } from "./widgets.js";
 
 export function mountPanel(root) {
   const limits = globe.limits();
@@ -78,6 +77,12 @@ export function mountPanel(root) {
     ),
     imageryToggle.node,
   );
+
+  // --- GeoJSON overlays ----------------------------------------------------
+
+  // Enough of a feature to be its own file; `bind` is handed over so its
+  // controls follow the same one-way rule as everything here.
+  const overlays = mountOverlays(bind);
 
   // --- Sun and clock -------------------------------------------------------
 
@@ -204,7 +209,7 @@ export function mountPanel(root) {
     ),
   );
 
-  root.append(imagery, sun, frame, camera, chrome);
+  root.append(imagery, overlays, sun, frame, camera, chrome);
 
   return {
     sync(state) {
@@ -212,88 +217,6 @@ export function mountPanel(root) {
       for (const control of controls) {
         if (!control.isHeld()) control.sync(state);
       }
-    },
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Control widgets
-// ---------------------------------------------------------------------------
-
-function button(label, onClick) {
-  return el("button", { class: "button", type: "button", onclick: onClick }, label);
-}
-
-/** A checkbox that reports its new state. */
-function toggle(label, onChange) {
-  const input = el("input", {
-    type: "checkbox",
-    checked: true,
-    onchange: (event) => onChange(event.target.checked),
-  });
-  const node = el("label", { class: "toggle" }, input, el("span", {}, label));
-  return {
-    node,
-    set: (value) => {
-      input.checked = value;
-    },
-  };
-}
-
-/** A set of mutually exclusive buttons. */
-function choice(options, onChange) {
-  const buttons = options.map(([value, label]) =>
-    el(
-      "button",
-      { class: "choice-option", type: "button", value, onclick: () => onChange(value) },
-      label,
-    ),
-  );
-  const node = el("div", { class: "choice" }, ...buttons);
-  return {
-    node,
-    set: (value) => {
-      for (const button of buttons) {
-        button.classList.toggle("selected", button.value === value);
-      }
-    },
-  };
-}
-
-/** A slider over a range that spans orders of magnitude, with its value shown. */
-function slider({ min, max, format, onInput }) {
-  // Held from the moment the thumb is grabbed until it is let go, whether by
-  // pointer or by arrow key. The globe reports the altitude it is smoothing
-  // toward, so without this the slider would spring back under the pointer.
-  let held = false;
-
-  const output = el("span", { class: "slider-value" }, "—");
-  const input = el("input", {
-    class: "slider",
-    type: "range",
-    min: "0",
-    max: String(SLIDER_STEPS),
-    value: "0",
-    onpointerdown: () => (held = true),
-    onpointerup: () => (held = false),
-    onpointercancel: () => (held = false),
-    onkeydown: () => (held = true),
-    onkeyup: () => (held = false),
-    onblur: () => (held = false),
-    oninput: (event) => {
-      const value = logScale.toValue(Number(event.target.value) / SLIDER_STEPS, min, max);
-      output.textContent = format(value);
-      onInput(value);
-    },
-  });
-  const node = el("div", { class: "slider-row" }, input, output);
-  return {
-    node,
-    isHeld: () => held,
-    set: (value) => {
-      const clamped = Math.min(Math.max(value, min), max);
-      input.value = String(Math.round(logScale.toPosition(clamped, min, max) * SLIDER_STEPS));
-      output.textContent = format(value);
     },
   };
 }
