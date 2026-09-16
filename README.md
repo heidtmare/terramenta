@@ -47,8 +47,15 @@ interface, and the reference app is there to show what that takes.
 - **GeoJSON overlays.** Vector data over the imagery, from a URL or a local
   file, as screen-sized markers, lines and filled rings — several layers at
   once, each with its own colours and its own refresh period. The reference app
-  starts with the USGS feed of earthquakes in the past hour, refetched every
+  starts with two: a bundled sample holding one feature per GeoJSON geometry
+  type, and the USGS feed of earthquakes in the past hour, refetched every
   minute.
+- **Placement at altitude.** A position's optional third element is drawn:
+  markers stand off the surface, and a line climbs evenly between the heights of
+  its corners, so a flight path or a balloon track is where it says it is. Per
+  layer, because feeds disagree about what that element means — a scale says
+  how many metres one unit of it is, and clamping to the surface ignores it
+  entirely, which is what the USGS feeds want since theirs is a depth.
 - **Pickable features.** The cursor hit-tests the overlay geometry: what it is
   over is haloed on the globe and its properties are listed in the app, and a
   click keeps one selected.
@@ -103,6 +110,8 @@ no build step at all. The only thing it builds is the globe.
   reproject rather than read a tile's bounds straight off as lat/lon.
 - Add a bathymetry/elevation map for a normal-mapped surface and real terrain
   relief.
+- Pick against the drawn geometry rather than the ground under it, so a marker
+  at altitude is grabbable where it appears once the camera is tilted.
 - Style a GeoJSON overlay per feature rather than per layer — colour the
   earthquake markers by magnitude, which is the obvious next thing to want from
   the feed the reference app ships with. The properties are already carried

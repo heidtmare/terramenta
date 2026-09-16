@@ -181,6 +181,13 @@ export const setOverlayVisible = (id, visible) => required().setOverlayVisible(i
 export const setOverlayStyle = (id, style) => required().setOverlayStyle(id, style);
 
 /**
+ * How a layer reads the third element of its positions: `altitudeMode` of
+ * `"relativeToSurface"` or `"clampToSurface"`, and `altitudeScale` as metres
+ * per unit. The layer is rebuilt where it stands, without refetching.
+ */
+export const setOverlayAltitude = (id, altitude) => required().setOverlayAltitude(id, altitude);
+
+/**
  * Seconds between refetches, or `null` to stop refreshing.
  *
  * Only a layer the globe fetched can refresh. One given as text has nowhere to

@@ -97,6 +97,7 @@ to tell that apart from a real failure.
 | `setLayer(i)` `nextLayer()` `previousLayer()` `setImageryEnabled(bool)` | Streamed imagery |
 | `addOverlay(id, options)` `removeOverlay(id)` | GeoJSON overlays |
 | `setOverlayVisible(id, bool)` `setOverlayStyle(id, style)` `setOverlaysEnabled(bool)` | How an overlay is drawn |
+| `setOverlayAltitude(id, altitude)` | How high it is drawn |
 | `setOverlayRefresh(id, seconds)` `refreshOverlay(id)` | When it refetches |
 | `setPickingEnabled(bool)` `pinFeature(layer, index)` `clearPinnedFeature()` | Picking features out of an overlay |
 | `setHudVisible(bool)` `setHelpVisible(bool)` `setKeyboardEnabled(bool)` | The globe's own overlay and keys |
@@ -136,6 +137,48 @@ globe.addOverlay("local", { text: await file.text() });
 An id is the layer. Adding a second overlay under one already in use replaces
 it, which is what makes re-sending a re-read file an update rather than a second
 copy of the layer.
+
+### Height
+
+A GeoJSON position may carry a third element, and the globe draws it: a marker
+stands off the surface, and a line climbs evenly between the heights of the
+corners it was given, so a flight path or a balloon track is drawn where it says
+it is rather than flattened onto the ground.
+
+What that element *means* is the layer's to say, because RFC 7946 calls it
+elevation in metres loosely enough that feeds disagree:
+
+```js
+// Kilometres above the ground rather than metres.
+globe.addOverlay("flight", { url, altitudeScale: 1000 });
+
+// The USGS feeds put depth there, not height. Draw the layer flat.
+globe.addOverlay("quakes", { url, altitudeMode: "clampToSurface" });
+
+// Either can be changed later. The layer is rebuilt where it stands: nothing is
+// refetched, and a pinned feature stays pinned.
+globe.setOverlayAltitude("quakes", { altitudeMode: "relativeToSurface" });
+```
+
+`altitudeScale` is metres of height per unit of that element, and a negative one
+reads a feed that counts downward. Nothing is ever drawn below the surface: a
+height at or under sea level draws exactly where a clamped one does.
+
+Three things follow from how it is done, and are worth knowing before relying on
+it:
+
+- Height is measured up from the radius overlays are draped at, not from the
+  sphere. That drape is what clears the imagery, and the imagery is the ground
+  as far as anything looking at the screen is concerned — a tile stands up to
+  eleven kilometres proud of the sphere at its corners, so measuring from the
+  sphere would swallow the first ten kilometres of every track.
+- A **fill** is drawn at one height, the mean of its outer ring, where its
+  outline follows every corner. Triangulation duplicates and reorders corners,
+  so a height per corner would have to be carried through ear clipping, and what
+  it would buy is a fill that folds.
+- **Picking** reads the ground, not the height. A shape at altitude is picked
+  where it stands rather than where it is drawn — the same place looking
+  straight down, and further apart the more the camera is tilted.
 
 ### The two kinds of source
 

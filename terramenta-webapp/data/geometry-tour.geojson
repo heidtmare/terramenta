@@ -1,0 +1,188 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "id": "point",
+      "properties": {
+        "geometry": "Point",
+        "name": "Reykjavík",
+        "shows": "One position, drawn as a screen-sized marker."
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [-21.94, 64.15]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "multipoint",
+      "properties": {
+        "geometry": "MultiPoint",
+        "name": "Three summits",
+        "shows": "Several markers as one feature — picking any of them highlights all three. Each carries its real elevation in metres as the third element.",
+        "summits": "Everest 8849 m, Aconcagua 6961 m, Kilimanjaro 5895 m"
+      },
+      "geometry": {
+        "type": "MultiPoint",
+        "coordinates": [
+          [86.925, 27.988, 8849],
+          [-70.011, -32.653, 6961],
+          [37.355, -3.066, 5895]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "linestring",
+      "properties": {
+        "geometry": "LineString",
+        "name": "Launch profile",
+        "shows": "A line that climbs. Heights are in metres above the surface, and the track rises evenly between the corners rather than stepping up at each one.",
+        "from": "Cape Canaveral",
+        "apogee_m": 420000
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [-80.6, 28.5, 0],
+          [-76.0, 29.6, 45000],
+          [-70.0, 31.0, 140000],
+          [-58.0, 32.8, 280000],
+          [-42.0, 34.2, 380000],
+          [-24.0, 35.0, 420000]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "multilinestring",
+      "properties": {
+        "geometry": "MultiLineString",
+        "name": "Two rivers",
+        "shows": "Two strands, one feature: the Amazon and the Nile, roughed in. Either one picks both.",
+        "note": "Simplified to a handful of corners — this is a geometry sample, not a hydrological dataset."
+      },
+      "geometry": {
+        "type": "MultiLineString",
+        "coordinates": [
+          [
+            [-73.2, -4.3],
+            [-70.0, -4.1],
+            [-64.7, -3.3],
+            [-60.0, -3.1],
+            [-55.5, -2.2],
+            [-51.0, -0.9]
+          ],
+          [
+            [32.6, -2.3],
+            [32.0, 2.3],
+            [31.3, 9.5],
+            [32.5, 15.6],
+            [32.9, 24.1],
+            [31.2, 30.0],
+            [31.0, 31.4]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "polygon",
+      "properties": {
+        "geometry": "Polygon",
+        "name": "Ring with a hole",
+        "shows": "An outer ring and a hole in it. The hole is spliced into the ring along a bridge before the fill is triangulated, so the interior is genuinely unfilled rather than painted over."
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [119.0, -19.0],
+            [146.0, -19.0],
+            [146.0, -35.0],
+            [119.0, -35.0],
+            [119.0, -19.0]
+          ],
+          [
+            [127.0, -24.0],
+            [138.0, -24.0],
+            [138.0, -30.0],
+            [127.0, -30.0],
+            [127.0, -24.0]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "multipolygon",
+      "properties": {
+        "geometry": "MultiPolygon",
+        "name": "Two areas, one across the antimeridian",
+        "shows": "Two rings as one feature. The second runs from 177° E to 177° W — four degrees wide on a globe, not 354 — which is what the longitude unwrapping is for."
+      },
+      "geometry": {
+        "type": "MultiPolygon",
+        "coordinates": [
+          [
+            [
+              [0.0, 18.0],
+              [20.0, 18.0],
+              [20.0, 30.0],
+              [0.0, 30.0],
+              [0.0, 18.0]
+            ]
+          ],
+          [
+            [
+              [177.0, -19.0],
+              [-177.0, -19.0],
+              [-177.0, -15.0],
+              [177.0, -15.0],
+              [177.0, -19.0]
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "geometrycollection",
+      "properties": {
+        "geometry": "GeometryCollection",
+        "name": "Hawaii, three ways",
+        "shows": "A marker, a line and a filled ring in a single feature. The collection is flattened as it is parsed — three shapes, one thing to pick."
+      },
+      "geometry": {
+        "type": "GeometryCollection",
+        "geometries": [
+          {
+            "type": "Point",
+            "coordinates": [-155.5, 19.4]
+          },
+          {
+            "type": "LineString",
+            "coordinates": [
+              [-160.2, 21.9],
+              [-157.9, 21.4],
+              [-156.3, 20.8],
+              [-155.1, 19.7]
+            ]
+          },
+          {
+            "type": "Polygon",
+            "coordinates": [
+              [
+                [-158.3, 21.7],
+                [-157.6, 21.7],
+                [-158.0, 21.2],
+                [-158.3, 21.7]
+              ]
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

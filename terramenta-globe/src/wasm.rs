@@ -15,7 +15,8 @@ use wasm_bindgen::prelude::*;
 
 use crate::GlobeConfig;
 use crate::api::{
-    self, GlobeCommand, GlobeState, Limits, OverlayRequest, OverlaySource, OverlayStyle,
+    self, AltitudeMode, GlobeCommand, GlobeState, Limits, OverlayAltitude, OverlayRequest,
+    OverlaySource, OverlayStyle,
 };
 use crate::frame::FrameMode;
 use crate::geo::LatLon;
@@ -195,7 +196,38 @@ struct OverlayOptions {
     refresh_seconds: Option<f32>,
     visible: Option<bool>,
     #[serde(flatten)]
+    altitude: AltitudeOptions,
+    #[serde(flatten)]
     style: StyleOptions,
+}
+
+/// What the layer does with the third element of its positions.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct AltitudeOptions {
+    /// `"relativeToSurface"` to draw heights, `"clampToSurface"` to ignore them
+    /// and drape everything on the ground. Anything else leaves the default.
+    altitude_mode: Option<String>,
+    /// Metres of height per unit of that element: `1000` for a feed in
+    /// kilometres, negative for one that counts downward.
+    altitude_scale: Option<f32>,
+}
+
+impl AltitudeOptions {
+    fn resolve(&self) -> OverlayAltitude {
+        let defaults = OverlayAltitude::default();
+        OverlayAltitude {
+            mode: self
+                .altitude_mode
+                .as_deref()
+                .and_then(AltitudeMode::from_id)
+                .unwrap_or(defaults.mode),
+            scale: self
+                .altitude_scale
+                .filter(|scale| scale.is_finite())
+                .unwrap_or(defaults.scale),
+        }
+    }
 }
 
 /// The parts of an overlay's appearance, each falling back to the default.
@@ -240,6 +272,10 @@ impl StyleOptions {
 ///   pointColor: "#ff9e3d",
 /// });
 /// addOverlay("local", { text: await file.text() });
+/// // A feed whose third element is depth in kilometres, drawn flat:
+/// addOverlay("quakes", { url, altitudeMode: "clampToSurface" });
+/// // A track written in kilometres above the ground:
+/// addOverlay("flight", { url, altitudeScale: 1000 });
 /// ```
 ///
 /// Returns whether the options could be read. A layer that fails to *load*
@@ -263,6 +299,7 @@ pub fn add_overlay(id: String, options: JsValue) -> bool {
         label: options.label.unwrap_or_default(),
         source,
         style: options.style.resolve(),
+        altitude: options.altitude.resolve(),
         refresh_seconds: options.refresh_seconds,
         visible: options.visible.unwrap_or(true),
     }));
@@ -298,6 +335,24 @@ pub fn set_overlay_style(id: String, style: JsValue) -> bool {
 /// given nothing. Only a layer the globe fetched itself can refresh; one given
 /// as text has nowhere to fetch from, and reports `refreshSeconds: null`
 /// whatever is asked here.
+/// Sets how a layer reads the heights in its positions. Takes the same
+/// `altitudeMode` and `altitudeScale` fields [`add_overlay`] does; anything
+/// left out goes back to its default.
+///
+/// The layer is rebuilt where it stands — nothing is refetched, and a pinned
+/// feature stays pinned.
+#[wasm_bindgen(js_name = setOverlayAltitude)]
+pub fn set_overlay_altitude(id: String, altitude: JsValue) -> bool {
+    let Some(altitude) = from_js::<AltitudeOptions>(&altitude) else {
+        return false;
+    };
+    api::send(GlobeCommand::SetOverlayAltitude {
+        id,
+        altitude: altitude.resolve(),
+    });
+    true
+}
+
 #[wasm_bindgen(js_name = setOverlayRefresh)]
 pub fn set_overlay_refresh(id: String, seconds: Option<f32>) {
     api::send(GlobeCommand::SetOverlayRefresh { id, seconds });

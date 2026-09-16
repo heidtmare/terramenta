@@ -29,7 +29,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::geo::LatLon;
+use crate::geo::Position;
 
 /// The drawable geometry of one GeoJSON document, and the features it belongs
 /// to.
@@ -44,9 +44,9 @@ pub struct GeoJson {
     /// special-case a document written without features.
     pub features: Vec<Feature>,
     /// Every `Point`, and every position of every `MultiPoint`.
-    pub points: Vec<Shape<LatLon>>,
+    pub points: Vec<Shape<Position>>,
     /// Every `LineString`, and every strand of every `MultiLineString`.
-    pub lines: Vec<Shape<Vec<LatLon>>>,
+    pub lines: Vec<Shape<Vec<Position>>>,
     pub polygons: Vec<Shape<Polygon>>,
 }
 
@@ -94,15 +94,15 @@ pub struct Feature {
 /// because every consumer here would otherwise have to drop it again.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Polygon {
-    pub rings: Vec<Vec<LatLon>>,
+    pub rings: Vec<Vec<Position>>,
 }
 
 impl Polygon {
-    pub fn outer(&self) -> &[LatLon] {
+    pub fn outer(&self) -> &[Position] {
         self.rings.first().map(Vec::as_slice).unwrap_or_default()
     }
 
-    pub fn holes(&self) -> &[Vec<LatLon>] {
+    pub fn holes(&self) -> &[Vec<Position>] {
         self.rings.get(1..).unwrap_or_default()
     }
 }
@@ -136,10 +136,12 @@ impl From<serde_json::Error> for GeoJsonError {
 // The document as it arrives
 // ---------------------------------------------------------------------------
 
-/// One position, as GeoJSON writes it: `[longitude, latitude]`, with an
-/// optional third element — elevation, or in the USGS feeds depth — that a
-/// globe draping everything on the surface has no use for.
-type Position = Vec<f64>;
+/// One position, exactly as GeoJSON writes it: `[longitude, latitude]`, with an
+/// optional third element. RFC 7946 calls that element elevation in metres, but
+/// says so loosely enough that feeds disagree — the USGS earthquake feeds put
+/// depth in kilometres there — so it is read as a number here and left for the
+/// layer to interpret. See [`crate::overlays::OverlayAltitude`].
+type RawPosition = Vec<f64>;
 
 /// Any GeoJSON object.
 ///
@@ -174,27 +176,27 @@ enum Object {
     },
     Point {
         #[serde(default)]
-        coordinates: Position,
+        coordinates: RawPosition,
     },
     MultiPoint {
         #[serde(default)]
-        coordinates: Vec<Position>,
+        coordinates: Vec<RawPosition>,
     },
     LineString {
         #[serde(default)]
-        coordinates: Vec<Position>,
+        coordinates: Vec<RawPosition>,
     },
     MultiLineString {
         #[serde(default)]
-        coordinates: Vec<Vec<Position>>,
+        coordinates: Vec<Vec<RawPosition>>,
     },
     Polygon {
         #[serde(default)]
-        coordinates: Vec<Vec<Position>>,
+        coordinates: Vec<Vec<RawPosition>>,
     },
     MultiPolygon {
         #[serde(default)]
-        coordinates: Vec<Vec<Vec<Position>>>,
+        coordinates: Vec<Vec<Vec<RawPosition>>>,
     },
 }
 
@@ -241,7 +243,7 @@ impl Object {
                 }
             }
             Self::MultiPoint { coordinates } => {
-                let points: Vec<LatLon> = coordinates.iter().filter_map(position).collect();
+                let points: Vec<Position> = coordinates.iter().filter_map(position).collect();
                 if !points.is_empty() {
                     let feature = into.owner(feature);
                     into.points.extend(points.into_iter().map(|point| Shape {
@@ -276,8 +278,8 @@ fn identifier(id: &serde_json::Value) -> Option<String> {
     }
 }
 
-fn push_line(into: &mut GeoJson, feature: Option<usize>, positions: &[Position]) {
-    let line: Vec<LatLon> = positions.iter().filter_map(position).collect();
+fn push_line(into: &mut GeoJson, feature: Option<usize>, positions: &[RawPosition]) {
+    let line: Vec<Position> = positions.iter().filter_map(position).collect();
     // A line of one point is a point that cannot be drawn, not a point.
     if line.len() >= 2 {
         let feature = into.owner(feature);
@@ -288,8 +290,8 @@ fn push_line(into: &mut GeoJson, feature: Option<usize>, positions: &[Position])
     }
 }
 
-fn push_polygon(into: &mut GeoJson, feature: Option<usize>, rings: &[Vec<Position>]) {
-    let rings: Vec<Vec<LatLon>> = rings.iter().filter_map(|ring| self::ring(ring)).collect();
+fn push_polygon(into: &mut GeoJson, feature: Option<usize>, rings: &[Vec<RawPosition>]) {
+    let rings: Vec<Vec<Position>> = rings.iter().filter_map(|ring| self::ring(ring)).collect();
     // Holes without an outer ring are not holes in anything. Because the outer
     // ring is first, a polygon that lost it would silently promote a hole.
     if let Some(outer) = rings.first()
@@ -305,26 +307,46 @@ fn push_polygon(into: &mut GeoJson, feature: Option<usize>, rings: &[Vec<Positio
 
 /// A linear ring, opened: the repeated closing position RFC 7946 requires is
 /// dropped, and a ring left with fewer than three corners cannot bound an area.
-fn ring(positions: &[Position]) -> Option<Vec<LatLon>> {
-    let mut ring: Vec<LatLon> = positions.iter().filter_map(position).collect();
-    if ring.len() >= 2 && ring.first() == ring.last() {
+fn ring(positions: &[RawPosition]) -> Option<Vec<Position>> {
+    let mut ring: Vec<Position> = positions.iter().filter_map(position).collect();
+    // By coordinate rather than by position: a ring that closes at a different
+    // height is still a ring closing on itself, and keeping the repeat would
+    // leave a zero-length edge for the outline to step off.
+    let closes = match (ring.first(), ring.last()) {
+        (Some(first), Some(last)) => first.coordinate == last.coordinate,
+        _ => false,
+    };
+    if ring.len() >= 2 && closes {
         ring.pop();
     }
     (ring.len() >= 3).then_some(ring)
 }
 
 /// Reads one position, or `None` for anything that is not a usable coordinate.
-fn position(position: &Position) -> Option<LatLon> {
+///
+/// The third element is optional and, unlike the first two, not worth dropping
+/// a record over: a height that is not a finite number is no height, which is
+/// what most positions have anyway.
+fn position(position: &RawPosition) -> Option<Position> {
     let (&longitude, &latitude) = (position.first()?, position.get(1)?);
     if !longitude.is_finite() || !latitude.is_finite() {
         return None;
     }
-    Some(LatLon::new(
+    // Checked after the narrowing rather than before it: a number JSON is happy
+    // with can still be past what an `f32` can hold, and the height that comes
+    // out of that is an infinity rather than a height.
+    let altitude = position
+        .get(2)
+        .map(|altitude| *altitude as f32)
+        .filter(|altitude| altitude.is_finite())
+        .unwrap_or(0.0);
+    Some(Position::new(
         // A latitude past the pole is meaningless rather than wrong-by-a-turn,
         // so it is clamped; a longitude past the antimeridian is the same place
         // said the long way round, so it is wrapped.
         latitude.clamp(-90.0, 90.0) as f32,
         wrap_longitude(longitude) as f32,
+        altitude,
     ))
 }
 
@@ -340,6 +362,11 @@ mod tests {
     /// The geometry of a shape list, without the feature indices.
     fn geometry<T: Clone>(shapes: &[Shape<T>]) -> Vec<T> {
         shapes.iter().map(|shape| shape.geometry.clone()).collect()
+    }
+
+    /// A position on the ground, which most of these are.
+    fn at(lat: f32, lon: f32) -> Position {
+        Position::new(lat, lon, 0.0)
     }
 
     #[test]
@@ -367,7 +394,13 @@ mod tests {
         .expect("valid");
 
         assert_eq!(parsed.features.len(), 2);
-        assert_eq!(geometry(&parsed.points), vec![LatLon::new(37.8, -122.4)]);
+        // The third element is kept as it was written. What -8000 *means* is
+        // the layer's to say: this feed counts depth, and a layer reading it as
+        // metres up would have to be told to clamp.
+        assert_eq!(
+            geometry(&parsed.points),
+            vec![Position::new(37.8, -122.4, -8000.0)]
+        );
         assert_eq!(parsed.lines.len(), 2);
         assert_eq!(parsed.lines[1].geometry.len(), 3);
 
@@ -411,7 +444,7 @@ mod tests {
     fn a_bare_geometry_is_a_document_too() {
         let parsed =
             GeoJson::parse(r#"{"type": "Point", "coordinates": [10, 20]}"#).expect("valid");
-        assert_eq!(geometry(&parsed.points), vec![LatLon::new(20.0, 10.0)]);
+        assert_eq!(geometry(&parsed.points), vec![at(20.0, 10.0)]);
         // Nothing wrapped it in a feature, so it is given one — otherwise the
         // point would be drawn and then not be pickable.
         assert_eq!(parsed.features.len(), 1);
@@ -478,7 +511,7 @@ mod tests {
         // Every feature is still counted — a feed reporting five earthquakes
         // reported five, whether or not each came with usable geometry.
         assert_eq!(parsed.features.len(), 5);
-        assert_eq!(geometry(&parsed.points), vec![LatLon::new(6.0, 5.0)]);
+        assert_eq!(geometry(&parsed.points), vec![at(6.0, 5.0)]);
         assert_eq!(parsed.points[0].feature, 4);
         assert!(parsed.lines.is_empty());
         assert!(parsed.polygons.is_empty());
@@ -492,13 +525,45 @@ mod tests {
     }
 
     #[test]
+    fn a_third_element_is_kept_as_a_height() {
+        let parsed =
+            GeoJson::parse(r#"{"type": "MultiPoint", "coordinates": [[10, 20, 1500], [11, 21]]}"#)
+                .expect("valid");
+        assert_eq!(
+            geometry(&parsed.points),
+            vec![Position::new(20.0, 10.0, 1500.0), at(21.0, 11.0)]
+        );
+    }
+
+    #[test]
+    fn a_height_too_large_to_be_one_is_no_height() {
+        // A fourth element is not ours to read either: RFC 7946 leaves anything
+        // past the third to whoever wrote the document.
+        let parsed = GeoJson::parse(r#"{"type": "Point", "coordinates": [10, 20, 1e300, 4]}"#)
+            .expect("valid");
+        assert_eq!(geometry(&parsed.points), vec![at(20.0, 10.0)]);
+    }
+
+    #[test]
+    fn a_ring_closing_at_another_height_is_still_closed() {
+        let parsed = GeoJson::parse(
+            r#"{"type": "Polygon", "coordinates":
+                [[[0, 0, 100], [1, 0, 200], [1, 1, 300], [0, 0, 400]]]}"#,
+        )
+        .expect("valid");
+        // Three corners left, not four: the repeat went, height and all.
+        assert_eq!(parsed.polygons[0].geometry.outer().len(), 3);
+        assert_eq!(parsed.polygons[0].geometry.outer()[0].altitude_m, 100.0);
+    }
+
+    #[test]
     fn coordinates_are_wrapped_and_clamped() {
         let parsed =
             GeoJson::parse(r#"{"type": "MultiPoint", "coordinates": [[190, 95], [-200, -95]]}"#)
                 .expect("valid");
         assert_eq!(
             geometry(&parsed.points),
-            vec![LatLon::new(90.0, -170.0), LatLon::new(-90.0, 160.0)]
+            vec![at(90.0, -170.0), at(-90.0, 160.0)]
         );
     }
 }

@@ -25,7 +25,7 @@
 
 use bevy::math::Vec2;
 
-use crate::geo::LatLon;
+use crate::geo::{LatLon, Position};
 use crate::geojson::Polygon;
 
 /// Past this many vertices in one polygon the fill is dropped entirely.
@@ -43,7 +43,13 @@ const AREA_EPSILON: f32 = 1.0e-9;
 ///
 /// The corners are the polygon's own, plus the duplicates that bridging a hole
 /// into the outer ring introduces. Indices are into that list, three per
-/// triangle. An empty result means the polygon was degenerate or past the
+/// triangle.
+///
+/// Heights are dropped here: bridging duplicates corners and ear clipping
+/// reorders them, and a fill is drawn at one height across the whole polygon
+/// anyway — see [`crate::overlays`] — so the flat problem is the one worth
+/// solving. A ring that climbs is drawn as a flat lid with its outline, which
+/// does climb, around it. An empty result means the polygon was degenerate or past the
 /// ceilings above — it is drawn as an outline either way, so this is a missing
 /// fill rather than a missing shape.
 pub fn triangulate(polygon: &Polygon) -> (Vec<LatLon>, Vec<u32>) {
@@ -57,7 +63,7 @@ pub fn triangulate(polygon: &Polygon) -> (Vec<LatLon>, Vec<u32>) {
 
     // Every ring of the polygon is unwrapped against the same meridian, so a
     // hole cannot end up a world away from the ring it is a hole in.
-    let reference = outer[0].lon;
+    let reference = outer[0].lon();
     let mut merged = unwrap_ring(outer, reference);
     orient(&mut merged, Winding::CounterClockwise);
 
@@ -99,12 +105,12 @@ pub fn triangulate(polygon: &Polygon) -> (Vec<LatLon>, Vec<u32>) {
 /// Every step is taken the short way: a jump of more than 180° between two
 /// corners is read as the seam being crossed rather than as a ring that really
 /// does sweep most of the way around the planet.
-fn unwrap_ring(ring: &[LatLon], reference: f32) -> Vec<Vec2> {
+fn unwrap_ring(ring: &[Position], reference: f32) -> Vec<Vec2> {
     let mut unwrapped = Vec::with_capacity(ring.len());
     let mut previous = reference;
     for corner in ring {
-        let longitude = previous + shortest_turn(corner.lon - previous);
-        unwrapped.push(Vec2::new(longitude, corner.lat));
+        let longitude = previous + shortest_turn(corner.lon() - previous);
+        unwrapped.push(Vec2::new(longitude, corner.lat()));
         previous = longitude;
     }
     unwrapped
@@ -323,7 +329,7 @@ mod tests {
                 .iter()
                 .map(|ring| {
                     ring.iter()
-                        .map(|&(lon, lat)| LatLon::new(lat, lon))
+                        .map(|&(lon, lat)| Position::new(lat, lon, 0.0))
                         .collect()
                 })
                 .collect(),

@@ -29,6 +29,13 @@
 //! layer being rebuilt for either. That means the mesh holds anchors rather
 //! than shapes, and the corners are spread in the vertex shader — see
 //! `assets/shaders/vector.wgsl`, which is where the size is finally decided.
+//!
+//! **Height is the layer's to interpret.** GeoJSON's third element is carried
+//! through parsing unread (see [`crate::geo::Position`]) and turned into a
+//! radius here, under the layer's [`OverlayAltitude`]: what unit it is in, and
+//! whether it is honoured at all. It is measured up from the drape radii below
+//! rather than from the sphere, so a position with no height, one at sea level
+//! and one on a clamped layer all draw in the same place.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -50,7 +57,7 @@ use serde::Serialize;
 
 use crate::api::Cursor;
 use crate::frame::{FrameSet, ReferenceFrame};
-use crate::geo::LatLon;
+use crate::geo::{EARTH_RADIUS_KM, LatLon, Position};
 use crate::geojson::{GeoJson, Polygon, Shape};
 use crate::globe::GLOBE_RADIUS;
 use crate::picking::{self, Hit, PickIndex, PickKind, Tolerance};
@@ -175,6 +182,97 @@ impl Default for OverlayStyle {
     }
 }
 
+/// What a layer does with the height in its positions.
+///
+/// Two modes rather than KML's three: with no terrain model under the imagery,
+/// a height above the ground and a height above the ellipsoid are the same
+/// number, so `absolute` and `relativeToGround` would be one mode described
+/// twice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AltitudeMode {
+    /// Heights are drawn: a position climbs above the surface by its third
+    /// element, scaled. This is the default, because a feed that states a
+    /// height generally means it.
+    #[default]
+    RelativeToSurface,
+    /// Heights are ignored and everything is draped on the surface — which is
+    /// what a layer wants when the third element is not a height at all. The
+    /// USGS earthquake feeds put depth in kilometres there; read as metres up,
+    /// a deep quake would hover, and read as what it is, it would be buried.
+    ClampToSurface,
+}
+
+impl AltitudeMode {
+    /// The stable name the control surface calls this by.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::RelativeToSurface => "relativeToSurface",
+            Self::ClampToSurface => "clampToSurface",
+        }
+    }
+
+    /// Reads a mode back, `None` for a name that is not one. Clamping is worth
+    /// spelling both ways round: it is the mode an interface names most often.
+    pub fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "relativeToSurface" | "relative" => Some(Self::RelativeToSurface),
+            "clampToSurface" | "clampToGround" | "clamp" => Some(Self::ClampToSurface),
+            _ => None,
+        }
+    }
+}
+
+/// How high a layer's positions are drawn.
+///
+/// Separate from [`OverlayStyle`] because it is placement rather than paint:
+/// changing it moves geometry, so it rebuilds the layer's meshes, where a
+/// restyle only swaps colours on the ones already built.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OverlayAltitude {
+    pub mode: AltitudeMode,
+    /// Metres of height per unit of the third element.
+    ///
+    /// RFC 7946 says that element is metres, and says it loosely enough that
+    /// feeds disagree: a kilometre-based feed passes `1000`, and one that
+    /// counts downward passes a negative scale. It is here rather than in the
+    /// parser because only whoever chose the feed knows which it is.
+    pub scale: f32,
+}
+
+impl Default for OverlayAltitude {
+    fn default() -> Self {
+        Self {
+            mode: AltitudeMode::default(),
+            scale: 1.0,
+        }
+    }
+}
+
+impl OverlayAltitude {
+    /// A layer that draws everything on the surface, whatever its positions say.
+    pub const CLAMPED: Self = Self {
+        mode: AltitudeMode::ClampToSurface,
+        scale: 1.0,
+    };
+
+    /// How far above the surface one position is drawn, in scene units.
+    ///
+    /// Never negative: below the surface is not somewhere the globe can draw,
+    /// and a layer whose scale turns heights into depths is asking for the
+    /// ground rather than for a hole in it. The USGS feeds are the case to
+    /// think about — every one of their positions is a depth.
+    fn lift(self, position: Position) -> f32 {
+        if self.mode == AltitudeMode::ClampToSurface || !self.scale.is_finite() {
+            return 0.0;
+        }
+        let metres = position.altitude_m * self.scale;
+        if !metres.is_finite() {
+            return 0.0;
+        }
+        (metres / (EARTH_RADIUS_KM * 1000.0) * GLOBE_RADIUS).max(0.0)
+    }
+}
+
 /// Everything needed to put one overlay up, as an embedder states it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OverlayRequest {
@@ -186,6 +284,7 @@ pub struct OverlayRequest {
     pub label: String,
     pub source: OverlaySource,
     pub style: OverlayStyle,
+    pub altitude: OverlayAltitude,
     /// Seconds between refetches, or `None` to fetch once. A text source has
     /// nowhere to refetch from, so it ignores this.
     pub refresh_seconds: Option<f32>,
@@ -261,6 +360,7 @@ struct Overlay {
     /// never answered out of the cache of the one before it.
     generation: u32,
     style: OverlayStyle,
+    altitude: OverlayAltitude,
     refresh_seconds: Option<f32>,
     /// Seconds since the last fetch was started, which is both the refresh
     /// countdown and how stale an interface should say the layer is.
@@ -286,6 +386,10 @@ struct Overlay {
     wants_fetch: bool,
     /// Set when the colours changed but the geometry did not.
     wants_restyle: bool,
+    /// Set when the geometry has to be rebuilt from the document already in
+    /// hand — a height setting changed, which moves vertices rather than
+    /// recolouring them, and there is nothing to refetch.
+    wants_remesh: bool,
     parts: Vec<OverlayPart>,
 }
 
@@ -448,6 +552,7 @@ impl OverlaySettings {
             slot,
             generation: 0,
             style: request.style,
+            altitude: request.altitude,
             refresh_seconds: None,
             age_seconds: 0.0,
             visible: request.visible,
@@ -461,6 +566,7 @@ impl OverlaySettings {
             // parsed now and the failure, if it is one, reported straight away.
             wants_fetch: matches!(request.source, OverlaySource::Url(_)),
             wants_restyle: false,
+            wants_remesh: false,
             parts: Vec::new(),
             source: request.source,
         };
@@ -503,6 +609,21 @@ impl OverlaySettings {
         self.with(id, |overlay| {
             overlay.style = style;
             overlay.wants_restyle = true;
+        })
+    }
+
+    /// Sets how a layer reads the heights in its positions, rebuilding its
+    /// geometry where it stands — no refetch, and from the document already
+    /// loaded, so a pinned feature stays pinned.
+    pub fn set_altitude(&mut self, id: &str, altitude: OverlayAltitude) -> bool {
+        // The highlight is built from the same geometry, and would otherwise be
+        // left behind at the height the layer has just left.
+        self.highlighted = None;
+        self.with(id, |overlay| {
+            if overlay.altitude != altitude {
+                overlay.altitude = altitude;
+                overlay.wants_remesh = true;
+            }
         })
     }
 
@@ -951,28 +1072,43 @@ fn rebuild_overlays(
     let mut changed = false;
     let mut stale = Vec::new();
     for overlay in &mut settings.overlays {
-        let Some(document) = overlay.pending.take() else {
-            continue;
+        // Two ways to get here. New geometry has arrived, or the one already up
+        // has to be built again at a different height — same document, so its
+        // features are the same features and a pick on one still means what it
+        // meant.
+        let remesh = std::mem::take(&mut overlay.wants_remesh);
+        let document = match overlay.pending.take() {
+            Some(document) => {
+                overlay.counts = OverlayCounts {
+                    features: document.features.len(),
+                    points: document.points.len(),
+                    lines: document.lines.len(),
+                    polygons: document.polygons.len(),
+                };
+                overlay.index = Arc::new(PickIndex::build(&document));
+                let document = Arc::new(document);
+                overlay.data = Some(document.clone());
+                // Whatever was picked was picked in the document this one
+                // replaces, and feature seven of a refreshed feed is a
+                // different earthquake.
+                stale.push(overlay.slot);
+                document
+            }
+            None if remesh => match overlay.data.clone() {
+                Some(document) => document,
+                // Nothing loaded yet: whatever arrives will be built at the new
+                // height anyway.
+                None => continue,
+            },
+            None => continue,
         };
 
         for part in overlay.parts.drain(..) {
             commands.entity(part.entity).despawn();
         }
 
-        overlay.counts = OverlayCounts {
-            features: document.features.len(),
-            points: document.points.len(),
-            lines: document.lines.len(),
-            polygons: document.polygons.len(),
-        };
-        overlay.index = Arc::new(PickIndex::build(&document));
-        let document = Arc::new(document);
-        overlay.data = Some(document.clone());
-        // Whatever was picked was picked in the document this one replaces, and
-        // feature seven of a refreshed feed is a different earthquake.
-        stale.push(overlay.slot);
-
         let style = overlay.style;
+        let altitude = overlay.altitude;
         // Fills first, then lines, then markers: the radii above already put
         // them in that order, and building them in it keeps the two agreeing.
         let built = [
@@ -980,19 +1116,19 @@ fn rebuild_overlays(
                 VectorMode::Fill,
                 style.fill_color,
                 0.0,
-                fill_mesh(&document.polygons),
+                fill_mesh(&document.polygons, altitude),
             ),
             (
                 VectorMode::Line,
                 style.line_color,
                 style.line_width_px,
-                line_mesh(&document.lines, &document.polygons),
+                line_mesh(&document.lines, &document.polygons, altitude),
             ),
             (
                 VectorMode::Marker,
                 style.point_color,
                 style.point_size_px,
-                marker_mesh(&document.points),
+                marker_mesh(&document.points, altitude),
             ),
         ];
 
@@ -1182,23 +1318,29 @@ fn highlight_pick(
     };
 
     let style = overlay.style;
+    let altitude = overlay.altitude;
     let points = of_feature(&document.points, pick.feature);
     let lines = of_feature(&document.lines, pick.feature);
     let polygons = of_feature(&document.polygons, pick.feature);
 
     let built = [
-        (VectorMode::Fill, HIGHLIGHT_FILL, 0.0, fill_mesh(&polygons)),
+        (
+            VectorMode::Fill,
+            HIGHLIGHT_FILL,
+            0.0,
+            fill_mesh(&polygons, altitude),
+        ),
         (
             VectorMode::Line,
             HIGHLIGHT_COLOR,
             style.line_width_px + HIGHLIGHT_GROW_PX,
-            line_mesh(&lines, &polygons),
+            line_mesh(&lines, &polygons, altitude),
         ),
         (
             VectorMode::Marker,
             HIGHLIGHT_COLOR,
             style.point_size_px + HIGHLIGHT_GROW_PX,
-            marker_mesh(&points),
+            marker_mesh(&points, altitude),
         ),
     ];
 
@@ -1315,16 +1457,36 @@ impl MeshBuilder {
     }
 }
 
+/// Where one position is drawn, in scene units.
+///
+/// Height is measured from the radius its kind is draped at rather than from
+/// the globe itself, which is both simpler and more nearly true. That drape is
+/// what clears the imagery, and the imagery is the ground as far as anything
+/// looking at the screen is concerned — a tile stands up to eleven kilometres
+/// proud of the sphere at its corners (see [`MAX_TILE_RADIUS`]), so a height
+/// measured from the sphere would be swallowed whole below that, and the first
+/// ten kilometres of every flight path would lie flat.
+///
+/// `lift` is the chord correction the mesh is using. It multiplies the height
+/// as well as the base, because the sag between two vertices is a fraction of
+/// their radius rather than a fixed distance.
+fn radius_of(position: Position, altitude: OverlayAltitude, base: f32, lift: f32) -> f32 {
+    (base + altitude.lift(position)) * lift
+}
+
 /// One quad per point, all four corners on the same anchor. The shader spreads
 /// them into a disc facing the camera, and the UV says which corner is which —
 /// which is also what the disc is rounded off with.
-fn marker_mesh(points: &[Shape<LatLon>]) -> Option<Mesh> {
+fn marker_mesh(points: &[Shape<Position>], altitude: OverlayAltitude) -> Option<Mesh> {
     let mut builder = MeshBuilder::new();
     for point in points {
         let direction = point.geometry.to_direction();
+        // A marker is a flat quad on one anchor, so there is no span across it
+        // to sag: no chord correction of its own.
+        let radius = radius_of(point.geometry, altitude, MARKER_RADIUS, 1.0);
         let base = builder.next_index();
         for corner in [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]] {
-            builder.push(direction, MARKER_RADIUS, corner, NO_TANGENT);
+            builder.push(direction, radius, corner, NO_TANGENT);
         }
         builder
             .indices
@@ -1335,14 +1497,18 @@ fn marker_mesh(points: &[Shape<LatLon>]) -> Option<Mesh> {
 
 /// Every line, plus every polygon's rings — so a polygon still reads as a shape
 /// when its fill is transparent, or when it was too big to triangulate.
-fn line_mesh(lines: &[Shape<Vec<LatLon>>], polygons: &[Shape<Polygon>]) -> Option<Mesh> {
+fn line_mesh(
+    lines: &[Shape<Vec<Position>>],
+    polygons: &[Shape<Polygon>],
+    altitude: OverlayAltitude,
+) -> Option<Mesh> {
     let mut builder = MeshBuilder::new();
     for line in lines {
-        push_ribbon(&mut builder, &densify(&line.geometry, false));
+        push_ribbon(&mut builder, &densify(&line.geometry, false, altitude));
     }
     for polygon in polygons {
         for ring in &polygon.geometry.rings {
-            push_ribbon(&mut builder, &densify(ring, true));
+            push_ribbon(&mut builder, &densify(ring, true, altitude));
         }
     }
     builder.finish()
@@ -1356,7 +1522,14 @@ fn line_mesh(lines: &[Shape<Vec<LatLon>>], polygons: &[Shape<Polygon>]) -> Optio
 /// that is two hundred kilometres beneath the ground, which is to say buried.
 /// So they are refined until every edge is short, and then lifted by the sag
 /// that is left.
-fn fill_mesh(polygons: &[Shape<Polygon>]) -> Option<Mesh> {
+///
+/// A fill is drawn at one height across the whole polygon — the mean of its
+/// outer ring — where its outline follows every corner's own. Triangulation
+/// duplicates and reorders corners (see [`crate::tessellate`]), so a height per
+/// corner would have to be carried through ear clipping to reach the mesh, and
+/// what it would buy is a fill that folds. A lid at the average height, ringed
+/// by an outline that climbs, is both simpler and easier to read.
+fn fill_mesh(polygons: &[Shape<Polygon>], altitude: OverlayAltitude) -> Option<Mesh> {
     let mut builder = MeshBuilder::new();
     for polygon in polygons {
         let (mut corners, indices) = tessellate::triangulate(&polygon.geometry);
@@ -1365,7 +1538,13 @@ fn fill_mesh(polygons: &[Shape<Polygon>]) -> Option<Mesh> {
             continue;
         }
 
-        let radius = FILL_RADIUS * chord_lift(longest_edge_degrees(&corners, &indices));
+        let lift = chord_lift(longest_edge_degrees(&corners, &indices));
+        let radius = radius_of(
+            mean_height(polygon.geometry.outer()),
+            altitude,
+            FILL_RADIUS,
+            lift,
+        );
         let base = builder.next_index();
         for corner in &corners {
             builder.push(corner.to_direction(), radius, [0.0, 0.0], NO_TANGENT);
@@ -1499,16 +1678,25 @@ fn chord_lift(span_degrees: f32) -> f32 {
     1.0 / (span_degrees * 0.5).to_radians().cos()
 }
 
+/// One vertex of a densified path: which way it lies, and how far out it is
+/// drawn. The radius is per point rather than per ribbon, which is what lets a
+/// line climb along its length.
+#[derive(Debug, Clone, Copy)]
+struct Anchor {
+    direction: Vec3,
+    radius: f32,
+}
+
 /// A ribbon along a path: two vertices per point, one either side of the spine,
 /// stepped off in the shader so the width is in pixels rather than kilometres.
-fn push_ribbon(builder: &mut MeshBuilder, path: &[Vec3]) {
+fn push_ribbon(builder: &mut MeshBuilder, path: &[Anchor]) {
     let count = path.len();
     if count < 2 {
         return;
     }
     // A closed path comes back to where it started, and its two ends have to be
     // given each other's neighbour or a corner would show at the seam.
-    let closed = path[0] == path[count - 1] && count > 2;
+    let closed = path[0].direction == path[count - 1].direction && count > 2;
 
     let base = builder.next_index();
     for (index, point) in path.iter().enumerate() {
@@ -1527,19 +1715,16 @@ fn push_ribbon(builder: &mut MeshBuilder, path: &[Vec3]) {
 
         // Across the whole corner rather than along either of its two segments,
         // so the two sides of a bend meet instead of overlapping or gapping.
-        let mut along = next - previous;
+        let mut along = next.direction - previous.direction;
         if along.length_squared() < 1.0e-12 {
-            along = next - *point;
+            along = next.direction - point.direction;
         }
         let along = along.normalize_or_zero();
 
         for side in [-1.0_f32, 1.0] {
             builder.push(
-                *point,
-                // `densify` bounds how far apart two points of a ribbon can be,
-                // so the sag between them is bounded too, and lifting by it
-                // keeps a line from dipping into the imagery at mid-segment.
-                LINE_RADIUS * chord_lift(MAX_SEGMENT_DEGREES),
+                point.direction,
+                point.radius,
                 [side, 0.0],
                 [along.x, along.y, along.z, side],
             );
@@ -1555,27 +1740,40 @@ fn push_ribbon(builder: &mut MeshBuilder, path: &[Vec3]) {
 }
 
 /// Walks a path, subdividing anything long enough that a straight chord would
-/// leave the surface, and returns it as unit directions.
+/// leave the surface, and returns where each point of it is drawn.
 ///
 /// Longitude runs continuously from one corner to the next, so a step from
 /// 179° E to 179° W is the two degrees it looks like on a globe rather than the
-/// 358 it looks like in a table of numbers.
-fn densify(path: &[LatLon], closed: bool) -> Vec<Vec3> {
+/// 358 it looks like in a table of numbers. Height is carried along the same
+/// way: a segment between two corners at different heights climbs evenly across
+/// however many steps it was split into, so a line runs to where it was told to
+/// rather than stepping up at each corner.
+fn densify(path: &[Position], closed: bool, altitude: OverlayAltitude) -> Vec<Anchor> {
     if path.is_empty() {
         return Vec::new();
     }
 
+    // `MAX_SEGMENT_DEGREES` bounds how far apart two points of a ribbon can be,
+    // so the sag between them is bounded too, and lifting by it keeps a line
+    // from dipping into the imagery at mid-segment.
+    let lift = chord_lift(MAX_SEGMENT_DEGREES);
+    let anchor = |position: Position| Anchor {
+        direction: position.to_direction(),
+        radius: radius_of(position, altitude, LINE_RADIUS, lift),
+    };
+
     let count = path.len();
     let segments = if closed { count } else { count - 1 };
     let mut out = Vec::with_capacity(count);
-    out.push(path[0].to_direction());
+    out.push(anchor(path[0]));
 
-    let mut latitude = path[0].lat;
-    let mut longitude = path[0].lon;
+    let mut latitude = path[0].lat();
+    let mut longitude = path[0].lon();
+    let mut height = path[0].altitude_m;
     for index in 0..segments {
         let corner = path[(index + 1) % count];
-        let target_longitude = longitude + shortest_turn(corner.lon - longitude);
-        let steps = ((corner.lat - latitude)
+        let target_longitude = longitude + shortest_turn(corner.lon() - longitude);
+        let steps = ((corner.lat() - latitude)
             .abs()
             .max((target_longitude - longitude).abs())
             / MAX_SEGMENT_DEGREES)
@@ -1584,25 +1782,43 @@ fn densify(path: &[LatLon], closed: bool) -> Vec<Vec3> {
 
         for step in 1..=steps {
             let fraction = step as f32 / steps as f32;
-            let direction = LatLon::new(
-                latitude + (corner.lat - latitude) * fraction,
+            let stepped = anchor(Position::new(
+                latitude + (corner.lat() - latitude) * fraction,
                 longitude + (target_longitude - longitude) * fraction,
-            )
-            .to_direction();
+                height + (corner.altitude_m - height) * fraction,
+            ));
             // A repeated coordinate would leave a ribbon segment with no
             // direction to step off.
             if out
                 .last()
-                .is_none_or(|last| last.distance_squared(direction) > 1.0e-14)
+                .is_none_or(|last| last.direction.distance_squared(stepped.direction) > 1.0e-14)
             {
-                out.push(direction);
+                out.push(stepped);
             }
         }
-        latitude = corner.lat;
+        latitude = corner.lat();
         longitude = target_longitude;
+        height = corner.altitude_m;
     }
 
     out
+}
+
+/// A ring's mean position, which is the one height its fill is drawn at.
+///
+/// The coordinate is the first corner's: nothing reads it, because a fill is
+/// built from the triangulated corners and only the radius comes from here, but
+/// averaging longitudes across the antimeridian would be wrong in a way that
+/// would matter if anything ever did.
+fn mean_height(ring: &[Position]) -> Position {
+    let Some(first) = ring.first() else {
+        return Position::new(0.0, 0.0, 0.0);
+    };
+    let total: f32 = ring.iter().map(|position| position.altitude_m).sum();
+    Position {
+        coordinate: first.coordinate,
+        altitude_m: total / ring.len() as f32,
+    }
 }
 
 /// Brings an angle in degrees into `[-180, 180)`.
@@ -1639,6 +1855,25 @@ pub struct OverlayInfo {
     pub lines: usize,
     pub polygons: usize,
     pub style: OverlayStyleInfo,
+    pub altitude: OverlayAltitudeInfo,
+}
+
+/// How a layer is reading the heights in its positions.
+#[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct OverlayAltitudeInfo {
+    /// `"relativeToSurface"` or `"clampToSurface"`.
+    pub mode: &'static str,
+    pub scale: f32,
+}
+
+impl From<&OverlayAltitude> for OverlayAltitudeInfo {
+    fn from(altitude: &OverlayAltitude) -> Self {
+        Self {
+            mode: altitude.mode.id(),
+            scale: altitude.scale,
+        }
+    }
 }
 
 /// The style, as hex colours an interface can put straight into a colour input.
@@ -1745,6 +1980,7 @@ pub fn describe(settings: &OverlaySettings) -> Vec<OverlayInfo> {
             lines: overlay.counts.lines,
             polygons: overlay.counts.polygons,
             style: OverlayStyleInfo::from(&overlay.style),
+            altitude: OverlayAltitudeInfo::from(&overlay.altitude),
         })
         .collect()
 }
@@ -1774,11 +2010,16 @@ mod tests {
     }
 
     fn big_polygon() -> Shape<Polygon> {
+        big_polygon_at(0.0)
+    }
+
+    /// The same polygon with every corner at one height.
+    fn big_polygon_at(altitude_m: f32) -> Shape<Polygon> {
         let rings = vec![vec![
-            LatLon::new(30.0, -10.0),
-            LatLon::new(30.0, 20.0),
-            LatLon::new(50.0, 20.0),
-            LatLon::new(50.0, -10.0),
+            Position::new(30.0, -10.0, altitude_m),
+            Position::new(30.0, 20.0, altitude_m),
+            Position::new(50.0, 20.0, altitude_m),
+            Position::new(50.0, -10.0, altitude_m),
         ]];
         Shape {
             feature: 0,
@@ -1811,7 +2052,7 @@ mod tests {
 
     #[test]
     fn a_refined_fill_is_lifted_clear_of_the_imagery() {
-        let mesh = fill_mesh(&[big_polygon()]).expect("a fill");
+        let mesh = fill_mesh(&[big_polygon()], OverlayAltitude::default()).expect("a fill");
         let positions = mesh
             .attribute(Mesh::ATTRIBUTE_POSITION)
             .and_then(|values| values.as_float3())
@@ -1861,12 +2102,27 @@ mod tests {
         );
     }
 
+    /// A position on the ground, which most of these are.
+    fn at(lat: f32, lon: f32) -> Position {
+        Position::new(lat, lon, 0.0)
+    }
+
+    /// Scene units per metre of height, which is what a height works out to
+    /// once it is on the globe.
+    fn units_per_metre() -> f32 {
+        GLOBE_RADIUS / (EARTH_RADIUS_KM * 1000.0)
+    }
+
     #[test]
     fn a_long_segment_is_subdivided_onto_the_surface() {
-        let densified = densify(&[LatLon::new(0.0, 0.0), LatLon::new(0.0, 90.0)], false);
+        let densified = densify(
+            &[at(0.0, 0.0), at(0.0, 90.0)],
+            false,
+            OverlayAltitude::default(),
+        );
         assert!(densified.len() > 45, "{}", densified.len());
         for point in &densified {
-            assert!((point.length() - 1.0).abs() < 1.0e-5);
+            assert!((point.direction.length() - 1.0).abs() < 1.0e-5);
         }
     }
 
@@ -1874,14 +2130,22 @@ mod tests {
     fn a_step_over_the_antimeridian_is_taken_the_short_way() {
         // Two degrees, at one step of at most two: the ends and nothing in
         // between, rather than the 179 steps a wrap the wrong way would need.
-        let densified = densify(&[LatLon::new(0.0, 179.0), LatLon::new(0.0, -179.0)], false);
+        let densified = densify(
+            &[at(0.0, 179.0), at(0.0, -179.0)],
+            false,
+            OverlayAltitude::default(),
+        );
         assert_eq!(densified.len(), 2);
     }
 
     #[test]
     fn a_ribbon_has_two_corners_per_point_and_two_triangles_per_segment() {
         let mut builder = MeshBuilder::new();
-        let path = densify(&[LatLon::new(0.0, 0.0), LatLon::new(1.0, 0.0)], false);
+        let path = densify(
+            &[at(0.0, 0.0), at(1.0, 0.0)],
+            false,
+            OverlayAltitude::default(),
+        );
         push_ribbon(&mut builder, &path);
         assert_eq!(builder.positions.len(), path.len() * 2);
         assert_eq!(builder.indices.len(), (path.len() - 1) * 6);
@@ -1890,17 +2154,146 @@ mod tests {
     #[test]
     fn a_closed_ring_meshes_without_a_seam() {
         let ring = densify(
-            &[
-                LatLon::new(0.0, 0.0),
-                LatLon::new(0.0, 1.0),
-                LatLon::new(1.0, 1.0),
-            ],
+            &[at(0.0, 0.0), at(0.0, 1.0), at(1.0, 1.0)],
             true,
+            OverlayAltitude::default(),
         );
-        assert_eq!(*ring.first().unwrap(), *ring.last().unwrap());
+        assert_eq!(
+            ring.first().unwrap().direction,
+            ring.last().unwrap().direction
+        );
         let mut builder = MeshBuilder::new();
         push_ribbon(&mut builder, &ring);
         assert_eq!(builder.indices.len(), (ring.len() - 1) * 6);
+    }
+
+    #[test]
+    fn a_marker_is_drawn_at_the_height_it_was_given() {
+        let points = [Shape {
+            feature: 0,
+            geometry: Position::new(0.0, 0.0, 100_000.0),
+        }];
+        let radius = |altitude| {
+            let mesh = marker_mesh(&points, altitude).expect("a marker");
+            let positions = mesh
+                .attribute(Mesh::ATTRIBUTE_POSITION)
+                .and_then(|values| values.as_float3())
+                .expect("positions");
+            Vec3::from_array(positions[0]).length()
+        };
+
+        // A hundred kilometres above where a clamped marker would sit.
+        let lifted = radius(OverlayAltitude::default());
+        let expected = MARKER_RADIUS + 100_000.0 * units_per_metre();
+        assert!((lifted - expected).abs() < 1.0e-6, "{lifted}");
+
+        // Clamped, it is back on the surface with everything else.
+        assert_eq!(radius(OverlayAltitude::CLAMPED), MARKER_RADIUS);
+    }
+
+    #[test]
+    fn a_scale_says_what_the_third_element_was_in() {
+        let points = [Shape {
+            feature: 0,
+            geometry: Position::new(0.0, 0.0, 10.0),
+        }];
+        let radius = |scale| {
+            let mesh = marker_mesh(
+                &points,
+                OverlayAltitude {
+                    mode: AltitudeMode::RelativeToSurface,
+                    scale,
+                },
+            )
+            .expect("a marker");
+            let positions = mesh
+                .attribute(Mesh::ATTRIBUTE_POSITION)
+                .and_then(|values| values.as_float3())
+                .expect("positions");
+            Vec3::from_array(positions[0]).length()
+        };
+
+        // Ten of something: as metres it is ten metres, as kilometres it is ten
+        // kilometres, and the difference between those is the whole point of
+        // the scale.
+        assert!((radius(1.0) - (MARKER_RADIUS + 10.0 * units_per_metre())).abs() < 1.0e-7);
+        let kilometres = radius(1000.0);
+        assert!((kilometres - (MARKER_RADIUS + 10_000.0 * units_per_metre())).abs() < 1.0e-6);
+        // A feed counting downward has nothing above the surface to draw.
+        assert_eq!(radius(-1000.0), MARKER_RADIUS);
+    }
+
+    #[test]
+    fn a_line_climbs_evenly_between_its_corners() {
+        let path = densify(
+            &[
+                Position::new(0.0, 0.0, 0.0),
+                Position::new(0.0, 10.0, 200_000.0),
+            ],
+            false,
+            OverlayAltitude::default(),
+        );
+        assert!(path.len() > 4, "{}", path.len());
+
+        // Monotonic from end to end, rather than a step at the far corner.
+        for pair in path.windows(2) {
+            assert!(pair[1].radius >= pair[0].radius);
+        }
+        let climb = path.last().unwrap().radius - path[0].radius;
+        assert!(
+            (climb - 200_000.0 * units_per_metre() * chord_lift(MAX_SEGMENT_DEGREES)).abs()
+                < 1.0e-6,
+            "{climb}"
+        );
+    }
+
+    #[test]
+    fn a_fill_is_drawn_at_the_mean_height_of_its_ring() {
+        let radius = |altitude| {
+            let mesh = fill_mesh(&[big_polygon_at(50_000.0)], altitude).expect("a fill");
+            let positions = mesh
+                .attribute(Mesh::ATTRIBUTE_POSITION)
+                .and_then(|values| values.as_float3())
+                .expect("positions");
+            Vec3::from_array(positions[0]).length()
+        };
+
+        let lifted = radius(OverlayAltitude::default());
+        assert!(
+            lifted > FILL_RADIUS + 49_000.0 * units_per_metre(),
+            "{lifted}"
+        );
+        // Still clear of the imagery once clamped, which is the floor every
+        // fill is held to.
+        assert!(radius(OverlayAltitude::CLAMPED) > MAX_TILE_RADIUS);
+    }
+
+    #[test]
+    fn a_height_setting_rebuilds_the_layer_without_refetching_it() {
+        let mut settings = test_settings();
+        settings.add(OverlayRequest {
+            id: "track".into(),
+            label: String::new(),
+            source: OverlaySource::Text(
+                r#"{"type": "Point", "coordinates": [1, 2, 5000]}"#.to_string(),
+            ),
+            style: OverlayStyle::default(),
+            altitude: OverlayAltitude::default(),
+            refresh_seconds: None,
+            visible: true,
+        });
+
+        assert!(settings.set_altitude("track", OverlayAltitude::CLAMPED));
+        let overlay = &settings.overlays[0];
+        assert!(overlay.wants_remesh);
+        assert!(!overlay.wants_fetch);
+        assert_eq!(overlay.generation, 0);
+
+        // Setting it to what it already is moves nothing.
+        settings.set_altitude("track", OverlayAltitude::CLAMPED);
+        settings.overlays[0].wants_remesh = false;
+        settings.set_altitude("track", OverlayAltitude::CLAMPED);
+        assert!(!settings.overlays[0].wants_remesh);
     }
 
     #[test]
@@ -1924,6 +2317,7 @@ mod tests {
             label: String::new(),
             source: OverlaySource::Text(r#"{"type": "Point", "coordinates": [1, 2]}"#.to_string()),
             style: OverlayStyle::default(),
+            altitude: OverlayAltitude::default(),
             refresh_seconds: Some(30.0),
             visible: true,
         });
@@ -1948,6 +2342,7 @@ mod tests {
             label: String::new(),
             source: OverlaySource::Text("{".to_string()),
             style: OverlayStyle::default(),
+            altitude: OverlayAltitude::default(),
             refresh_seconds: None,
             visible: true,
         });
@@ -1963,6 +2358,7 @@ mod tests {
             label: "Feed".into(),
             source: OverlaySource::Url(url.into()),
             style: OverlayStyle::default(),
+            altitude: OverlayAltitude::default(),
             refresh_seconds: None,
             visible: true,
         };
@@ -2002,6 +2398,7 @@ mod tests {
             slot: 0,
             generation: 0,
             style: OverlayStyle::default(),
+            altitude: OverlayAltitude::default(),
             refresh_seconds: None,
             age_seconds: 0.0,
             visible: true,
@@ -2013,6 +2410,7 @@ mod tests {
             pending: None,
             wants_fetch: false,
             wants_restyle: false,
+            wants_remesh: false,
             parts: Vec::new(),
         }
     }

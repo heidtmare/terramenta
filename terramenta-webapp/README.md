@@ -32,7 +32,7 @@ Everything, which is the point.
 | Section | |
 | --- | --- |
 | **Imagery** | All eight presets, grouped by protocol, with the tile size, format and pyramid depth of the active one; previous/next; streaming on or off |
-| **GeoJSON overlays** | A layer from a URL or a local file, three live feeds to try, auto-refresh with a period, picking on or off, and per layer: visibility, colour, refresh now, remove — plus what each one holds and how stale it is |
+| **GeoJSON overlays** | A layer from a URL or a local file, a bundled sample and three live feeds to try, auto-refresh with a period, picking on or off, and per layer: visibility, colour, clamp to surface, refresh now, remove — plus what each one holds and how stale it is |
 | **Sun & clock** | Run or pause, the rate from real time to a day a second, jump to now or forward by hours or days, and whether the night side is shaded at all |
 | **Reference frame** | ECEF or ECI |
 | **Camera** | Altitude, latitude and longitude to fly to, nine places to try, and reading the current view back into the boxes |
@@ -43,12 +43,29 @@ cursor and camera coordinates, altitude, frame, subsolar point, clock, rate,
 layer, overlays, and what the tile streamer is doing — and under it, whatever
 feature the cursor is over, with its properties.
 
-The app starts with one overlay already up — the USGS feed of
-[earthquakes in the past hour][usgs], refetched every minute — because a layer
-control with nothing in it is a poor way to introduce the feature. The feeds in
-[`feeds.js`](src/feeds.js) are all USGS, chosen as much because they send
-`Access-Control-Allow-Origin: *` as because they are interesting: without that
-header the browser will not let the globe fetch them at all.
+The app starts with two overlays already up, because a layer control with
+nothing in it is a poor way to introduce the feature, and because the two halves
+of what a layer does are not visible in the same document.
+
+[`data/geometry-tour.geojson`](data/geometry-tour.geojson) is the shape of the
+thing: one feature per GeoJSON geometry type, labelled with what it is, so every
+kind of shape the globe can draw is on screen at once. It also holds the three
+cases worth seeing drawn — a ring with a hole in it, a polygon running across
+the antimeridian, and a launch profile climbing to 420 km, which is what the
+overlay's height handling looks like when it is being used. Click anything on it
+and the properties panel says which geometry it came from. It is served from
+beside the page and fetched as an ordinary URL, so it goes through the same path
+a remote layer does.
+
+The second is live: the USGS feed of [earthquakes in the past hour][usgs],
+refetched every minute, which is the half a static document cannot show. The
+feeds in [`feeds.js`](src/feeds.js) are all USGS, chosen as much because they
+send `Access-Control-Allow-Origin: *` as because they are interesting: without
+that header the browser will not let the globe fetch them at all.
+
+Those feeds also put earthquake *depth* in the third element of a position,
+where GeoJSON nominally puts height. That is what the per-layer **clamp to
+surface** switch is for: it ignores heights and drapes the layer flat.
 
 [usgs]: https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_hour.geojson
 
@@ -88,6 +105,8 @@ layer.
 
 ```
 index.html          Canvas, overlay, loading state
+data/               Documents served beside the page
+  geometry-tour.geojson   One feature per GeoJSON geometry, up at boot
 styles/app.css      The whole look
 src/
   main.js           Boot: build the interface, start the globe, join the two

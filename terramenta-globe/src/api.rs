@@ -42,7 +42,8 @@ use crate::tiles::TileCache;
 /// globe's own business.
 pub use crate::geo::LatLon;
 pub use crate::overlays::{
-    MIN_REFRESH_SECONDS, OverlayInfo, OverlayRequest, OverlaySource, OverlayStyle, PickedFeature,
+    AltitudeMode, MIN_REFRESH_SECONDS, OverlayAltitude, OverlayInfo, OverlayRequest, OverlaySource,
+    OverlayStyle, PickedFeature,
 };
 
 /// How often the state snapshot goes out, in seconds.
@@ -114,6 +115,12 @@ pub enum GlobeCommand {
     },
     /// Seconds between refetches, or `None` to stop refreshing. Ignored for a
     /// layer the globe did not fetch and so cannot fetch again.
+    /// How a layer reads the heights in its positions. Moves its geometry, so
+    /// the layer is rebuilt — from the document already loaded, not refetched.
+    SetOverlayAltitude {
+        id: String,
+        altitude: OverlayAltitude,
+    },
     SetOverlayRefresh {
         id: String,
         seconds: Option<f32>,
@@ -571,6 +578,9 @@ fn apply_commands(
             }
             GlobeCommand::SetOverlayStyle { id, style } => {
                 overlays.set_style(&id, style);
+            }
+            GlobeCommand::SetOverlayAltitude { id, altitude } => {
+                overlays.set_altitude(&id, altitude);
             }
             GlobeCommand::SetOverlayRefresh { id, seconds } => {
                 overlays.set_refresh(&id, seconds);

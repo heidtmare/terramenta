@@ -21,7 +21,7 @@
 
 import * as globe from "./globe.js";
 import { el, row, section } from "./dom.js";
-import { DEFAULT_FEED, FEEDS } from "./feeds.js";
+import { CATALOGUE, DEFAULT_FEED } from "./feeds.js";
 import { duration } from "./format.js";
 import { button, setUnlessFocused, toggle } from "./widgets.js";
 
@@ -42,11 +42,11 @@ const MIN_REFRESH_SECONDS = 5;
 /**
  * Puts a feed up: a URL, a name for it, and how often to go back for more.
  *
- * Exported because `main.js` puts one up at boot — the layer is the whole
+ * Exported because `main.js` puts two up at boot — the layer is the whole
  * feature, and a panel showing an empty list is a poor way to introduce it.
  */
-export function addFeed({ url, label, refreshSeconds = null }) {
-  globe.addOverlay(idForUrl(url), {
+export function addFeed({ id, url, label, refreshSeconds = null }) {
+  globe.addOverlay(id ?? idForUrl(url), {
     url,
     label: label ?? labelForUrl(url),
     refreshSeconds,
@@ -165,11 +165,13 @@ export function mountOverlays(bind) {
     el(
       "div",
       { class: "places" },
-      ...FEEDS.map((feed) =>
+      ...CATALOGUE.map((feed) =>
         button(feed.label, () => {
           urlInput.value = feed.url;
-          periodInput.value = String(feed.refreshSeconds);
-          refreshToggle.set(true);
+          // A document that nothing is rewriting has no period to offer, so the
+          // box is left saying whatever it said and the switch goes off.
+          if (feed.refreshSeconds) periodInput.value = String(feed.refreshSeconds);
+          refreshToggle.set(Boolean(feed.refreshSeconds));
         }),
       ),
     ),
@@ -278,6 +280,15 @@ function layerRow(layer, files) {
     if (refreshToggle.input.checked) setRefresh(layer.id, readPeriod(periodInput));
   };
 
+  // GeoJSON's third element is a height, in principle. In practice a feed may
+  // put anything there — the USGS ones put depth in kilometres — so this is the
+  // escape hatch: draw the layer flat and ignore whatever it says.
+  const clampToggle = toggle("Clamp to surface", (on) =>
+    globe.setOverlayAltitude(layer.id, {
+      altitudeMode: on ? "clampToSurface" : "relativeToSurface",
+    }),
+  );
+
   /** A file's timer lives here; a URL's lives in the globe. */
   const setRefresh = (id, seconds) => {
     const file = files.get(id);
@@ -304,6 +315,7 @@ function layerRow(layer, files) {
     { class: "layer" },
     el("div", { class: "layer-head" }, visible.node, color),
     detail,
+    clampToggle.node,
     el(
       "div",
       { class: "buttons" },
@@ -318,6 +330,7 @@ function layerRow(layer, files) {
     node,
     sync(layer) {
       visible.set(layer.visible);
+      clampToggle.set(layer.altitude.mode === "clampToSurface");
       node.dataset.status = layer.status;
 
       const local = files.get(layer.id);

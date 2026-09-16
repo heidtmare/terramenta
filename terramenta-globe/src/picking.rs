@@ -27,10 +27,17 @@
 //! What this is not is a depth test. The topmost thing wins by *kind* — a
 //! marker over a line over a polygon — which is the order they are drawn in and
 //! the order that makes a marker on top of a country selectable at all.
+//!
+//! Nor does it read heights. A shape placed at altitude is picked where it
+//! stands on the ground rather than where it is drawn — the same place while
+//! the camera looks straight down, and further apart the more the view is
+//! tilted. Following the drawn geometry instead would mean casting the cursor
+//! ray against it in three dimensions, which is a different piece of machinery
+//! from the one below.
 
 use bevy::math::Vec2;
 
-use crate::geo::LatLon;
+use crate::geo::{LatLon, Position};
 use crate::geojson::{GeoJson, Polygon};
 
 /// What a hit landed on.
@@ -129,12 +136,12 @@ impl PickIndex {
             lines: document
                 .lines
                 .iter()
-                .map(|shape| Reach::of(shape.geometry.iter().copied()))
+                .map(|shape| Reach::of(ground(&shape.geometry)))
                 .collect(),
             polygons: document
                 .polygons
                 .iter()
-                .map(|shape| Reach::of(shape.geometry.rings.iter().flatten().copied()))
+                .map(|shape| Reach::of(shape.geometry.rings.iter().flatten().map(ground_of)))
                 .collect(),
         }
     }
@@ -147,7 +154,7 @@ impl PickIndex {
         let mut best: Option<Hit> = None;
 
         for shape in &document.points {
-            let distance = separation(cursor, shape.geometry);
+            let distance = separation(cursor, ground_of(&shape.geometry));
             if distance <= tolerance.point {
                 consider(
                     &mut best,
@@ -209,6 +216,17 @@ impl PickIndex {
 
         best
     }
+}
+
+/// Where a position stands on the ground, which is the only part of it picking
+/// reads.
+fn ground_of(position: &Position) -> LatLon {
+    position.coordinate
+}
+
+/// The same over a path, as an iterator that can be walked more than once.
+fn ground(path: &[Position]) -> impl Iterator<Item = LatLon> + Clone {
+    path.iter().map(ground_of)
 }
 
 /// Keeps whichever of the two is more nearly under the cursor: the topmost kind
@@ -288,17 +306,26 @@ fn offset(from: LatLon, to: LatLon) -> Vec2 {
 
 /// How far the cursor is from a path, or `None` when it is further than the
 /// tolerance from every segment of it.
-fn path_distance(path: &[LatLon], cursor: LatLon, tolerance: f32) -> Option<f32> {
-    segment_distance(path.windows(2).map(|pair| (pair[0], pair[1])), cursor)
-        .filter(|distance| *distance <= tolerance)
+fn path_distance(path: &[Position], cursor: LatLon, tolerance: f32) -> Option<f32> {
+    segment_distance(
+        path.windows(2)
+            .map(|pair| (ground_of(&pair[0]), ground_of(&pair[1]))),
+        cursor,
+    )
+    .filter(|distance| *distance <= tolerance)
 }
 
 /// The same, for a ring — which is a path that comes back to where it started.
-fn ring_distance(ring: &[LatLon], cursor: LatLon, tolerance: f32) -> Option<f32> {
+fn ring_distance(ring: &[Position], cursor: LatLon, tolerance: f32) -> Option<f32> {
     if ring.len() < 2 {
         return None;
     }
-    let edges = (0..ring.len()).map(|index| (ring[index], ring[(index + 1) % ring.len()]));
+    let edges = (0..ring.len()).map(|index| {
+        (
+            ground_of(&ring[index]),
+            ground_of(&ring[(index + 1) % ring.len()]),
+        )
+    });
     segment_distance(edges, cursor).filter(|distance| *distance <= tolerance)
 }
 
@@ -342,7 +369,10 @@ fn inside(polygon: &Polygon, cursor: LatLon) -> bool {
         let longitude = |corner: LatLon| cursor.lon + shortest_turn(corner.lon - cursor.lon);
 
         for index in 0..ring.len() {
-            let (from, to) = (ring[index], ring[(index + 1) % ring.len()]);
+            let (from, to) = (
+                ground_of(&ring[index]),
+                ground_of(&ring[(index + 1) % ring.len()]),
+            );
             if (from.lat > cursor.lat) == (to.lat > cursor.lat) {
                 continue;
             }

@@ -9,7 +9,7 @@
  */
 
 import * as globe from "./globe.js";
-import { DEFAULT_FEED } from "./feeds.js";
+import { DEFAULT_FEED, SAMPLE } from "./feeds.js";
 import { mountFeature } from "./feature.js";
 import { addFeed } from "./overlays.js";
 import { mountPanel } from "./panel.js";
@@ -85,10 +85,15 @@ async function boot() {
   // can turn it back on, which is the quickest way to see they agree.
   globe.setHudVisible(false);
 
-  // A live GeoJSON feed, up before the first frame is drawn. Queued like every
-  // other command, so the fetch starts as soon as the globe does — and it
-  // refreshes itself from then on, which is the whole point of the feature and
-  // not something an empty panel would ever show.
+  // Two GeoJSON layers, up before the first frame is drawn. Queued like every
+  // other command, so both fetches start as soon as the globe does.
+  //
+  // The sample first: it is the one that shows what the overlay can draw, since
+  // it holds every geometry GeoJSON has, an antimeridian crossing, a ring with
+  // a hole in it and a track at altitude. Then a live feed, which shows the
+  // other half — a layer that refetches itself and changes while you watch,
+  // which is not something an empty panel would ever show.
+  addFeed(SAMPLE);
   addFeed(DEFAULT_FEED);
 
   try {

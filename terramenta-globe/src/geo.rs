@@ -64,6 +64,60 @@ impl LatLon {
     }
 }
 
+/// A coordinate with a height above the surface — GeoJSON's position, with its
+/// optional third element kept.
+///
+/// Height is carried through the document and into the mesh builder rather than
+/// resolved on the way in, because what a height *means* on screen is the
+/// layer's business: a layer may be clamped to the surface, and a feed that
+/// writes kilometres or depths rather than metres up is scaled by the layer
+/// that knows it. See [`crate::overlays::OverlayAltitude`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Position {
+    pub coordinate: LatLon,
+    /// Metres above the surface, as the source stated it. Zero for a position
+    /// that gave no third element, which is most of them.
+    pub altitude_m: f32,
+}
+
+impl Position {
+    /// A position on the ground, which is what a two-element position is.
+    pub const fn surface(coordinate: LatLon) -> Self {
+        Self {
+            coordinate,
+            altitude_m: 0.0,
+        }
+    }
+
+    pub const fn new(lat: f32, lon: f32, altitude_m: f32) -> Self {
+        Self {
+            coordinate: LatLon::new(lat, lon),
+            altitude_m,
+        }
+    }
+
+    /// The outward unit normal at this position. Height plays no part: it is a
+    /// direction, and how far out along it anything is drawn is decided where
+    /// the mesh is built.
+    pub fn to_direction(self) -> Vec3 {
+        self.coordinate.to_direction()
+    }
+
+    pub fn lat(self) -> f32 {
+        self.coordinate.lat
+    }
+
+    pub fn lon(self) -> f32 {
+        self.coordinate.lon
+    }
+}
+
+impl From<LatLon> for Position {
+    fn from(coordinate: LatLon) -> Self {
+        Self::surface(coordinate)
+    }
+}
+
 /// An axis-aligned latitude/longitude rectangle, as WMS understands a bounding box.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GeoBounds {
