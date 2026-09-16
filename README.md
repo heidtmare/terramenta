@@ -35,8 +35,12 @@ interface, and the reference app is there to show what that takes.
 - **Two reference frames.** ECEF, where the ground stands still, and ECI, where
   the stars do and the Earth turns underneath at the sidereal rate.
 - **Altitude-aware navigation.** Drag sensitivity scales with height, so a drag
-  sweeps continents from far out and nudges streets from low orbit. Mouse,
-  keyboard, trackpad pinch and multi-touch are all wired up.
+  sweeps continents from far out and nudges streets from low orbit. Ctrl + drag
+  swings the camera around whatever it is looking at — compass heading and a
+  tilt from straight down to a grazing view along the horizon — without that
+  place leaving the centre of the screen, and shift + drag turns the camera
+  where it stands to look off it. Mouse, keyboard, trackpad pinch and
+  multi-touch are all wired up.
 - **Streaming OGC imagery.** A quadtree of tiles fetched from any OGC Web Map
   Service (WMS) or Web Map Tile Service (WMTS), refined as you descend, with
   NASA GIBS layers wired up over both by default.

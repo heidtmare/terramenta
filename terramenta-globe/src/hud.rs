@@ -15,6 +15,8 @@ use crate::api::{GlobeState, LatestState, keyboard_enabled, publish_state};
 use crate::frame::FrameSet;
 
 const HELP_TEXT: &str = "drag  orbit\n\
+                         ctrl drag  rotate / tilt\n\
+                         shift drag  look around\n\
                          scroll / pinch  zoom\n\
                          WASD / arrows  orbit\n\
                          +  -  zoom\n\
