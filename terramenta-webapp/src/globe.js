@@ -195,6 +195,27 @@ export const refreshOverlay = (id) => required().refreshOverlay(id);
 /** Whether overlays are drawn at all. Off, every layer stays loaded. */
 export const setOverlaysEnabled = (enabled) => required().setOverlaysEnabled(enabled);
 
+// --- Picking ---------------------------------------------------------------
+
+/**
+ * Whether the cursor picks features.
+ *
+ * On, every snapshot carries `overlays.hovered` — the feature under the
+ * pointer, with its properties — and the globe draws a halo around it.
+ */
+export const setPickingEnabled = (enabled) => required().setPickingEnabled(enabled);
+
+/**
+ * Keeps a feature selected, whatever the cursor does afterwards.
+ *
+ * This is what a click is made of. The globe reports what is under the pointer;
+ * deciding that one of those is *the* selection is this app's job, and
+ * `feature.js` is where it decides it.
+ */
+export const pinFeature = (layer, index) => required().pinFeature(layer, index);
+
+export const clearPinnedFeature = () => required().clearPinnedFeature();
+
 // --- The globe's own chrome ------------------------------------------------
 
 /** Whether the globe draws its built-in readout. This app draws its own instead. */

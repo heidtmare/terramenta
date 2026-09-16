@@ -80,11 +80,24 @@ canvas {
   top: var(--gutter);
   left: var(--gutter);
   max-width: min(23rem, calc(100vw - var(--panel-width) - var(--gutter) * 3));
+  /* A feature can carry a page of properties, so the column is bounded and the
+     part that grows is the part that scrolls — the telemetry above it stays
+     put, which is the half you read while moving the pointer. */
+  max-height: calc(100vh - var(--gutter) * 2);
+  display: flex;
+  flex-direction: column;
   padding: 0.7rem 0.9rem;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 2px;
   backdrop-filter: blur(12px);
+}
+
+/* The identity and the telemetry keep their height; the properties below them
+   are what gives way when the column runs out of room. */
+#masthead,
+#readout {
+  flex: 0 0 auto;
 }
 
 #masthead h1 {
@@ -122,6 +135,90 @@ canvas {
   color: var(--ink-dim);
   /* Values change ten times a second; a fixed width keeps them from jittering. */
   font-variant-numeric: tabular-nums;
+}
+
+/* --- The picked feature --------------------------------------------------- */
+
+#feature {
+  margin-top: 0.7rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--line);
+  overflow-y: auto;
+  /* Without this a flex child refuses to shrink below its content, and the
+     scroll would never happen. */
+  min-height: 0;
+}
+
+#feature[hidden] {
+  display: none;
+}
+
+.feature-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.feature-head h2 {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 400;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Both only mean anything once something is pinned. */
+.feature-badge,
+.feature-clear {
+  display: none;
+}
+
+#feature.pinned .feature-badge {
+  display: inline;
+  flex: 0 0 auto;
+  font-size: 0.85em;
+  letter-spacing: 0.1em;
+  color: var(--accent);
+}
+
+#feature.pinned .feature-clear {
+  display: inline-block;
+  flex: 0 0 auto;
+  padding: 0 0.4rem;
+  line-height: 1.4;
+}
+
+.feature-hint[hidden] {
+  display: none;
+}
+
+.properties {
+  display: grid;
+  /* The name column takes what it needs and no more; the value takes the rest
+     and wraps, because a `place` from a feed is a sentence. */
+  grid-template-columns: minmax(4rem, auto) 1fr;
+  gap: 0.1rem 0.6rem;
+  margin: 0.5rem 0 0;
+}
+
+.properties dt {
+  color: var(--ink-faint);
+  overflow-wrap: anywhere;
+}
+
+.properties dd {
+  margin: 0;
+  color: var(--ink-dim);
+  overflow-wrap: anywhere;
+}
+
+.properties a {
+  color: var(--accent);
 }
 
 /* --- Panel ---------------------------------------------------------------- */
@@ -488,6 +585,9 @@ body.panel-collapsed #panel {
 
   #overlay-left {
     max-width: calc(100vw - var(--gutter) * 2);
+    /* The panel takes the bottom of a narrow screen, so the overlay gets what
+       is left rather than running underneath it. */
+    max-height: calc(38vh - var(--gutter) * 2);
   }
 
   .readout-row {

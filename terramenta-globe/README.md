@@ -98,6 +98,7 @@ to tell that apart from a real failure.
 | `addOverlay(id, options)` `removeOverlay(id)` | GeoJSON overlays |
 | `setOverlayVisible(id, bool)` `setOverlayStyle(id, style)` `setOverlaysEnabled(bool)` | How an overlay is drawn |
 | `setOverlayRefresh(id, seconds)` `refreshOverlay(id)` | When it refetches |
+| `setPickingEnabled(bool)` `pinFeature(layer, index)` `clearPinnedFeature()` | Picking features out of an overlay |
 | `setHudVisible(bool)` `setHelpVisible(bool)` `setKeyboardEnabled(bool)` | The globe's own overlay and keys |
 | `onState(callback)` | The state stream. One listener; registering again replaces it |
 
@@ -191,6 +192,55 @@ Overlays are drawn unlit and above the deepest imagery tile. Unlit because an
 overlay is annotation rather than imagery: a track across the night side has to
 stay as readable as the same track at noon.
 
+### Picking
+
+The globe hit-tests the cursor against overlay geometry on every frame it is
+over the globe, reports what it found, and draws a halo around it.
+
+```js
+globe.onState(({overlays}) => {
+  overlays.hovered;  // {layer, label, index, id, kind, properties} or null
+  overlays.pinned;   // the same, for whatever was pinned
+});
+
+// A click is not something the globe knows about. It reports what is under the
+// pointer; deciding that one of those is *the* selection is the interface's.
+globe.pinFeature(hovered.layer, hovered.index);
+globe.clearPinnedFeature();
+```
+
+`properties` is the feature's `properties` object exactly as the document wrote
+it. Nothing in the globe reads it — what a `mag` or a `place` means is the
+feed's business and the interface's — so it goes out untouched, nesting and all.
+
+**A feature, not a shape.** A `MultiPolygon` of forty islands is one feature, so
+picking any island highlights the country. That is why
+[`geojson.rs`](src/geojson.rs) flattens the document without throwing away which
+feature each shape came from.
+
+**Topmost wins by kind, then by distance** — a marker over a line over a fill,
+which is the order they are drawn in and the only order that makes a marker on a
+filled country selectable at all. The rule is applied across layers as well as
+within one.
+
+**The tolerance is in pixels**, because the geometry is: a nine-pixel marker is
+a nine-pixel target from any altitude. [`picking.rs`](src/picking.rs) converts
+that to degrees at the cursor's distance and works in degrees from there,
+scaling longitude by the cosine of the latitude so that the number means the
+same thing at any latitude — and progressively less near the poles, where
+nothing round stays round on this projection anyway.
+
+**Lines are measured the way they are drawn.** A segment is interpolated in
+latitude and longitude rather than along a great circle, and the hit test does
+the same; measuring the chord in three dimensions would quietly disagree with
+the line on screen for any segment long enough to matter.
+
+The highlight is the picked feature drawn again — larger, near-white, and
+*behind* itself, so a marker keeps its own colour and gains a halo rather than
+disappearing under a blob. It is rebuilt only when the pick changes, and a pick
+is forgotten when its layer is refreshed: feature seven of the new document is a
+different earthquake.
+
 ### Things to get right
 
 - **CORS, again.** The browser needs `Access-Control-Allow-Origin` from whoever
@@ -199,8 +249,9 @@ stay as readable as the same track at noon.
   which is the opposite of how a coordinate is spoken. A third element —
   elevation, or depth in the USGS feeds — is read past: everything is draped on
   the surface.
-- **Properties are read past too.** Styling is per layer, so two feeds are told
-  apart by being two colours rather than by anything inside them.
+- **Properties are for picking, not for styling.** They are kept and handed
+  back when a feature is picked, but nothing reads them to decide a colour:
+  styling is per layer, so two feeds are told apart by being two colours.
 
 ## Controls
 
@@ -242,6 +293,7 @@ src/
   tiles.rs     Tile grids, level-of-detail selection and streaming
   geojson.rs   The GeoJSON document format, flattened to drawable geometry
   tessellate.rs  Rings to triangles: ear clipping, holes and the antimeridian
+  picking.rs   Which feature is under the cursor
   overlays.rs  Overlay layers: sources, refresh, meshes and the `geojson://` source
   hud.rs       The built-in readout, formatted from the state snapshot
 assets/shaders/

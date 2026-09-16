@@ -10,6 +10,7 @@
 
 import * as globe from "./globe.js";
 import { DEFAULT_FEED } from "./feeds.js";
+import { mountFeature } from "./feature.js";
 import { addFeed } from "./overlays.js";
 import { mountPanel } from "./panel.js";
 import { mountReadout } from "./readout.js";
@@ -21,6 +22,7 @@ const statusMessage = document.getElementById("status-message");
 const panelRoot = document.getElementById("panel");
 const panelToggle = document.getElementById("panel-toggle");
 const readoutRoot = document.getElementById("readout");
+const featureRoot = document.getElementById("feature");
 const shell = document.getElementById("shell");
 
 function fail(html) {
@@ -59,6 +61,9 @@ async function boot() {
 
   const panel = mountPanel(panelRoot);
   const readout = mountReadout(readoutRoot);
+  // Given the canvas as well as its own root: the globe reports what is under
+  // the pointer, and turning a click on it into a selection is this app's job.
+  const feature = mountFeature(featureRoot, document.querySelector(CANVAS_SELECTOR));
   shell.hidden = false;
 
   // Collapsing the panel is worth having for its own sake on a phone, and for
@@ -73,6 +78,7 @@ async function boot() {
   globe.onState((state) => {
     panel.sync(state);
     readout.sync(state);
+    feature.sync(state);
   });
 
   // This app draws its own readout, so the globe's is switched off — the panel

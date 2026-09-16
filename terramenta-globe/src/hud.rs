@@ -169,6 +169,25 @@ fn format_readout(state: &GlobeState) -> String {
         ),
     };
 
+    // Whatever is pinned, or failing that whatever the cursor is over — the
+    // same preference the highlight itself follows.
+    let picked = match state
+        .overlays
+        .pinned
+        .as_ref()
+        .or(state.overlays.hovered.as_ref())
+    {
+        Some(feature) => format!(
+            "\npicked    {} · {}",
+            feature.label,
+            feature
+                .id
+                .clone()
+                .unwrap_or_else(|| format!("#{}", feature.index)),
+        ),
+        None => String::new(),
+    };
+
     format!(
         "TERRAMENTA\n\
          cursor    {cursor}\n\
@@ -176,7 +195,7 @@ fn format_readout(state: &GlobeState) -> String {
          frame     {}\n\
          sun over  {}{}\n\
          clock     {}{}\n\
-         imagery   {imagery}{overlays}",
+         imagery   {imagery}{overlays}{picked}",
         state.camera.altitude_km,
         state.frame.label,
         state.sun.subsolar.format(),

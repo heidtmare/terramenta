@@ -32,7 +32,7 @@ Everything, which is the point.
 | Section | |
 | --- | --- |
 | **Imagery** | All eight presets, grouped by protocol, with the tile size, format and pyramid depth of the active one; previous/next; streaming on or off |
-| **GeoJSON overlays** | A layer from a URL or a local file, three live feeds to try, auto-refresh with a period, and per layer: visibility, colour, refresh now, remove — plus what each one holds and how stale it is |
+| **GeoJSON overlays** | A layer from a URL or a local file, three live feeds to try, auto-refresh with a period, picking on or off, and per layer: visibility, colour, refresh now, remove — plus what each one holds and how stale it is |
 | **Sun & clock** | Run or pause, the rate from real time to a day a second, jump to now or forward by hours or days, and whether the night side is shaded at all |
 | **Reference frame** | ECEF or ECI |
 | **Camera** | Altitude, latitude and longitude to fly to, nine places to try, and reading the current view back into the boxes |
@@ -40,7 +40,8 @@ Everything, which is the point.
 
 Alongside them is a telemetry panel showing every field the globe reports:
 cursor and camera coordinates, altitude, frame, subsolar point, clock, rate,
-layer, overlays, and what the tile streamer is doing.
+layer, overlays, and what the tile streamer is doing — and under it, whatever
+feature the cursor is over, with its properties.
 
 The app starts with one overlay already up — the USGS feed of
 [earthquakes in the past hour][usgs], refetched every minute — because a layer
@@ -70,6 +71,14 @@ overwritten mid-drag fights the pointer. A text field is left alone while it has
 focus, because writing to one moves the caret to the end, which makes editing a
 URL or a refresh period impossible.
 
+[`feature.js`](src/feature.js) is where the rule is most visible, and where the
+app earns its keep. The globe hit-tests the geometry and says what is under the
+pointer; it has no idea what a click is. So this app watches the canvas for a
+press and release that did not move — an orbit drag ends in a release too — and
+turns that into `pinFeature`, or into `clearPinnedFeature` over empty ocean. The
+globe then highlights the pinned feature in preference to the hovered one, and
+the panel shows the same, so the two cannot disagree about which is selected.
+
 `overlays.js` keeps a little state of its own on top of that, which no other
 control does. The globe refreshes a URL by refetching it; a local file it was
 handed once, it cannot fetch again. So for a file the app holds the `File`,
@@ -85,6 +94,7 @@ src/
   globe.js          The only file that talks to the wasm module
   panel.js          The controls, and the one-way sync rule
   overlays.js       The GeoJSON layer controls, and the local-file timer
+  feature.js        The picked feature's properties, and what a click means
   readout.js        The telemetry overlay
   widgets.js        Buttons, toggles, choices and sliders
   format.js         Coordinates, altitudes, clock rates, durations, log sliders

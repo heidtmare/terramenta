@@ -317,6 +317,36 @@ pub fn set_overlays_enabled(enabled: bool) {
 }
 
 // ---------------------------------------------------------------------------
+// Picking
+// ---------------------------------------------------------------------------
+
+/// Whether the cursor picks features.
+///
+/// On, every state snapshot carries `overlays.hovered` — the feature under the
+/// pointer, with its properties — and the globe draws a halo around it. Off,
+/// neither happens, and a pin already set stays set.
+#[wasm_bindgen(js_name = setPickingEnabled)]
+pub fn set_picking_enabled(enabled: bool) {
+    api::send(GlobeCommand::SetPickingEnabled(enabled));
+}
+
+/// Keeps a feature selected, whatever the cursor does afterwards.
+///
+/// This is what a click is made of: the globe says what is under the pointer,
+/// and deciding that one of those is *the* selection is the interface's to do.
+/// `layer` is an overlay's id and `index` a feature's position in it, both as
+/// `overlays.hovered` reports them.
+#[wasm_bindgen(js_name = pinFeature)]
+pub fn pin_feature(layer: String, index: usize) {
+    api::send(GlobeCommand::PinFeature { layer, index });
+}
+
+#[wasm_bindgen(js_name = clearPinnedFeature)]
+pub fn clear_pinned_feature() {
+    api::send(GlobeCommand::ClearPinnedFeature);
+}
+
+// ---------------------------------------------------------------------------
 // Chrome and input
 // ---------------------------------------------------------------------------
 

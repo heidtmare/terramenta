@@ -45,6 +45,9 @@ interface, and the reference app is there to show what that takes.
   once, each with its own colours and its own refresh period. The reference app
   starts with the USGS feed of earthquakes in the past hour, refetched every
   minute.
+- **Pickable features.** The cursor hit-tests the overlay geometry: what it is
+  over is haloed on the globe and its properties are listed in the app, and a
+  click keeps one selected.
 - **A live readout.** Latitude and longitude under the cursor, camera altitude in
   kilometres, the subsolar point, and what the tile streamer is doing.
 - **All of it under external control.** Layer, imagery, sun, clock, frame,
@@ -98,9 +101,10 @@ no build step at all. The only thing it builds is the globe.
   relief.
 - Style a GeoJSON overlay per feature rather than per layer — colour the
   earthquake markers by magnitude, which is the obvious next thing to want from
-  the feed the reference app ships with.
-- Pick a feature out of an overlay by clicking it, and show its properties:
-  they are read past at parse time today.
+  the feed the reference app ships with. The properties are already carried
+  through to the picking layer; nothing reads them to decide an appearance.
+- Fly to a picked feature, or frame it: the globe knows where every shape is,
+  and `lookAt` is already there.
 - Click-to-fly: the cursor coordinate is already in the state stream, so the app
   could turn a click into a `lookAt` without the globe knowing.
 

@@ -225,7 +225,22 @@ export function mountOverlays(bind) {
   const overlaysToggle = toggle("Draw overlays", globe.setOverlaysEnabled);
   bind(overlaysToggle.node, (state) => overlaysToggle.set(state.overlays.enabled));
 
-  return section("GeoJSON overlays", overlaysToggle.node, adding, list);
+  const pickingToggle = toggle("Pick features under the cursor", globe.setPickingEnabled);
+  bind(pickingToggle.node, (state) => pickingToggle.set(state.overlays.picking));
+
+  return section(
+    "GeoJSON overlays",
+    overlaysToggle.node,
+    pickingToggle.node,
+    el(
+      "p",
+      { class: "detail" },
+      "The globe hit-tests the geometry and reports what is under the pointer, " +
+        "with its properties; clicking keeps one selected. Both show top left.",
+    ),
+    adding,
+    list,
+  );
 }
 
 /**

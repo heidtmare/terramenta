@@ -42,7 +42,7 @@ use crate::tiles::TileCache;
 /// globe's own business.
 pub use crate::geo::LatLon;
 pub use crate::overlays::{
-    MIN_REFRESH_SECONDS, OverlayInfo, OverlayRequest, OverlaySource, OverlayStyle,
+    MIN_REFRESH_SECONDS, OverlayInfo, OverlayRequest, OverlaySource, OverlayStyle, PickedFeature,
 };
 
 /// How often the state snapshot goes out, in seconds.
@@ -122,6 +122,19 @@ pub enum GlobeCommand {
     RefreshOverlay(String),
     /// Whether overlays are drawn at all. Off, every layer stays loaded.
     SetOverlaysEnabled(bool),
+
+    /// Whether the cursor picks features at all.
+    SetPickingEnabled(bool),
+    /// Keeps a feature selected, whatever the cursor does afterwards.
+    ///
+    /// This is what a click becomes. The globe reports what is under the
+    /// pointer; deciding that one of those is *the* selection is an interface's
+    /// business, and this is how it says so.
+    PinFeature {
+        layer: String,
+        index: usize,
+    },
+    ClearPinnedFeature,
 
     SetHudVisible(bool),
     SetHelpVisible(bool),
@@ -225,6 +238,14 @@ pub struct OverlaysState {
     /// How many are on screen: loaded, visible, and the switch on.
     pub drawn: usize,
     pub layers: Vec<OverlayInfo>,
+    /// Whether the cursor is picking features.
+    pub picking: bool,
+    /// The feature under the cursor, with its properties.
+    pub hovered: Option<PickedFeature>,
+    /// The feature that was pinned, if one was. The globe highlights this in
+    /// preference to whatever is hovered, so an interface showing one set of
+    /// properties should prefer it too.
+    pub pinned: Option<PickedFeature>,
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -291,6 +312,44 @@ pub fn describe_layers(presets: &[ImageryLayer]) -> Vec<LayerInfo> {
 #[derive(Resource, Debug, Clone, Default)]
 pub struct LatestState(pub Option<GlobeState>);
 
+/// Where the pointer is on the globe, in Earth-fixed coordinates, or `None`
+/// when it is off the globe or off the window.
+///
+/// Worked out once a tick and left here, because more than one thing wants it:
+/// the readout shows it, and [`crate::overlays`] hit-tests against it. Two
+/// ray-sphere intersections a frame is not the cost — two of them disagreeing
+/// by a tick would be, because then the feature that highlights is not the one
+/// the coordinate readout says you are over.
+#[derive(Resource, Debug, Clone, Copy, Default)]
+pub struct Cursor(pub Option<LatLon>);
+
+/// Casts the pointer onto the globe.
+pub(crate) fn track_cursor(
+    camera: Query<(&Camera, &GlobalTransform)>,
+    windows: Query<&Window>,
+    frame: Res<ReferenceFrame>,
+    mut cursor: ResMut<Cursor>,
+) {
+    let Some((camera, camera_transform)) = camera.iter().next() else {
+        return;
+    };
+    cursor.0 = windows
+        .iter()
+        .find_map(|window| window.cursor_position())
+        .and_then(|position| camera.viewport_to_world(camera_transform, position).ok())
+        .and_then(|ray| ray_sphere_intersection(ray.origin, *ray.direction, GLOBE_RADIUS))
+        // The hit is in world space; the coordinate under it is Earth-fixed.
+        .map(|hit| LatLon::from_direction(frame.world_to_earth() * hit));
+}
+
+/// One feature, as the digest names it: the overlay's slot and the feature's
+/// index. Slots are never reused, so this stays unambiguous across a layer
+/// being taken down and another put up under the same name.
+type FeatureKey = (u64, usize);
+
+/// The hovered and pinned features, in that order.
+pub(crate) type PickDigest = (Option<FeatureKey>, Option<FeatureKey>);
+
 /// The discrete part of the state — the fields a control flips rather than the
 /// ones that drift every frame. A change here publishes immediately.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -307,6 +366,12 @@ struct Digest {
     visible_tiles: usize,
     loading_tiles: usize,
     overlays_enabled: bool,
+    picking: bool,
+    /// Which feature, rather than the whole of it: the properties can be a page
+    /// of JSON, and comparing them every frame to discover they have not
+    /// changed would cost more than publishing does.
+    hovered: Option<FeatureKey>,
+    pinned: Option<FeatureKey>,
     /// Overlays are a list rather than a handful of fields, so they keep a
     /// counter of their own: anything an interface has a control for bumps it,
     /// and the countdown to the next refresh — which changes every tick and has
@@ -314,7 +379,8 @@ struct Digest {
     overlay_revision: u64,
 }
 
-fn digest(state: &GlobeState, overlay_revision: u64) -> Digest {
+fn digest(state: &GlobeState, overlay_revision: u64, picks: PickDigest) -> Digest {
+    let (hovered, pinned) = picks;
     Digest {
         frame: state.frame.mode,
         sun_paused: state.sun.paused,
@@ -328,6 +394,9 @@ fn digest(state: &GlobeState, overlay_revision: u64) -> Digest {
         visible_tiles: state.imagery.visible_tiles,
         loading_tiles: state.imagery.loading_tiles,
         overlays_enabled: state.overlays.enabled,
+        picking: state.overlays.picking,
+        hovered,
+        pinned,
         overlay_revision,
     }
 }
@@ -382,6 +451,7 @@ pub struct ApiPlugin;
 impl Plugin for ApiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<GlobeInput>()
+            .init_resource::<Cursor>()
             .init_resource::<LatestState>()
             .init_resource::<StateStream>()
             .add_systems(
@@ -395,7 +465,16 @@ impl Plugin for ApiPlugin {
                     .after(crate::frame::sync_earth_rotation)
                     .before(crate::frame::frame_controls),
             )
-            .add_systems(Update, publish_state.in_set(FrameSet::Apply));
+            // The cursor is cast onto the globe first, because both the
+            // snapshot and the overlay hit test are built from it, and the
+            // snapshot goes out last so that it carries what the hit test found
+            // on this tick rather than on the last one.
+            .add_systems(
+                Update,
+                (track_cursor, publish_state)
+                    .chain()
+                    .in_set(FrameSet::Apply),
+            );
     }
 }
 
@@ -501,6 +580,12 @@ fn apply_commands(
             }
             GlobeCommand::SetOverlaysEnabled(enabled) => overlays.enabled = enabled,
 
+            GlobeCommand::SetPickingEnabled(enabled) => overlays.picking = enabled,
+            GlobeCommand::PinFeature { layer, index } => {
+                overlays.pin(&layer, index);
+            }
+            GlobeCommand::ClearPinnedFeature => overlays.clear_pin(),
+
             GlobeCommand::SetHudVisible(visible) => hud.visible = visible,
             GlobeCommand::SetHelpVisible(visible) => hud.help_visible = visible,
             GlobeCommand::SetKeyboardEnabled(enabled) => input.keyboard = enabled,
@@ -531,8 +616,8 @@ fn set_frame(
 )]
 pub(crate) fn publish_state(
     time: Res<Time>,
-    camera: Query<(&Camera, &GlobalTransform, &OrbitCamera)>,
-    windows: Query<&Window>,
+    camera: Query<&OrbitCamera>,
+    cursor: Res<Cursor>,
     frame: Res<ReferenceFrame>,
     sun: Res<Sun>,
     imagery: Res<ImagerySettings>,
@@ -543,17 +628,9 @@ pub(crate) fn publish_state(
     mut stream: ResMut<StateStream>,
     mut latest: ResMut<LatestState>,
 ) {
-    let Some((camera, camera_transform, orbit)) = camera.iter().next() else {
+    let Some(orbit) = camera.iter().next() else {
         return;
     };
-
-    let cursor = windows
-        .iter()
-        .find_map(|window| window.cursor_position())
-        .and_then(|cursor| camera.viewport_to_world(camera_transform, cursor).ok())
-        .and_then(|ray| ray_sphere_intersection(ray.origin, *ray.direction, GLOBE_RADIUS))
-        // The hit is in world space; the coordinate under it is Earth-fixed.
-        .map(|hit| LatLon::from_direction(frame.world_to_earth() * hit));
 
     let state = GlobeState {
         camera: CameraState {
@@ -588,17 +665,24 @@ pub(crate) fn publish_state(
             enabled: overlays.enabled,
             drawn: overlays.drawn(),
             layers: overlays::describe(&overlays),
+            picking: overlays.picking,
+            hovered: overlays::hovered(&overlays),
+            pinned: overlays::pinned(&overlays),
         },
         hud: HudState {
             visible: hud.visible,
             help_visible: hud.help_visible,
         },
-        cursor,
+        cursor: cursor.0,
         keyboard: input.keyboard,
     };
 
     stream.since_publish += time.delta_secs();
-    let current = digest(&state, overlays.revision());
+    let current = digest(
+        &state,
+        overlays.revision(),
+        overlays::pick_digest(&overlays),
+    );
     let changed = stream.last_digest != Some(current);
     let due = stream.since_publish >= STATE_INTERVAL_SECONDS;
 

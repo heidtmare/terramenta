@@ -48,10 +48,12 @@ use bevy::render::render_resource::{
 use bevy::shader::ShaderRef;
 use serde::Serialize;
 
+use crate::api::Cursor;
 use crate::frame::{FrameSet, ReferenceFrame};
 use crate::geo::LatLon;
-use crate::geojson::{GeoJson, Polygon};
+use crate::geojson::{GeoJson, Polygon, Shape};
 use crate::globe::GLOBE_RADIUS;
+use crate::picking::{self, Hit, PickIndex, PickKind, Tolerance};
 use crate::tessellate;
 use crate::tiles::MAX_TILE_RADIUS;
 
@@ -89,6 +91,26 @@ const MAX_FILL_TRIANGLES: usize = 60_000;
 /// A refresh period is clamped to this at the fast end. Anything quicker is a
 /// request loop rather than a refresh, and no feed is worth polling that hard.
 pub const MIN_REFRESH_SECONDS: f32 = 1.0;
+
+/// How far off a shape the cursor may still be and count as on it, on top of
+/// the shape's own size. A two-pixel line is otherwise a two-pixel target.
+const PICK_SLACK_PX: f32 = 4.0;
+
+/// What a picked feature is drawn in, and how much bigger.
+///
+/// Near-white, because it has to separate the picked feature from *any* layer
+/// colour, and drawn behind rather than over — so a marker keeps its own colour
+/// and gains a halo, rather than disappearing under the highlight.
+const HIGHLIGHT_COLOR: Srgba = Srgba::new(1.0, 1.0, 1.0, 0.9);
+const HIGHLIGHT_FILL: Srgba = Srgba::new(1.0, 1.0, 1.0, 0.3);
+const HIGHLIGHT_GROW_PX: f32 = 7.0;
+
+/// Every overlay is drawn on the same sphere, so the transparent pass — which
+/// sorts by distance — has almost nothing to sort by, and would otherwise
+/// interleave fills, lines and markers in whatever order they happened to
+/// reach it. These are added to that distance to settle it: larger is nearer,
+/// and nearer is drawn last.
+const HIGHLIGHT_BEHIND: f32 = 1.0;
 
 // ---------------------------------------------------------------------------
 // What an overlay is
@@ -205,6 +227,19 @@ pub struct OverlayCounts {
     pub polygons: usize,
 }
 
+/// One feature of one layer, named the way the globe can still find it after a
+/// refresh has renumbered nothing and a removal has renumbered everything.
+///
+/// By slot rather than by layer id, because a slot is never reused: a pin held
+/// across a layer being taken down and another put up under the same name
+/// cannot silently come to mean the new one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pick {
+    slot: u64,
+    feature: usize,
+    kind: PickKind,
+}
+
 /// One drawn piece of an overlay: its markers, its lines, or its fills.
 struct OverlayPart {
     entity: Entity,
@@ -235,6 +270,16 @@ struct Overlay {
     counts: OverlayCounts,
     /// Held so the document stays loaded, and so its load state can be polled.
     handle: Option<Handle<GeoJsonAsset>>,
+    /// The geometry on screen, kept rather than dropped after meshing: it is
+    /// what the hit test runs against, what the highlight is rebuilt from, and
+    /// where a picked feature's properties come from.
+    ///
+    /// Behind an `Arc` so a system holding `&mut OverlaySettings` can take a
+    /// reference to one layer's document and still spawn entities for it.
+    data: Option<Arc<GeoJson>>,
+    /// Where each of that document's shapes is, roughly, so the hit test can
+    /// dismiss most of them without walking their vertices.
+    index: Arc<PickIndex>,
     /// Geometry waiting to be meshed, from a text source or a finished fetch.
     pending: Option<GeoJson>,
     /// Set when a fetch is due; cleared once one has been started.
@@ -286,7 +331,20 @@ pub struct OverlaySettings {
     /// Whether overlays are drawn at all. Off, every layer stays loaded and
     /// simply stops being drawn, so switching back is instant.
     pub enabled: bool,
+    /// Whether the cursor picks features at all. Off, nothing is hovered and
+    /// nothing is highlighted; a pin already set stays set.
+    pub picking: bool,
     overlays: Vec<Overlay>,
+    /// What the cursor is over now.
+    hovered: Option<Pick>,
+    /// What an embedder asked to keep, whatever the cursor does afterwards.
+    /// This is what a click becomes: the globe reports what is under the
+    /// pointer, and the interface decides that one of those is the selection.
+    pinned: Option<Pick>,
+    /// What the highlight currently draws, so it is only rebuilt when it
+    /// changes rather than on every frame the cursor moves within a feature.
+    highlighted: Option<Pick>,
+    highlight: Vec<Entity>,
     urls: SharedOverlayUrls,
     next_slot: u64,
     /// Bumped by anything an interface has a control for, so the state stream
@@ -299,6 +357,51 @@ pub struct OverlaySettings {
 impl OverlaySettings {
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+
+    /// What the highlight should be drawing: the pin if there is one, and
+    /// otherwise whatever the cursor is over.
+    fn highlight_target(&self) -> Option<Pick> {
+        self.pinned.or(self.hovered)
+    }
+
+    /// Keeps a feature selected until told otherwise. Returns whether the layer
+    /// and feature exist to be pinned.
+    pub fn pin(&mut self, id: &str, feature: usize) -> bool {
+        let Some(overlay) = self.overlays.iter().find(|overlay| overlay.id == id) else {
+            return false;
+        };
+        let Some(document) = overlay.data.as_ref() else {
+            return false;
+        };
+        let Some(kind) = picking::kind_of(document, feature) else {
+            return false;
+        };
+        self.pinned = Some(Pick {
+            slot: overlay.slot,
+            feature,
+            kind,
+        });
+        self.revision += 1;
+        true
+    }
+
+    pub fn clear_pin(&mut self) {
+        if self.pinned.take().is_some() {
+            self.revision += 1;
+        }
+    }
+
+    /// Forgets any pick that named this layer — after a refresh, because
+    /// feature seven of the new document is a different earthquake, and after a
+    /// removal, because there is no feature seven at all.
+    fn forget_picks(&mut self, slot: u64) {
+        for pick in [&mut self.hovered, &mut self.pinned] {
+            if pick.is_some_and(|pick| pick.slot == slot) {
+                *pick = None;
+                self.revision += 1;
+            }
+        }
     }
 
     /// Whether a layer would be drawn if it had anything to draw. The master
@@ -351,6 +454,8 @@ impl OverlaySettings {
             status: OverlayStatus::Loading,
             counts: OverlayCounts::default(),
             handle: None,
+            data: None,
+            index: Arc::default(),
             pending: None,
             // A URL is fetched on the next tick; text is already here, so it is
             // parsed now and the failure, if it is one, reported straight away.
@@ -377,6 +482,7 @@ impl OverlaySettings {
             return false;
         };
         let overlay = self.overlays.remove(index);
+        self.forget_picks(overlay.slot);
         if let Ok(mut urls) = self.urls.write() {
             urls.remove(&overlay.slot);
         }
@@ -391,6 +497,9 @@ impl OverlaySettings {
     }
 
     pub fn set_style(&mut self, id: &str, style: OverlayStyle) -> bool {
+        // The highlight is sized from the layer's style, and it is rebuilt
+        // rather than restyled, so it has to be made stale by hand.
+        self.highlighted = None;
         self.with(id, |overlay| {
             overlay.style = style;
             overlay.wants_restyle = true;
@@ -434,6 +543,19 @@ pub enum VectorMode {
     Fill = 2,
 }
 
+impl VectorMode {
+    /// Where this shape sits in the transparent pass, relative to the rest of
+    /// the overlay. Markers over lines over fills, which is the order they have
+    /// to be in for a marker on a filled country to be visible at all.
+    fn depth_bias(self) -> f32 {
+        match self {
+            Self::Marker => 2.0,
+            Self::Line => 1.0,
+            Self::Fill => 0.0,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, ShaderType)]
 pub struct VectorUniform {
     /// Linear RGBA — the style is stated in sRGB, because that is what a colour
@@ -449,12 +571,16 @@ pub struct VectorUniform {
 pub struct VectorMaterial {
     #[uniform(0)]
     pub uniform: VectorUniform,
+    /// Added to the distance the transparent pass sorts by. Not a binding —
+    /// `AsBindGroup` ignores a field it was given no attribute for.
+    pub depth_bias: f32,
 }
 
 impl VectorMaterial {
     fn new(mode: VectorMode, color: Srgba, size_px: f32) -> Self {
         let linear = bevy::color::LinearRgba::from(color);
         Self {
+            depth_bias: mode.depth_bias(),
             uniform: VectorUniform {
                 color: Vec4::new(linear.red, linear.green, linear.blue, linear.alpha),
                 // Half-extents: the mesh spreads each corner one unit either
@@ -464,6 +590,14 @@ impl VectorMaterial {
                 _padding: Vec2::ZERO,
             },
         }
+    }
+
+    /// Puts this draw behind the ordinary overlay geometry, so a highlight
+    /// drawn larger reads as a halo around what it is highlighting rather than
+    /// as a blob over it.
+    fn behind(mut self) -> Self {
+        self.depth_bias -= HIGHLIGHT_BEHIND;
+        self
     }
 }
 
@@ -478,6 +612,10 @@ impl Material for VectorMaterial {
 
     fn alpha_mode(&self) -> AlphaMode {
         AlphaMode::Blend
+    }
+
+    fn depth_bias(&self) -> f32 {
+        self.depth_bias
     }
 
     fn enable_shadows() -> bool {
@@ -668,7 +806,12 @@ impl Plugin for OverlaySourcePlugin {
 
         let mut settings = OverlaySettings {
             enabled: true,
+            picking: true,
             overlays: Vec::new(),
+            hovered: None,
+            pinned: None,
+            highlighted: None,
+            highlight: Vec::new(),
             urls,
             next_slot: 0,
             revision: 0,
@@ -698,10 +841,17 @@ impl Plugin for OverlayPlugin {
                     poll_overlays,
                     rebuild_overlays,
                     restyle_overlays,
+                    pick_features,
+                    highlight_pick,
                     orient_overlays,
                 )
                     .chain()
-                    .in_set(FrameSet::Apply),
+                    .in_set(FrameSet::Apply)
+                    // The cursor is cast onto the globe before any of this, and
+                    // the snapshot goes out after it, so what is reported as
+                    // picked is what is highlighted on the same frame.
+                    .after(crate::api::track_cursor)
+                    .before(crate::api::publish_state),
             );
     }
 }
@@ -799,6 +949,7 @@ fn rebuild_overlays(
     }
 
     let mut changed = false;
+    let mut stale = Vec::new();
     for overlay in &mut settings.overlays {
         let Some(document) = overlay.pending.take() else {
             continue;
@@ -809,11 +960,17 @@ fn rebuild_overlays(
         }
 
         overlay.counts = OverlayCounts {
-            features: document.features,
+            features: document.features.len(),
             points: document.points.len(),
             lines: document.lines.len(),
             polygons: document.polygons.len(),
         };
+        overlay.index = Arc::new(PickIndex::build(&document));
+        let document = Arc::new(document);
+        overlay.data = Some(document.clone());
+        // Whatever was picked was picked in the document this one replaces, and
+        // feature seven of a refreshed feed is a different earthquake.
+        stale.push(overlay.slot);
 
         let style = overlay.style;
         // Fills first, then lines, then markers: the radii above already put
@@ -873,6 +1030,9 @@ fn rebuild_overlays(
         changed = true;
     }
 
+    for slot in stale {
+        settings.forget_picks(slot);
+    }
     if changed {
         settings.revision += 1;
     }
@@ -899,6 +1059,176 @@ fn restyle_overlays(
             }
         }
     }
+}
+
+/// Works out which feature the cursor is over.
+///
+/// Every visible layer is asked, and the best answer across all of them wins by
+/// the same rule as within one — a marker over a line over a fill, and the
+/// nearest of whichever kind — so that a marker in one layer is not lost under
+/// a country in another.
+fn pick_features(
+    cursor: Res<Cursor>,
+    camera: Single<(&Camera, &Transform, &Projection)>,
+    frame: Res<ReferenceFrame>,
+    mut settings: ResMut<OverlaySettings>,
+) {
+    let hovered = (settings.enabled && settings.picking)
+        .then(|| cursor.0)
+        .flatten()
+        .and_then(|cursor| {
+            let (camera, camera_transform, projection) = *camera;
+            let Projection::Perspective(perspective) = projection else {
+                // "Pixels at this distance" does not mean anything under a
+                // projection that has no distance in it.
+                return None;
+            };
+            // The cursor is Earth-fixed; the camera is wherever the frame put it.
+            let target = frame.earth_to_world() * cursor.to_direction() * GLOBE_RADIUS;
+            let tolerance = degrees_per_pixel(
+                (camera_transform.translation - target).length(),
+                perspective.fov,
+                camera.logical_viewport_size()?.y,
+            );
+
+            let mut best: Option<(Pick, Hit)> = None;
+            for overlay in &settings.overlays {
+                if !overlay.visible || overlay.status != OverlayStatus::Ready {
+                    continue;
+                }
+                let Some(document) = overlay.data.as_ref() else {
+                    continue;
+                };
+                // Half the width, because a shape is drawn either side of where
+                // it is; plus a little, because a two-pixel line is otherwise a
+                // two-pixel target.
+                let reach = |size_px: f32| (size_px * 0.5 + PICK_SLACK_PX) * tolerance;
+                let Some(hit) = overlay.index.pick(
+                    document,
+                    cursor,
+                    Tolerance {
+                        point: reach(overlay.style.point_size_px),
+                        line: reach(overlay.style.line_width_px),
+                    },
+                ) else {
+                    continue;
+                };
+                if best.is_none_or(|(_, held)| hit.beats(held)) {
+                    best = Some((
+                        Pick {
+                            slot: overlay.slot,
+                            feature: hit.feature,
+                            kind: hit.kind,
+                        },
+                        hit,
+                    ));
+                }
+            }
+            best.map(|(pick, _)| pick)
+        });
+
+    if settings.hovered != hovered {
+        settings.hovered = hovered;
+        settings.revision += 1;
+    }
+}
+
+/// How many degrees of globe one pixel covers at a given depth, which is what
+/// turns a tolerance stated in pixels into one the hit test can use.
+///
+/// The same arithmetic the tile streamer sizes its pyramid with, run the other
+/// way: there it asks how many pixels a patch of ground covers, here how much
+/// ground a pixel does.
+fn degrees_per_pixel(depth: f32, fov: f32, viewport_height: f32) -> f32 {
+    let focal_pixels = viewport_height / (2.0 * (fov * 0.5).tan());
+    // World units per pixel at that depth, then as arc along the surface.
+    (depth / focal_pixels.max(1.0e-6) / GLOBE_RADIUS).to_degrees()
+}
+
+/// Draws the picked feature again, larger and behind itself.
+///
+/// Rebuilt only when the pick changes, which is what keeps moving the cursor
+/// within one feature from re-meshing it sixty times a second.
+fn highlight_pick(
+    mut commands: Commands,
+    settings: ResMut<OverlaySettings>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<VectorMaterial>>,
+    frame: Res<ReferenceFrame>,
+) {
+    let settings = settings.into_inner();
+    let target = settings.highlight_target();
+    if target == settings.highlighted {
+        return;
+    }
+
+    for entity in settings.highlight.drain(..) {
+        commands.entity(entity).despawn();
+    }
+    settings.highlighted = target;
+
+    let Some(pick) = target else {
+        return;
+    };
+    let Some(overlay) = settings
+        .overlays
+        .iter()
+        .find(|overlay| overlay.slot == pick.slot)
+    else {
+        return;
+    };
+    let Some(document) = overlay.data.clone() else {
+        return;
+    };
+
+    let style = overlay.style;
+    let points = of_feature(&document.points, pick.feature);
+    let lines = of_feature(&document.lines, pick.feature);
+    let polygons = of_feature(&document.polygons, pick.feature);
+
+    let built = [
+        (VectorMode::Fill, HIGHLIGHT_FILL, 0.0, fill_mesh(&polygons)),
+        (
+            VectorMode::Line,
+            HIGHLIGHT_COLOR,
+            style.line_width_px + HIGHLIGHT_GROW_PX,
+            line_mesh(&lines, &polygons),
+        ),
+        (
+            VectorMode::Marker,
+            HIGHLIGHT_COLOR,
+            style.point_size_px + HIGHLIGHT_GROW_PX,
+            marker_mesh(&points),
+        ),
+    ];
+
+    for (mode, color, size_px, mesh) in built {
+        let Some(mesh) = mesh else {
+            continue;
+        };
+        let entity = commands
+            .spawn((
+                Name::new(format!("Highlight {} #{}", overlay.id, pick.feature)),
+                // Named as part of the layer, so it is carried around with the
+                // globe and hidden with the layer like everything else of it.
+                OverlayEntity(overlay.id.clone()),
+                Mesh3d(meshes.add(mesh)),
+                MeshMaterial3d(materials.add(VectorMaterial::new(mode, color, size_px).behind())),
+                Transform::from_rotation(frame.earth_to_world()),
+                NoFrustumCulling,
+            ))
+            .id();
+        settings.highlight.push(entity);
+    }
+}
+
+/// The shapes of one feature.
+fn of_feature<T: Clone>(shapes: &[Shape<T>], feature: usize) -> Vec<Shape<T>> {
+    shapes
+        .iter()
+        .filter(|shape| shape.feature == feature)
+        .cloned()
+        .collect()
 }
 
 /// Carries the overlays around with the globe, and draws only what should be
@@ -988,10 +1318,10 @@ impl MeshBuilder {
 /// One quad per point, all four corners on the same anchor. The shader spreads
 /// them into a disc facing the camera, and the UV says which corner is which —
 /// which is also what the disc is rounded off with.
-fn marker_mesh(points: &[LatLon]) -> Option<Mesh> {
+fn marker_mesh(points: &[Shape<LatLon>]) -> Option<Mesh> {
     let mut builder = MeshBuilder::new();
     for point in points {
-        let direction = point.to_direction();
+        let direction = point.geometry.to_direction();
         let base = builder.next_index();
         for corner in [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]] {
             builder.push(direction, MARKER_RADIUS, corner, NO_TANGENT);
@@ -1005,13 +1335,13 @@ fn marker_mesh(points: &[LatLon]) -> Option<Mesh> {
 
 /// Every line, plus every polygon's rings — so a polygon still reads as a shape
 /// when its fill is transparent, or when it was too big to triangulate.
-fn line_mesh(lines: &[Vec<LatLon>], polygons: &[Polygon]) -> Option<Mesh> {
+fn line_mesh(lines: &[Shape<Vec<LatLon>>], polygons: &[Shape<Polygon>]) -> Option<Mesh> {
     let mut builder = MeshBuilder::new();
     for line in lines {
-        push_ribbon(&mut builder, &densify(line, false));
+        push_ribbon(&mut builder, &densify(&line.geometry, false));
     }
     for polygon in polygons {
-        for ring in &polygon.rings {
+        for ring in &polygon.geometry.rings {
             push_ribbon(&mut builder, &densify(ring, true));
         }
     }
@@ -1026,10 +1356,10 @@ fn line_mesh(lines: &[Vec<LatLon>], polygons: &[Polygon]) -> Option<Mesh> {
 /// that is two hundred kilometres beneath the ground, which is to say buried.
 /// So they are refined until every edge is short, and then lifted by the sag
 /// that is left.
-fn fill_mesh(polygons: &[Polygon]) -> Option<Mesh> {
+fn fill_mesh(polygons: &[Shape<Polygon>]) -> Option<Mesh> {
     let mut builder = MeshBuilder::new();
     for polygon in polygons {
-        let (mut corners, indices) = tessellate::triangulate(polygon);
+        let (mut corners, indices) = tessellate::triangulate(&polygon.geometry);
         let indices = refine(&mut corners, indices);
         if indices.is_empty() {
             continue;
@@ -1334,6 +1664,64 @@ impl From<&OverlayStyle> for OverlayStyleInfo {
     }
 }
 
+/// A feature the cursor found, with everything the document said about it.
+#[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PickedFeature {
+    /// The id of the layer it belongs to, which is what a command naming it
+    /// again — pinning it, for instance — has to be given.
+    pub layer: String,
+    pub label: String,
+    /// Its position in the layer's feature list.
+    pub index: usize,
+    /// Its GeoJSON `id` member, if it had one.
+    pub id: Option<String>,
+    /// `"point"`, `"line"` or `"polygon"` — which of its shapes was hit.
+    pub kind: &'static str,
+    /// The `properties` object, exactly as the document wrote it. The globe
+    /// reads nothing in here; what a `mag` or a `place` means is the feed's
+    /// business and the interface's.
+    pub properties: serde_json::Value,
+}
+
+/// Fills in a pick, or `None` when the layer or feature has since gone.
+pub fn describe_pick(settings: &OverlaySettings, pick: Pick) -> Option<PickedFeature> {
+    let overlay = settings
+        .overlays
+        .iter()
+        .find(|overlay| overlay.slot == pick.slot)?;
+    let feature = overlay.data.as_ref()?.features.get(pick.feature)?;
+    Some(PickedFeature {
+        layer: overlay.id.clone(),
+        label: overlay.label.clone(),
+        index: pick.feature,
+        id: feature.id.clone(),
+        kind: pick.kind.id(),
+        properties: feature.properties.clone(),
+    })
+}
+
+/// What the cursor is over, if anything.
+pub fn hovered(settings: &OverlaySettings) -> Option<PickedFeature> {
+    settings
+        .hovered
+        .and_then(|pick| describe_pick(settings, pick))
+}
+
+/// What has been kept selected, if anything.
+pub fn pinned(settings: &OverlaySettings) -> Option<PickedFeature> {
+    settings
+        .pinned
+        .and_then(|pick| describe_pick(settings, pick))
+}
+
+/// The two picks as the state digest compares them: cheap, `Copy`, and without
+/// the properties, which can be a page of JSON that never changes.
+pub fn pick_digest(settings: &OverlaySettings) -> crate::api::PickDigest {
+    let key = |pick: Option<Pick>| pick.map(|pick| (pick.slot, pick.feature));
+    (key(settings.hovered), key(settings.pinned))
+}
+
 /// Describes every overlay, in the order they were added.
 pub fn describe(settings: &OverlaySettings) -> Vec<OverlayInfo> {
     settings
@@ -1385,20 +1773,22 @@ mod tests {
             .sum()
     }
 
-    fn big_polygon() -> Polygon {
-        Polygon {
-            rings: vec![vec![
-                LatLon::new(30.0, -10.0),
-                LatLon::new(30.0, 20.0),
-                LatLon::new(50.0, 20.0),
-                LatLon::new(50.0, -10.0),
-            ]],
+    fn big_polygon() -> Shape<Polygon> {
+        let rings = vec![vec![
+            LatLon::new(30.0, -10.0),
+            LatLon::new(30.0, 20.0),
+            LatLon::new(50.0, 20.0),
+            LatLon::new(50.0, -10.0),
+        ]];
+        Shape {
+            feature: 0,
+            geometry: Polygon { rings },
         }
     }
 
     #[test]
     fn refining_leaves_no_edge_long_enough_to_sag_off_the_globe() {
-        let (mut corners, indices) = tessellate::triangulate(&big_polygon());
+        let (mut corners, indices) = tessellate::triangulate(&big_polygon().geometry);
         assert!(longest_edge_degrees(&corners, &indices) > MAX_SEGMENT_DEGREES);
 
         let refined = refine(&mut corners, indices);
@@ -1407,7 +1797,7 @@ mod tests {
 
     #[test]
     fn refining_covers_exactly_the_same_ground() {
-        let (mut corners, indices) = tessellate::triangulate(&big_polygon());
+        let (mut corners, indices) = tessellate::triangulate(&big_polygon().geometry);
         let before = area(&corners, &indices);
         let refined = refine(&mut corners, indices);
         // Signed, so an arm of the refinement that came out wound backwards
@@ -1430,6 +1820,28 @@ mod tests {
             let radius = Vec3::from_array(*position).length();
             assert!(radius > MAX_TILE_RADIUS, "{radius}");
         }
+    }
+
+    #[test]
+    fn a_pixel_covers_less_ground_the_closer_the_camera_is() {
+        let fov = 45.0_f32.to_radians();
+        // Roughly a low pass at 200 km, and the default view from 14,000.
+        let close = degrees_per_pixel(0.031, fov, 1080.0);
+        let far = degrees_per_pixel(2.2, fov, 1080.0);
+        assert!(close < far, "{close} vs {far}");
+
+        // A nine-pixel marker from the default view is a target a few tenths of
+        // a degree across — tens of kilometres, which is what it looks like.
+        let tolerance = (9.0 * 0.5 + PICK_SLACK_PX) * far;
+        assert!((0.1..2.0).contains(&tolerance), "{tolerance}");
+    }
+
+    #[test]
+    fn a_taller_viewport_puts_more_pixels_across_the_same_ground() {
+        let fov = 45.0_f32.to_radians();
+        let short = degrees_per_pixel(1.0, fov, 540.0);
+        let tall = degrees_per_pixel(1.0, fov, 1080.0);
+        assert!((short - tall * 2.0).abs() < 1.0e-6, "{short} vs {tall}");
     }
 
     #[test]
@@ -1569,7 +1981,12 @@ mod tests {
     fn test_settings() -> OverlaySettings {
         OverlaySettings {
             enabled: true,
+            picking: true,
             overlays: Vec::new(),
+            hovered: None,
+            pinned: None,
+            highlighted: None,
+            highlight: Vec::new(),
             urls: Arc::new(RwLock::new(HashMap::new())),
             next_slot: 0,
             revision: 0,
@@ -1591,6 +2008,8 @@ mod tests {
             status: OverlayStatus::Loading,
             counts: OverlayCounts::default(),
             handle: None,
+            data: None,
+            index: Arc::default(),
             pending: None,
             wants_fetch: false,
             wants_restyle: false,

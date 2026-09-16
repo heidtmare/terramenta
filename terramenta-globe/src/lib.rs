@@ -23,6 +23,7 @@ mod globe;
 mod hud;
 mod imagery;
 mod overlays;
+mod picking;
 mod sun;
 mod tessellate;
 mod tiles;
