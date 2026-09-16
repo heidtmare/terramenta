@@ -6,9 +6,11 @@ mod frame;
 mod geo;
 mod globe;
 mod hud;
+mod imagery;
 mod sun;
 mod tiles;
 mod wms;
+mod wmts;
 
 use bevy::asset::AssetMetaCheck;
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSamplerDescriptor};
@@ -18,16 +20,18 @@ use camera::OrbitCameraPlugin;
 use frame::FramePlugin;
 use globe::GlobePlugin;
 use hud::HudPlugin;
+use imagery::{ImageFormat, ImageryLayer, ImageryPlugin};
 use sun::SunPlugin;
 use tiles::TilePlugin;
-use wms::{WmsConfig, WmsPlugin};
+use wms::WmsConfig;
+use wmts::WmtsConfig;
 
 fn main() {
     App::new()
         .insert_resource(ClearColor(Color::BLACK))
-        // The WMS asset source has to be registered before `AssetPlugin` builds,
-        // which is why this plugin goes in ahead of `DefaultPlugins`.
-        .add_plugins(WmsPlugin {
+        // The imagery asset source has to be registered before `AssetPlugin`
+        // builds, which is why this plugin goes in ahead of `DefaultPlugins`.
+        .add_plugins(ImageryPlugin {
             presets: imagery_layers(),
             enabled: true,
         })
@@ -49,8 +53,8 @@ fn main() {
                 })
                 .set(AssetPlugin {
                     // Every tile would otherwise be preceded by a request for a
-                    // `.meta` file that a WMS endpoint will never have, doubling
-                    // the traffic to serve nothing.
+                    // `.meta` file that an imagery endpoint will never have,
+                    // doubling the traffic to serve nothing.
                     meta_check: AssetMetaCheck::Never,
                     ..default()
                 })
@@ -78,31 +82,78 @@ fn main() {
         .run();
 }
 
-/// The WMS layers offered at startup, cycled through with `L`.
+/// The layers offered at startup, cycled through with `L` (and back with
+/// `Shift+L`).
 ///
 /// All of these come from NASA's Global Imagery Browse Services, which needs no
-/// API key. The dated layers are pinned to a fixed day: GIBS serves the most
-/// recent imagery a day or two in arrears, so asking for "today" returns an
-/// empty tile.
-fn imagery_layers() -> Vec<WmsConfig> {
+/// API key, and the first four are offered over both protocols so the two can be
+/// compared on the same imagery — WMTS is the one to prefer in practice, since
+/// its tiles are pre-cut and cached rather than rendered per request.
+///
+/// The dated layers are pinned to a fixed day: GIBS serves the most recent
+/// imagery a day or two in arrears, so asking for "today" returns an empty tile.
+fn imagery_layers() -> Vec<ImageryLayer> {
     vec![
+        // WMTS. The tile matrix set is not a free choice — GIBS publishes each
+        // layer in exactly one, and it sets how deep the pyramid goes.
+        WmtsConfig::gibs(
+            "Blue Marble · shaded relief",
+            "BlueMarble_ShadedRelief_Bathymetry",
+            "500m",
+            ImageFormat::Jpeg,
+        )
+        .into(),
+        WmtsConfig::gibs(
+            "MODIS Terra · true colour",
+            "MODIS_Terra_CorrectedReflectance_TrueColor",
+            "250m",
+            ImageFormat::Jpeg,
+        )
+        .with_dimension("Time", "2026-09-10")
+        .into(),
+        // Served as KVP rather than a REST path, which is the other encoding a
+        // WMTS server may offer and the only one some of them do.
+        WmtsConfig::gibs(
+            "VIIRS · city lights",
+            "VIIRS_CityLights_2012",
+            "500m",
+            ImageFormat::Jpeg,
+        )
+        .with_kvp("https://gibs.earthdata.nasa.gov/wmts/epsg4326/best/wmts.cgi")
+        .into(),
+        // A palette-coded science layer, which GIBS serves as PNG.
+        WmtsConfig::gibs(
+            "MODIS Terra · land surface temperature",
+            "MODIS_Terra_Land_Surface_Temp_Day",
+            "1km",
+            ImageFormat::Png,
+        )
+        .with_dimension("Time", "2026-09-10")
+        .into(),
+        // The same catalogue over WMS, where the grid is ours to pick and
+        // `max_level` is a matter of taste rather than a hard ceiling.
         WmsConfig::gibs(
             "Blue Marble · shaded relief",
             "BlueMarble_ShadedRelief_Bathymetry",
         )
-        .with_max_level(7),
+        .with_max_level(7)
+        .into(),
         WmsConfig::gibs(
             "MODIS Terra · true colour",
             "MODIS_Terra_CorrectedReflectance_TrueColor",
         )
         .with_parameter("TIME", "2026-09-10")
-        .with_max_level(8),
-        WmsConfig::gibs("VIIRS · city lights", "VIIRS_CityLights_2012").with_max_level(7),
+        .with_max_level(8)
+        .into(),
+        WmsConfig::gibs("VIIRS · city lights", "VIIRS_CityLights_2012")
+            .with_max_level(7)
+            .into(),
         WmsConfig::gibs(
             "MODIS Terra · land surface temperature",
             "MODIS_Terra_Land_Surface_Temp_Day",
         )
         .with_parameter("TIME", "2026-09-10")
-        .with_max_level(6),
+        .with_max_level(6)
+        .into(),
     ]
 }

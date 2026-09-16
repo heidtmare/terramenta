@@ -11,8 +11,8 @@ use bevy::shader::ShaderRef;
 
 use crate::frame::{FrameSet, ReferenceFrame};
 use crate::geo::equirectangular_sphere;
+use crate::imagery::ImagerySettings;
 use crate::sun::Sun;
-use crate::wms::WmsSettings;
 
 /// Radius of the globe in world units. Everything else is expressed in Earth radii.
 pub const GLOBE_RADIUS: f32 = 1.0;
@@ -267,7 +267,7 @@ fn drive_materials(
     time: Res<Time>,
     sun: Res<Sun>,
     frame: Res<ReferenceFrame>,
-    wms: Res<WmsSettings>,
+    imagery: Res<ImagerySettings>,
     mut globe_materials: ResMut<Assets<GlobeMaterial>>,
     mut atmosphere_materials: ResMut<Assets<AtmosphereMaterial>>,
     mut starfield_materials: ResMut<Assets<StarfieldMaterial>>,
@@ -278,11 +278,15 @@ fn drive_materials(
     let sun_direction = frame.earth_to_world() * sun.direction_ecef;
 
     // The city lights belong to the Blue Marble night texture, and nothing in a
-    // WMS layer knows about them: where imagery covers the globe they would
+    // streamed layer knows about them: where imagery covers the globe they would
     // burn through a scene that has its own idea of what the ground looks like,
     // and where it has not arrived yet they would light only the gaps. So the
     // night side goes dark for as long as imagery is on.
-    let night_intensity = if wms.enabled { 0.0 } else { NIGHT_INTENSITY };
+    let night_intensity = if imagery.enabled {
+        0.0
+    } else {
+        NIGHT_INTENSITY
+    };
     let sun_shading = sun.shading();
 
     for (_, material) in globe_materials.iter_mut() {

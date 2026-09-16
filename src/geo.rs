@@ -71,16 +71,29 @@ pub struct GeoBounds {
 }
 
 impl GeoBounds {
-    #[allow(
-        dead_code,
-        reason = "the whole-world box, for callers building custom requests; exercised only by tests"
-    )]
+    /// The whole world, which is also what a tile is clipped against.
     pub const WORLD: Self = Self {
         lat_min: -90.0,
         lat_max: 90.0,
         lon_min: -180.0,
         lon_max: 180.0,
     };
+
+    /// The overlap between two boxes, or `None` when they do not meet.
+    ///
+    /// A tile matrix set is free to define tiles that hang off the edge of the
+    /// world — see [`crate::tiles::TileGrid`] — so this is what decides how
+    /// much of one is real.
+    pub fn intersect(self, other: Self) -> Option<Self> {
+        let clipped = Self {
+            lat_min: self.lat_min.max(other.lat_min),
+            lat_max: self.lat_max.min(other.lat_max),
+            lon_min: self.lon_min.max(other.lon_min),
+            lon_max: self.lon_max.min(other.lon_max),
+        };
+        // A shared edge is not an overlap: it would be a tile of no width.
+        (clipped.lat_min < clipped.lat_max && clipped.lon_min < clipped.lon_max).then_some(clipped)
+    }
 
     pub fn center(self) -> LatLon {
         LatLon::new(

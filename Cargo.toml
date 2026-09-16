@@ -31,7 +31,7 @@ bevy = { version = "0.19", default-features = false, features = [
     "default_font",
     "gestures",
     "hdr",
-    # `https` registers the asset source that WMS tile requests travel over.
+    # `https` registers the asset source that imagery tile requests travel over.
     "https",
     "jpeg",
     "keyboard",

@@ -3,28 +3,19 @@
 //! WMS ([the OGC standard](https://www.ogc.org/standards/wms/)) answers
 //! `GetMap` requests for an arbitrary bounding box, which means the server will
 //! happily render whatever rectangle we ask for. To turn that into something a
-//! globe can stream, this module pins requests to a fixed quadtree of tiles —
-//! see [`crate::tiles`] — and asks for one square image per tile.
+//! globe can stream, requests are pinned to a fixed quadtree of tiles — see
+//! [`crate::tiles`] — and one square image is asked for per tile.
 //!
-//! The fetching itself is handed to Bevy: the module registers a `wms://` asset
-//! source whose reader rewrites a tile path such as `0/4/9/3.jpg` into a full
-//! `GetMap` URL and delegates to Bevy's HTTP reader. That buys asynchronous
-//! loading, image decoding, GPU upload and reference counting on both native
-//! and web, and it means a tile is loaded with a plain `asset_server.load`.
-
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
-
-use bevy::asset::io::web::WebAssetReader;
-use bevy::asset::io::{AssetReader, AssetReaderError, AssetSourceBuilder, Reader};
-use bevy::asset::{AssetApp, io::PathStream};
-use bevy::prelude::*;
+//! Because the grid is ours to choose, it is the tidy one:
+//! [`TileGrid::GEODETIC`], two 180° tiles at level 0, quartered at every level
+//! below. [`crate::wmts`] is the other way round — there the server publishes
+//! the grid and the client has to follow it.
+//!
+//! Fetching is handled by the shared `imagery://` asset source in
+//! [`crate::imagery`]; this module only builds URLs.
 
 use crate::geo::GeoBounds;
-use crate::tiles::TileId;
-
-/// The asset source scheme that [`WmsAssetReader`] is registered under.
-pub const WMS_SOURCE: &str = "wms";
+use crate::imagery::ImageFormat;
 
 /// Which revision of the specification to speak.
 ///
@@ -74,35 +65,6 @@ impl WmsVersion {
     }
 }
 
-/// The image encoding to request. Anything else can be reached through
-/// [`WmsConfig::extra`], but these two cover what a globe wants.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WmsFormat {
-    Jpeg,
-    /// What a transparent overlay layer needs.
-    #[expect(dead_code, reason = "selectable in a WmsConfig; no preset uses it")]
-    Png,
-}
-
-impl WmsFormat {
-    fn mime(self) -> &'static str {
-        match self {
-            Self::Jpeg => "image/jpeg",
-            Self::Png => "image/png",
-        }
-    }
-
-    /// The extension the tile path ends in. Bevy picks an image loader by
-    /// extension, so this is what decides whether the bytes reach the JPEG or
-    /// the PNG decoder.
-    pub fn extension(self) -> &'static str {
-        match self {
-            Self::Jpeg => "jpg",
-            Self::Png => "png",
-        }
-    }
-}
-
 /// Everything needed to address one WMS layer.
 #[derive(Debug, Clone)]
 pub struct WmsConfig {
@@ -114,7 +76,7 @@ pub struct WmsConfig {
     pub layers: String,
     pub styles: String,
     pub version: WmsVersion,
-    pub format: WmsFormat,
+    pub format: ImageFormat,
     pub transparent: bool,
     /// Edge length in pixels of each requested tile.
     pub tile_size: u32,
@@ -136,7 +98,7 @@ impl WmsConfig {
             layers: layers.to_string(),
             styles: String::new(),
             version: WmsVersion::V1_3_0,
-            format: WmsFormat::Jpeg,
+            format: ImageFormat::Jpeg,
             transparent: false,
             tile_size: 256,
             max_level: 8,
@@ -194,192 +156,9 @@ impl WmsConfig {
             }
             url.push_str(name);
             url.push('=');
-            url.push_str(&percent_encode(value));
+            url.push_str(&crate::imagery::percent_encode(value));
         }
         url
-    }
-}
-
-/// Percent-encodes a parameter value.
-///
-/// Beyond correctness this keeps slashes and colons — `image/jpeg`,
-/// `EPSG:4326` — out of the URL, which matters because the URL travels to
-/// Bevy's HTTP reader as a [`Path`] and would otherwise pick up path
-/// normalization on the way.
-fn percent_encode(value: &str) -> String {
-    let mut encoded = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                encoded.push(byte as char);
-            }
-            _ => encoded.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    encoded
-}
-
-/// The live configuration, shared between the ECS resource and the asset
-/// reader, which lives outside the `World`.
-pub type SharedWmsConfig = Arc<RwLock<WmsConfig>>;
-
-/// The currently selected layer.
-#[derive(Resource)]
-pub struct WmsSettings {
-    shared: SharedWmsConfig,
-    /// Bumped whenever the layer changes. It is part of every tile path, so a
-    /// change cannot be answered from Bevy's cache of the previous layer.
-    generation: u32,
-    /// Layers the user can cycle through.
-    pub presets: Vec<WmsConfig>,
-    pub preset_index: usize,
-    pub enabled: bool,
-}
-
-impl WmsSettings {
-    pub fn generation(&self) -> u32 {
-        self.generation
-    }
-
-    pub fn label(&self) -> String {
-        self.shared
-            .read()
-            .expect("WMS config lock poisoned")
-            .label
-            .clone()
-    }
-
-    pub fn max_level(&self) -> u8 {
-        self.shared
-            .read()
-            .expect("WMS config lock poisoned")
-            .max_level
-    }
-
-    pub fn tile_extension(&self) -> &'static str {
-        self.shared
-            .read()
-            .expect("WMS config lock poisoned")
-            .format
-            .extension()
-    }
-
-    /// Switches to the next preset layer and invalidates every loaded tile.
-    pub fn cycle_preset(&mut self) {
-        if self.presets.is_empty() {
-            return;
-        }
-        self.preset_index = (self.preset_index + 1) % self.presets.len();
-        let next = self.presets[self.preset_index].clone();
-        *self.shared.write().expect("WMS config lock poisoned") = next;
-        self.generation = self.generation.wrapping_add(1);
-    }
-}
-
-pub struct WmsPlugin {
-    pub presets: Vec<WmsConfig>,
-    /// Whether tiles are streamed at startup.
-    pub enabled: bool,
-}
-
-impl Plugin for WmsPlugin {
-    fn build(&self, app: &mut App) {
-        let initial = self
-            .presets
-            .first()
-            .cloned()
-            .unwrap_or_else(|| WmsConfig::gibs("none", ""));
-        let shared: SharedWmsConfig = Arc::new(RwLock::new(initial));
-
-        // The reader outlives any one `World`, so it holds the configuration
-        // through the same handle the resource writes to.
-        let reader_config = shared.clone();
-        app.register_asset_source(
-            WMS_SOURCE,
-            AssetSourceBuilder::new(move || Box::new(WmsAssetReader::new(reader_config.clone()))),
-        );
-
-        app.insert_resource(WmsSettings {
-            shared,
-            generation: 0,
-            presets: self.presets.clone(),
-            preset_index: 0,
-            enabled: self.enabled,
-        });
-    }
-}
-
-/// Serves tile paths of the form `{generation}/{level}/{x}/{y}.{ext}` by
-/// turning them into `GetMap` requests.
-pub struct WmsAssetReader {
-    config: SharedWmsConfig,
-    http: WebAssetReader,
-    https: WebAssetReader,
-}
-
-impl WmsAssetReader {
-    fn new(config: SharedWmsConfig) -> Self {
-        Self {
-            config,
-            http: WebAssetReader::Http,
-            https: WebAssetReader::Https,
-        }
-    }
-}
-
-/// Recovers the tile a path refers to. The leading generation segment only
-/// exists to keep cache entries apart between layers, so it is discarded.
-fn parse_tile_path(path: &Path) -> Option<TileId> {
-    let text = path.to_str()?;
-    let mut segments = text.split('/');
-    let _generation = segments.next()?;
-    let level: u8 = segments.next()?.parse().ok()?;
-    let x: u32 = segments.next()?.parse().ok()?;
-    let y: u32 = segments.next()?.split('.').next()?.parse().ok()?;
-    Some(TileId { level, x, y })
-}
-
-impl AssetReader for WmsAssetReader {
-    async fn read<'a>(&'a self, path: &'a Path) -> Result<impl Reader + 'a, AssetReaderError> {
-        let Some(tile) = parse_tile_path(path) else {
-            return Err(AssetReaderError::NotFound(path.to_path_buf()));
-        };
-
-        // Build the URL and release the lock before awaiting, so the guard is
-        // never held across a suspension point.
-        let url = {
-            let config = self
-                .config
-                .read()
-                .map_err(|_| AssetReaderError::NotFound(path.to_path_buf()))?;
-            config.get_map_url(tile.bounds())
-        };
-
-        // Bevy's reader prepends the scheme itself, so hand it the remainder.
-        let (reader, remainder) = match url.split_once("://") {
-            Some(("https", rest)) => (&self.https, rest),
-            Some(("http", rest)) => (&self.http, rest),
-            _ => return Err(AssetReaderError::NotFound(PathBuf::from(url))),
-        };
-
-        reader.read(Path::new(remainder)).await
-    }
-
-    async fn read_meta<'a>(&'a self, path: &'a Path) -> Result<impl Reader + 'a, AssetReaderError> {
-        // A WMS endpoint has no companion metadata; reporting that plainly is
-        // cheaper than letting a request go out and 404.
-        Err::<Box<dyn Reader>, _>(AssetReaderError::NotFound(path.to_path_buf()))
-    }
-
-    async fn is_directory<'a>(&'a self, _path: &'a Path) -> Result<bool, AssetReaderError> {
-        Ok(false)
-    }
-
-    async fn read_directory<'a>(
-        &'a self,
-        path: &'a Path,
-    ) -> Result<Box<PathStream>, AssetReaderError> {
-        Err(AssetReaderError::NotFound(path.to_path_buf()))
     }
 }
 
@@ -409,16 +188,5 @@ mod tests {
         assert!(url.contains("CRS=EPSG%3A4326"));
         assert!(url.contains("FORMAT=image%2Fjpeg"));
         assert!(url.contains("WIDTH=256"));
-    }
-
-    #[test]
-    fn tile_paths_round_trip() {
-        let tile = TileId {
-            level: 4,
-            x: 9,
-            y: 3,
-        };
-        assert_eq!(parse_tile_path(Path::new("7/4/9/3.jpg")), Some(tile));
-        assert_eq!(parse_tile_path(Path::new("not-a-tile")), None);
     }
 }

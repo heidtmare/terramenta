@@ -9,9 +9,9 @@ use crate::camera::OrbitCamera;
 use crate::frame::{FrameSet, ReferenceFrame};
 use crate::geo::{EARTH_RADIUS_KM, LatLon, ray_sphere_intersection};
 use crate::globe::GLOBE_RADIUS;
+use crate::imagery::ImagerySettings;
 use crate::sun::Sun;
 use crate::tiles::TileCache;
-use crate::wms::WmsSettings;
 
 const HELP_TEXT: &str = "drag  orbit\n\
                          scroll / pinch  zoom\n\
@@ -21,7 +21,7 @@ const HELP_TEXT: &str = "drag  orbit\n\
                          R  reset view\n\
                          P  pause sun    , .  sun speed    N  now\n\
                          I  full illumination\n\
-                         T  WMS imagery    L  next layer\n\
+                         T  imagery    L  /  shift L  next / previous layer\n\
                          H  hide this";
 
 pub struct HudPlugin;
@@ -89,7 +89,7 @@ fn update_readout(
     windows: Query<&Window>,
     sun: Res<Sun>,
     frame: Res<ReferenceFrame>,
-    wms: Res<WmsSettings>,
+    imagery: Res<ImagerySettings>,
     tiles: Res<TileCache>,
     mut readout: Single<&mut Text, With<ReadoutText>>,
 ) {
@@ -109,10 +109,10 @@ fn update_readout(
         None => "—".to_string(),
     };
 
-    let imagery = if wms.enabled {
+    let imagery_line = if imagery.enabled {
         format!(
             "{}\n           level {} · {} drawn · {} loading",
-            wms.label(),
+            imagery.label(),
             tiles.deepest_level,
             tiles.visible_tiles,
             tiles.loading_tiles,
@@ -128,7 +128,7 @@ fn update_readout(
          frame     {}\n\
          sun over  {}{}\n\
          clock     {}{}\n\
-         imagery   {imagery}",
+         imagery   {imagery_line}",
         frame.mode.label(),
         sun.subsolar.format(),
         if sun.shaded { "" } else { "  (unshaded)" },
