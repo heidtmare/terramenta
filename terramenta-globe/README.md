@@ -175,7 +175,12 @@ it:
 - A **fill** is drawn at one height, the mean of its outer ring, where its
   outline follows every corner. Triangulation duplicates and reorders corners,
   so a height per corner would have to be carried through ear clipping, and what
-  it would buy is a fill that folds.
+  it would buy is a fill that folds. The way to build a shape that has structure
+  in the vertical, then, is several rings rather than one: a `MultiPolygon` whose
+  polygons each sit flat at their own height stacks into a volume, which is what
+  the airspace in the reference app's sample is made of — a surface core, three
+  annular shelves with floors stepping up as they reach further out, and a
+  ceiling over all of it.
 - **Picking** reads the ground, not the height. A shape at altitude is picked
   where it stands rather than where it is drawn — the same place looking
   straight down, and further apart the more the camera is tilted.

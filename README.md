@@ -48,8 +48,8 @@ interface, and the reference app is there to show what that takes.
   file, as screen-sized markers, lines and filled rings — several layers at
   once, each with its own colours and its own refresh period. The reference app
   starts with two: a bundled sample holding one feature per GeoJSON geometry
-  type, and the USGS feed of earthquakes in the past hour, refetched every
-  minute.
+  type — including a stepped airspace stacked out of rings at different heights
+  — and the USGS feed of earthquakes in the past hour, refetched every minute.
 - **Placement at altitude.** A position's optional third element is drawn:
   markers stand off the surface, and a line climbs evenly between the heights of
   its corners, so a flight path or a balloon track is where it says it is. Per

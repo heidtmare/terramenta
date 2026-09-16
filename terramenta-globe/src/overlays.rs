@@ -2269,6 +2269,73 @@ mod tests {
     }
 
     #[test]
+    fn rings_at_different_heights_stack_into_shelves() {
+        // What a stepped airspace is made of: rings that are each flat at one
+        // height, stacked. Both halves have to hold for the stack to read as a
+        // volume — the outlines have to separate in space, and each fill has to
+        // sit at its own ring's height rather than at some average of all of
+        // them.
+        let shelf = |altitude_m: f32, span: f32| Shape {
+            feature: 0,
+            geometry: Polygon {
+                rings: vec![vec![
+                    Position::new(-span, -span, altitude_m),
+                    Position::new(-span, span, altitude_m),
+                    Position::new(span, span, altitude_m),
+                    Position::new(span, -span, altitude_m),
+                ]],
+            },
+        };
+        let floors = [0.0, 2000.0, 3000.0, 4000.0];
+        let shelves: Vec<_> = floors
+            .iter()
+            .enumerate()
+            .map(|(step, floor)| shelf(*floor, 0.2 + step as f32 * 0.2))
+            .collect();
+
+        let radii = |mesh: Mesh| {
+            mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+                .and_then(|values| values.as_float3())
+                .expect("positions")
+                .iter()
+                .map(|position| Vec3::from_array(*position).length())
+                .fold((f32::MAX, f32::MIN), |(low, high), radius| {
+                    (low.min(radius), high.max(radius))
+                })
+        };
+
+        // The outlines span the whole stack, floor to ceiling.
+        let (low, high) =
+            radii(line_mesh(&[], &shelves, OverlayAltitude::default()).expect("lines"));
+        let expected = (floors.last().unwrap() - floors[0]) * units_per_metre();
+        assert!((high - low - expected).abs() < 1.0e-5, "{low} to {high}");
+
+        // And every fill lands on its own shelf: four of them, none sharing a
+        // height with another.
+        let mut levels = Vec::new();
+        for (floor, shelf) in floors.iter().zip(&shelves) {
+            let (low, high) = radii(
+                fill_mesh(std::slice::from_ref(shelf), OverlayAltitude::default()).expect("a fill"),
+            );
+            // One height across the whole lid, to within the precision of a
+            // direction that was built from a sine and a cosine.
+            assert!(high - low < 1.0e-6, "{low} to {high}");
+            assert!(
+                low > FILL_RADIUS + (floor - 1.0) * units_per_metre(),
+                "{low}"
+            );
+            levels.push(low);
+        }
+        for pair in levels.windows(2) {
+            assert!(pair[1] > pair[0], "{levels:?}");
+        }
+
+        // Clamped, the stack is one flat drawing again.
+        let (low, high) = radii(line_mesh(&[], &shelves, OverlayAltitude::CLAMPED).expect("lines"));
+        assert!(high - low < 1.0e-6, "{low} to {high}");
+    }
+
+    #[test]
     fn a_height_setting_rebuilds_the_layer_without_refetching_it() {
         let mut settings = test_settings();
         settings.add(OverlayRequest {

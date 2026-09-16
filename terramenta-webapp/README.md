@@ -49,13 +49,19 @@ of what a layer does are not visible in the same document.
 
 [`data/geometry-tour.geojson`](data/geometry-tour.geojson) is the shape of the
 thing: one feature per GeoJSON geometry type, labelled with what it is, so every
-kind of shape the globe can draw is on screen at once. It also holds the three
-cases worth seeing drawn — a ring with a hole in it, a polygon running across
-the antimeridian, and a launch profile climbing to 420 km, which is what the
-overlay's height handling looks like when it is being used. Click anything on it
-and the properties panel says which geometry it came from. It is served from
-beside the page and fetched as an ordinary URL, so it goes through the same path
-a remote layer does.
+kind of shape the globe can draw is on screen at once. It also holds the cases
+worth seeing drawn — a ring with a hole in it, a polygon running across the
+antimeridian, a launch profile climbing to 420 km, and a stepped terminal
+control area over Denver, which is five rings each flat at its own floor,
+stacked into a volume. Click anything on it and the properties panel says which
+geometry it came from. It is served from beside the page and fetched as an
+ordinary URL, so it goes through the same path a remote layer does.
+
+The airspace is the one that needs looking for. Its floors span under four
+kilometres from the surface to the 12,000 ft ceiling, which is nothing at the
+scale of a planet: fly down to Denver, drop to a low pass, and **ctrl + drag**
+to tilt — the shelves only separate once the camera is low and looking across
+them rather than down at them.
 
 The second is live: the USGS feed of [earthquakes in the past hour][usgs],
 refetched every minute, which is the half a static document cannot show. The

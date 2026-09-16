@@ -90,9 +90,10 @@ async function boot() {
   //
   // The sample first: it is the one that shows what the overlay can draw, since
   // it holds every geometry GeoJSON has, an antimeridian crossing, a ring with
-  // a hole in it and a track at altitude. Then a live feed, which shows the
-  // other half — a layer that refetches itself and changes while you watch,
-  // which is not something an empty panel would ever show.
+  // a hole in it, a track at altitude and an airspace stacked out of rings at
+  // different heights. Then a live feed, which shows the other half — a layer
+  // that refetches itself and changes while you watch, which is not something
+  // an empty panel would ever show.
   addFeed(SAMPLE);
   addFeed(DEFAULT_FEED);
 
