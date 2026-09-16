@@ -33,6 +33,29 @@ export const SAMPLE = {
   refreshSeconds: null,
 };
 
+/**
+ * A box standing on the equator, which is one square ring plus `extrude`.
+ *
+ * Its own layer rather than another feature of the tour, because extrude is a
+ * per-layer setting and the tour must not have it: the airspace in there is
+ * meant to float, and walling its shelves to the ground would bury the shape
+ * they make.
+ */
+export const CUBE = {
+  id: "extruded-cube",
+  label: "Extruded cube · walls to the ground",
+  get url() {
+    return new URL("data/extruded-cube.geojson", document.baseURI).href;
+  },
+  refreshSeconds: null,
+  options: {
+    extrude: true,
+    // Denser than the default fill: a box reads as a solid rather than as four
+    // panes of glass, and there is enough of it on screen to take the weight.
+    fillAlpha: "8c",
+  },
+};
+
 export const FEEDS = [
   {
     id: "quakes-hour",
@@ -59,5 +82,5 @@ export const FEEDS = [
 /** The live one the app puts up on its own, alongside [`SAMPLE`]. */
 export const DEFAULT_FEED = FEEDS[0];
 
-/** Everything the panel offers as a button, sample first. */
-export const CATALOGUE = [SAMPLE, ...FEEDS];
+/** Everything the panel offers as a button, samples first. */
+export const CATALOGUE = [SAMPLE, CUBE, ...FEEDS];

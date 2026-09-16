@@ -47,15 +47,19 @@ interface, and the reference app is there to show what that takes.
 - **GeoJSON overlays.** Vector data over the imagery, from a URL or a local
   file, as screen-sized markers, lines and filled rings — several layers at
   once, each with its own colours and its own refresh period. The reference app
-  starts with two: a bundled sample holding one feature per GeoJSON geometry
+  starts with three: a bundled sample holding one feature per GeoJSON geometry
   type — including a stepped airspace stacked out of rings at different heights
-  — and the USGS feed of earthquakes in the past hour, refetched every minute.
+  — a second holding a cube, and the USGS feed of earthquakes in the past hour,
+  refetched every minute.
 - **Placement at altitude.** A position's optional third element is drawn:
   markers stand off the surface, and a line climbs evenly between the heights of
   its corners, so a flight path or a balloon track is where it says it is. Per
   layer, because feeds disagree about what that element means — a scale says
   how many metres one unit of it is, and clamping to the surface ignores it
   entirely, which is what the USGS feeds want since theirs is a depth.
+- **Extrusion.** A layer can wall its rings down to the ground, so a footprint
+  at a height is drawn as a solid standing on the surface rather than a lid
+  hanging over it.
 - **Pickable features.** The cursor hit-tests the overlay geometry: what it is
   over is haloed on the globe and its properties are listed in the app, and a
   click keeps one selected.

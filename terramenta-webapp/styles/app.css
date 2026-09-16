@@ -463,6 +463,17 @@ body.panel-collapsed #panel {
   margin-top: 0.25rem;
 }
 
+/* The two height switches, side by side on a row of their own: they answer the
+   same question — what the third element of a position means here — and neither
+   is worth a line to itself. */
+.layer-height {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.75rem;
+  margin-top: 0.35rem;
+  color: var(--ink-faint);
+}
+
 .layer .buttons {
   margin-top: 0.5rem;
   align-items: center;

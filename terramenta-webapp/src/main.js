@@ -9,7 +9,7 @@
  */
 
 import * as globe from "./globe.js";
-import { DEFAULT_FEED, SAMPLE } from "./feeds.js";
+import { CUBE, DEFAULT_FEED, SAMPLE } from "./feeds.js";
 import { mountFeature } from "./feature.js";
 import { addFeed } from "./overlays.js";
 import { mountPanel } from "./panel.js";
@@ -88,13 +88,15 @@ async function boot() {
   // Two GeoJSON layers, up before the first frame is drawn. Queued like every
   // other command, so both fetches start as soon as the globe does.
   //
-  // The sample first: it is the one that shows what the overlay can draw, since
-  // it holds every geometry GeoJSON has, an antimeridian crossing, a ring with
-  // a hole in it, a track at altitude and an airspace stacked out of rings at
-  // different heights. Then a live feed, which shows the other half — a layer
-  // that refetches itself and changes while you watch, which is not something
-  // an empty panel would ever show.
+  // The samples first: they are what shows what the overlay can draw. One holds
+  // every geometry GeoJSON has, an antimeridian crossing, a ring with a hole in
+  // it, a track at altitude and an airspace stacked out of rings at different
+  // heights; the other is a box standing on the equator, which is the same
+  // height machinery with walls dropped to the ground. Then a live feed, which
+  // shows the other half — a layer that refetches itself and changes while you
+  // watch, which is not something an empty panel would ever show.
   addFeed(SAMPLE);
+  addFeed(CUBE);
   addFeed(DEFAULT_FEED);
 
   try {

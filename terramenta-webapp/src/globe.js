@@ -182,8 +182,9 @@ export const setOverlayStyle = (id, style) => required().setOverlayStyle(id, sty
 
 /**
  * How a layer reads the third element of its positions: `altitudeMode` of
- * `"relativeToSurface"` or `"clampToSurface"`, and `altitudeScale` as metres
- * per unit. The layer is rebuilt where it stands, without refetching.
+ * `"relativeToSurface"` or `"clampToSurface"`, `altitudeScale` as metres per
+ * unit, and `extrude` to wall its polygons down to the ground. The layer is
+ * rebuilt where it stands, without refetching.
  */
 export const setOverlayAltitude = (id, altitude) => required().setOverlayAltitude(id, altitude);
 

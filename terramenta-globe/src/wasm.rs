@@ -211,6 +211,9 @@ struct AltitudeOptions {
     /// Metres of height per unit of that element: `1000` for a feed in
     /// kilometres, negative for one that counts downward.
     altitude_scale: Option<f32>,
+    /// Whether polygons are joined to the ground by walls, turning a ring at a
+    /// height into a solid standing on the surface.
+    extrude: Option<bool>,
 }
 
 impl AltitudeOptions {
@@ -226,6 +229,7 @@ impl AltitudeOptions {
                 .altitude_scale
                 .filter(|scale| scale.is_finite())
                 .unwrap_or(defaults.scale),
+            extrude: self.extrude.unwrap_or(defaults.extrude),
         }
     }
 }
@@ -276,6 +280,8 @@ impl StyleOptions {
 /// addOverlay("quakes", { url, altitudeMode: "clampToSurface" });
 /// // A track written in kilometres above the ground:
 /// addOverlay("flight", { url, altitudeScale: 1000 });
+/// // Footprints at a height, walled down to the ground:
+/// addOverlay("buildings", { url, extrude: true });
 /// ```
 ///
 /// Returns whether the options could be read. A layer that fails to *load*
@@ -336,8 +342,8 @@ pub fn set_overlay_style(id: String, style: JsValue) -> bool {
 /// as text has nowhere to fetch from, and reports `refreshSeconds: null`
 /// whatever is asked here.
 /// Sets how a layer reads the heights in its positions. Takes the same
-/// `altitudeMode` and `altitudeScale` fields [`add_overlay`] does; anything
-/// left out goes back to its default.
+/// `altitudeMode`, `altitudeScale` and `extrude` fields [`add_overlay`] does;
+/// anything left out goes back to its default.
 ///
 /// The layer is rebuilt where it stands — nothing is refetched, and a pinned
 /// feature stays pinned.

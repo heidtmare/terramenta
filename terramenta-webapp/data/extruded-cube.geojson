@@ -1,0 +1,29 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "id": "cube",
+      "properties": {
+        "geometry": "Polygon",
+        "name": "A cube on the equator",
+        "shows": "One square ring at a height, on a layer with extrude switched on. The ring fills as the lid; every edge of it drops a filled wall to the surface, so what is drawn is a box standing on the ground rather than a square hanging over it.",
+        "dimensions": "2° by 2° on the equator is 222.4 km a side, so the top is set at 222,390 m to match it.",
+        "note": "As near a cube as a sphere allows: the walls run outward from the centre of the Earth rather than parallel, so the top face is 3.5% wider than the footprint it stands on.",
+        "why_its_own_layer": "Extrude is a per-layer setting, like colour. The geometry tour next door is not extruded, because its airspace shelves are meant to float."
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-1.0, -1.0, 222390],
+            [1.0, -1.0, 222390],
+            [1.0, 1.0, 222390],
+            [-1.0, 1.0, 222390],
+            [-1.0, -1.0, 222390]
+          ]
+        ]
+      }
+    }
+  ]
+}

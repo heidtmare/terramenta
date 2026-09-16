@@ -32,7 +32,7 @@ Everything, which is the point.
 | Section | |
 | --- | --- |
 | **Imagery** | All eight presets, grouped by protocol, with the tile size, format and pyramid depth of the active one; previous/next; streaming on or off |
-| **GeoJSON overlays** | A layer from a URL or a local file, a bundled sample and three live feeds to try, auto-refresh with a period, picking on or off, and per layer: visibility, colour, clamp to surface, refresh now, remove — plus what each one holds and how stale it is |
+| **GeoJSON overlays** | A layer from a URL or a local file, two bundled samples and three live feeds to try, auto-refresh with a period, picking on or off, and per layer: visibility, colour, clamp to surface, extrude to ground, refresh now, remove — plus what each one holds and how stale it is |
 | **Sun & clock** | Run or pause, the rate from real time to a day a second, jump to now or forward by hours or days, and whether the night side is shaded at all |
 | **Reference frame** | ECEF or ECI |
 | **Camera** | Altitude, latitude and longitude to fly to, nine places to try, and reading the current view back into the boxes |
@@ -43,9 +43,9 @@ cursor and camera coordinates, altitude, frame, subsolar point, clock, rate,
 layer, overlays, and what the tile streamer is doing — and under it, whatever
 feature the cursor is over, with its properties.
 
-The app starts with two overlays already up, because a layer control with
-nothing in it is a poor way to introduce the feature, and because the two halves
-of what a layer does are not visible in the same document.
+The app starts with three overlays already up, because a layer control with
+nothing in it is a poor way to introduce the feature, and because no one
+document shows everything a layer does.
 
 [`data/geometry-tour.geojson`](data/geometry-tour.geojson) is the shape of the
 thing: one feature per GeoJSON geometry type, labelled with what it is, so every
@@ -62,6 +62,18 @@ kilometres from the surface to the 12,000 ft ceiling, which is nothing at the
 scale of a planet: fly down to Denver, drop to a low pass, and **ctrl + drag**
 to tilt — the shelves only separate once the camera is low and looking across
 them rather than down at them.
+
+[`data/extruded-cube.geojson`](data/extruded-cube.geojson) is the second sample
+and the shortest document here: one square ring at 222 km over the equator, on a
+layer with **extrude** switched on, which walls every edge of it down to the
+surface. What is drawn is a box 222 km on a side standing on the ground — the
+lid is the ring, the sides are the walls. It is its own layer because extrude is
+a per-layer setting and the tour must not have it: the airspace next door is
+meant to float, and walling its shelves to the ground would bury the shape they
+make.
+
+Both switches are on every layer row, so the tour can be extruded and the cube
+flattened to see what each one is doing.
 
 The second is live: the USGS feed of [earthquakes in the past hour][usgs],
 refetched every minute, which is the half a static document cannot show. The
@@ -113,6 +125,7 @@ layer.
 index.html          Canvas, overlay, loading state
 data/               Documents served beside the page
   geometry-tour.geojson   One feature per GeoJSON geometry, up at boot
+  extruded-cube.geojson   A ring at a height, walled to the ground
 styles/app.css      The whole look
 src/
   main.js           Boot: build the interface, start the globe, join the two

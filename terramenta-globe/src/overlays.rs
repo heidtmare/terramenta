@@ -230,6 +230,18 @@ impl AltitudeMode {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OverlayAltitude {
     pub mode: AltitudeMode,
+    /// Whether a polygon is joined to the ground by walls.
+    ///
+    /// A ring at a height is otherwise a lid hanging in the air with nothing
+    /// under it. Extruded, every edge of every ring drops a wall to the surface,
+    /// so a square at a height becomes a box standing on it — the same thing
+    /// KML means by `<extrude>`.
+    ///
+    /// It is off by default and set per layer, which is the granularity
+    /// everything else about a layer's appearance has. A layer of building
+    /// footprints wants all of them extruded; a layer of airspace shelves wants
+    /// none of them, because the shelves *are* the shape.
+    pub extrude: bool,
     /// Metres of height per unit of the third element.
     ///
     /// RFC 7946 says that element is metres, and says it loosely enough that
@@ -244,6 +256,7 @@ impl Default for OverlayAltitude {
         Self {
             mode: AltitudeMode::default(),
             scale: 1.0,
+            extrude: false,
         }
     }
 }
@@ -253,6 +266,7 @@ impl OverlayAltitude {
     pub const CLAMPED: Self = Self {
         mode: AltitudeMode::ClampToSurface,
         scale: 1.0,
+        extrude: false,
     };
 
     /// How far above the surface one position is drawn, in scene units.
@@ -1504,11 +1518,14 @@ fn line_mesh(
 ) -> Option<Mesh> {
     let mut builder = MeshBuilder::new();
     for line in lines {
-        push_ribbon(&mut builder, &densify(&line.geometry, false, altitude));
+        push_ribbon(
+            &mut builder,
+            &densify(&line.geometry, false, altitude, LINE_RADIUS),
+        );
     }
     for polygon in polygons {
         for ring in &polygon.geometry.rings {
-            push_ribbon(&mut builder, &densify(ring, true, altitude));
+            push_ribbon(&mut builder, &densify(ring, true, altitude, LINE_RADIUS));
         }
     }
     builder.finish()
@@ -1552,8 +1569,54 @@ fn fill_mesh(polygons: &[Shape<Polygon>], altitude: OverlayAltitude) -> Option<M
         builder
             .indices
             .extend(indices.iter().map(|index| base + index));
+
+        // The lid is only half of an extruded shape. Walls are part of the fill
+        // rather than a draw of their own: they are the same surface seen edge
+        // on, and a wall in a different colour from the lid it holds up would
+        // read as two shapes rather than one solid.
+        if altitude.extrude {
+            for ring in &polygon.geometry.rings {
+                push_walls(&mut builder, ring, altitude);
+            }
+        }
     }
     builder.finish()
+}
+
+/// Walls joining a ring to the ground under it: a quad per step, from each
+/// point's own height down to the surface.
+///
+/// The ring is densified first, so a wall around anything large follows the
+/// curve of the globe instead of cutting through it, and so a ring whose
+/// corners are at different heights gets a wall whose top edge slopes the way
+/// its outline does.
+///
+/// A hole gets walls too, which is what makes an extruded ring with a hole read
+/// as a shape with a shaft through it rather than as a lid with a gap.
+fn push_walls(builder: &mut MeshBuilder, ring: &[Position], altitude: OverlayAltitude) {
+    let floor = FILL_RADIUS * chord_lift(MAX_SEGMENT_DEGREES);
+    let path = densify(ring, true, altitude, FILL_RADIUS);
+
+    for step in path.windows(2) {
+        let (from, to) = (step[0], step[1]);
+        // A ring already on the ground has no wall to draw, and a wall of no
+        // height is two degenerate triangles.
+        if from.radius <= floor && to.radius <= floor {
+            continue;
+        }
+
+        let base = builder.next_index();
+        // Anticlockwise seen from outside, though nothing depends on it: the
+        // overlay material culls no faces, because a fill's winding follows
+        // whichever way its ring happened to be drawn.
+        builder.push(from.direction, floor, [0.0, 0.0], NO_TANGENT);
+        builder.push(to.direction, floor, [0.0, 0.0], NO_TANGENT);
+        builder.push(to.direction, to.radius, [0.0, 0.0], NO_TANGENT);
+        builder.push(from.direction, from.radius, [0.0, 0.0], NO_TANGENT);
+        builder
+            .indices
+            .extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
 }
 
 /// Splits triangles until none of their edges spans far enough to sag off the
@@ -1748,7 +1811,7 @@ fn push_ribbon(builder: &mut MeshBuilder, path: &[Anchor]) {
 /// way: a segment between two corners at different heights climbs evenly across
 /// however many steps it was split into, so a line runs to where it was told to
 /// rather than stepping up at each corner.
-fn densify(path: &[Position], closed: bool, altitude: OverlayAltitude) -> Vec<Anchor> {
+fn densify(path: &[Position], closed: bool, altitude: OverlayAltitude, base: f32) -> Vec<Anchor> {
     if path.is_empty() {
         return Vec::new();
     }
@@ -1759,7 +1822,7 @@ fn densify(path: &[Position], closed: bool, altitude: OverlayAltitude) -> Vec<An
     let lift = chord_lift(MAX_SEGMENT_DEGREES);
     let anchor = |position: Position| Anchor {
         direction: position.to_direction(),
-        radius: radius_of(position, altitude, LINE_RADIUS, lift),
+        radius: radius_of(position, altitude, base, lift),
     };
 
     let count = path.len();
@@ -1865,6 +1928,7 @@ pub struct OverlayAltitudeInfo {
     /// `"relativeToSurface"` or `"clampToSurface"`.
     pub mode: &'static str,
     pub scale: f32,
+    pub extrude: bool,
 }
 
 impl From<&OverlayAltitude> for OverlayAltitudeInfo {
@@ -1872,6 +1936,7 @@ impl From<&OverlayAltitude> for OverlayAltitudeInfo {
         Self {
             mode: altitude.mode.id(),
             scale: altitude.scale,
+            extrude: altitude.extrude,
         }
     }
 }
@@ -2119,6 +2184,7 @@ mod tests {
             &[at(0.0, 0.0), at(0.0, 90.0)],
             false,
             OverlayAltitude::default(),
+            LINE_RADIUS,
         );
         assert!(densified.len() > 45, "{}", densified.len());
         for point in &densified {
@@ -2134,6 +2200,7 @@ mod tests {
             &[at(0.0, 179.0), at(0.0, -179.0)],
             false,
             OverlayAltitude::default(),
+            LINE_RADIUS,
         );
         assert_eq!(densified.len(), 2);
     }
@@ -2145,6 +2212,7 @@ mod tests {
             &[at(0.0, 0.0), at(1.0, 0.0)],
             false,
             OverlayAltitude::default(),
+            LINE_RADIUS,
         );
         push_ribbon(&mut builder, &path);
         assert_eq!(builder.positions.len(), path.len() * 2);
@@ -2157,6 +2225,7 @@ mod tests {
             &[at(0.0, 0.0), at(0.0, 1.0), at(1.0, 1.0)],
             true,
             OverlayAltitude::default(),
+            LINE_RADIUS,
         );
         assert_eq!(
             ring.first().unwrap().direction,
@@ -2203,6 +2272,7 @@ mod tests {
                 OverlayAltitude {
                     mode: AltitudeMode::RelativeToSurface,
                     scale,
+                    ..OverlayAltitude::default()
                 },
             )
             .expect("a marker");
@@ -2232,6 +2302,7 @@ mod tests {
             ],
             false,
             OverlayAltitude::default(),
+            LINE_RADIUS,
         );
         assert!(path.len() > 4, "{}", path.len());
 
@@ -2333,6 +2404,75 @@ mod tests {
         // Clamped, the stack is one flat drawing again.
         let (low, high) = radii(line_mesh(&[], &shelves, OverlayAltitude::CLAMPED).expect("lines"));
         assert!(high - low < 1.0e-6, "{low} to {high}");
+    }
+
+    #[test]
+    fn extruding_walls_a_raised_ring_down_to_the_ground() {
+        // A square at a height: a lid on its own, a box once it is extruded.
+        let side = 1.0;
+        let top = 200_000.0;
+        let box_lid = [Shape {
+            feature: 0,
+            geometry: Polygon {
+                rings: vec![vec![
+                    Position::new(-side, -side, top),
+                    Position::new(-side, side, top),
+                    Position::new(side, side, top),
+                    Position::new(side, -side, top),
+                ]],
+            },
+        }];
+
+        let spread = |altitude| {
+            let mesh = fill_mesh(&box_lid, altitude).expect("a fill");
+            let radii: Vec<f32> = mesh
+                .attribute(Mesh::ATTRIBUTE_POSITION)
+                .and_then(|values| values.as_float3())
+                .expect("positions")
+                .iter()
+                .map(|position| Vec3::from_array(*position).length())
+                .collect();
+            let low = radii.iter().copied().fold(f32::MAX, f32::min);
+            let high = radii.iter().copied().fold(f32::MIN, f32::max);
+            (low, high, radii.len())
+        };
+
+        // Unextruded, every vertex is on the lid and nothing reaches down.
+        let (low, high, flat_count) = spread(OverlayAltitude::default());
+        assert!(high - low < 1.0e-6, "{low} to {high}");
+
+        let extruded = OverlayAltitude {
+            extrude: true,
+            ..OverlayAltitude::default()
+        };
+        let (low, high, walled_count) = spread(extruded);
+        // The walls span from the ground to the lid, and add vertices to do it.
+        assert!(walled_count > flat_count, "{walled_count} vs {flat_count}");
+        assert!(
+            (high - low - top * units_per_metre()).abs() < 1.0e-5,
+            "{low} to {high}"
+        );
+        assert!(low < FILL_RADIUS * 1.001, "{low} should be on the ground");
+
+        // A ring already on the ground has nothing to wall: extruding it is the
+        // same drawing as not.
+        let on_the_ground = [Shape {
+            feature: 0,
+            geometry: Polygon {
+                rings: vec![vec![
+                    at(-side, -side),
+                    at(-side, side),
+                    at(side, side),
+                    at(side, -side),
+                ]],
+            },
+        }];
+        let count = |altitude| {
+            fill_mesh(&on_the_ground, altitude)
+                .expect("a fill")
+                .count_vertices()
+        };
+        assert_eq!(count(extruded), count(OverlayAltitude::default()));
     }
 
     #[test]

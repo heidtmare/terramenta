@@ -45,23 +45,31 @@ const MIN_REFRESH_SECONDS = 5;
  * Exported because `main.js` puts two up at boot — the layer is the whole
  * feature, and a panel showing an empty list is a poor way to introduce it.
  */
-export function addFeed({ id, url, label, refreshSeconds = null }) {
+export function addFeed({ id, url, label, refreshSeconds = null, options = {} }) {
+  const { fillAlpha, ...rest } = options;
   globe.addOverlay(id ?? idForUrl(url), {
     url,
     label: label ?? labelForUrl(url),
     refreshSeconds,
-    ...paint(PALETTE[added++ % PALETTE.length]),
+    ...paint(PALETTE[added++ % PALETTE.length], fillAlpha),
+    ...rest,
   });
 }
 
-/** The three colours of a layer, from the one an interface picks. */
-function paint(hex) {
+/**
+ * The three colours of a layer, from the one an interface picks.
+ *
+ * `fillAlpha` is a hex byte, for the layers that want a denser fill than a flat
+ * ring does — an extruded solid has walls as well as a lid, and at the opacity
+ * that suits a ring it would barely be there.
+ */
+function paint(hex, fillAlpha = "3a") {
   return {
     pointColor: hex,
     lineColor: hex,
     // The fill is the same colour at a fraction of the opacity, so a filled
     // ring reads as the interior of its outline rather than as its own shape.
-    fillColor: `${hex}3a`,
+    fillColor: `${hex}${fillAlpha}`,
   };
 }
 
@@ -283,10 +291,19 @@ function layerRow(layer, files) {
   // GeoJSON's third element is a height, in principle. In practice a feed may
   // put anything there — the USGS ones put depth in kilometres — so this is the
   // escape hatch: draw the layer flat and ignore whatever it says.
-  const clampToggle = toggle("Clamp to surface", (on) =>
-    globe.setOverlayAltitude(layer.id, {
-      altitudeMode: on ? "clampToSurface" : "relativeToSurface",
-    }),
+  //
+  // Extrude is the other end of the same question: a ring at a height is a lid
+  // hanging in the air until its edges are walled down to the ground. Both are
+  // sent together, because the globe takes the height setting whole.
+  const height = () => ({
+    altitudeMode: clampToggle.input.checked ? "clampToSurface" : "relativeToSurface",
+    extrude: extrudeToggle.input.checked,
+  });
+  const clampToggle = toggle("Clamp to surface", () =>
+    globe.setOverlayAltitude(layer.id, height()),
+  );
+  const extrudeToggle = toggle("Extrude to ground", () =>
+    globe.setOverlayAltitude(layer.id, height()),
   );
 
   /** A file's timer lives here; a URL's lives in the globe. */
@@ -315,7 +332,7 @@ function layerRow(layer, files) {
     { class: "layer" },
     el("div", { class: "layer-head" }, visible.node, color),
     detail,
-    clampToggle.node,
+    el("div", { class: "layer-height" }, clampToggle.node, extrudeToggle.node),
     el(
       "div",
       { class: "buttons" },
@@ -331,6 +348,7 @@ function layerRow(layer, files) {
     sync(layer) {
       visible.set(layer.visible);
       clampToggle.set(layer.altitude.mode === "clampToSurface");
+      extrudeToggle.set(layer.altitude.extrude);
       node.dataset.status = layer.status;
 
       const local = files.get(layer.id);

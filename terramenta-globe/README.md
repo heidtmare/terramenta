@@ -164,6 +164,36 @@ globe.setOverlayAltitude("quakes", { altitudeMode: "relativeToSurface" });
 reads a feed that counts downward. Nothing is ever drawn below the surface: a
 height at or under sea level draws exactly where a clamped one does.
 
+### Extruding
+
+A ring at a height is a lid hanging in the air with nothing under it. `extrude`
+drops a filled wall from every edge of every ring to the surface, which is what
+KML means by the same word:
+
+```js
+// A square ring at 222 km, walled to the ground: a box standing on the equator.
+globe.addOverlay("cube", { url, extrude: true });
+```
+
+The walls are part of the fill — same colour, same draw — because a wall in a
+different colour from the lid it holds up reads as two shapes rather than one
+solid. They are densified like an outline, so a wall around anything large
+follows the curve of the globe instead of cutting through it, and a ring whose
+corners are at different heights gets a wall whose top edge slopes the way its
+outline does. Holes are walled too, which is what makes an extruded ring with a
+hole read as a shape with a shaft through it.
+
+It is a layer setting rather than a per-feature one, like colour: a layer of
+building footprints wants all of them extruded, and a layer of airspace shelves
+wants none of them, because the shelves *are* the shape. Nothing in a document's
+`properties` is read to decide it — see the note on properties above.
+
+Two things it is not. It does not fill an arbitrary vertical face: the fill is
+triangulated in latitude and longitude, where a wall is degenerate, so walls are
+generated from edges rather than given as geometry. And it does not extrude
+lines — a curtain under a flight path is the same machinery, but it is not
+wired up.
+
 Three things follow from how it is done, and are worth knowing before relying on
 it:
 
