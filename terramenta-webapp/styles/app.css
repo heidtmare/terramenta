@@ -1,0 +1,396 @@
+/*
+ * The interface sits on top of the globe, so it is mostly transparency and
+ * restraint: a dark, slightly blue monospace overlay that reads against
+ * daylight imagery and against the night side without changing.
+ */
+
+:root {
+  color-scheme: dark;
+  --ink: #cfe0ff;
+  --ink-dim: rgba(207, 224, 255, 0.55);
+  --ink-faint: rgba(207, 224, 255, 0.28);
+  --surface: rgba(6, 10, 18, 0.72);
+  --surface-raised: rgba(207, 224, 255, 0.08);
+  --line: rgba(207, 224, 255, 0.16);
+  --accent: #7fb2ff;
+  --gutter: 16px;
+  --panel-width: 21rem;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: #000;
+  overflow: hidden;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+/* Bevy sizes the canvas to this element via `fit_canvas_to_parent`. */
+#canvas-container {
+  position: fixed;
+  inset: 0;
+}
+
+canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  outline: none;
+  touch-action: none;
+}
+
+/*
+ * The shell covers the window so its children can be placed against the edges,
+ * but it lets the pointer through: a drag that starts on the overlay's
+ * whitespace should still spin the globe. Each control takes the pointer back.
+ */
+#shell {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+#shell[hidden] {
+  display: none;
+}
+
+#overlay-left,
+#panel,
+#panel-toggle {
+  pointer-events: auto;
+}
+
+/* --- Left overlay: identity and telemetry -------------------------------- */
+
+/*
+ * Given its own surface rather than sitting straight on the globe. Over the
+ * night side plain text is perfectly readable, but at low altitude over cloud
+ * or desert the imagery is near-white, and nothing survives that unbacked.
+ */
+#overlay-left {
+  position: absolute;
+  top: var(--gutter);
+  left: var(--gutter);
+  max-width: min(23rem, calc(100vw - var(--panel-width) - var(--gutter) * 3));
+  padding: 0.7rem 0.9rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  backdrop-filter: blur(12px);
+}
+
+#masthead h1 {
+  margin: 0;
+  font-size: 0.95rem;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+}
+
+#masthead p {
+  margin: 0 0 0.7rem;
+  color: var(--ink-faint);
+  letter-spacing: 0.08em;
+}
+
+.readout {
+  margin: 0;
+  display: grid;
+  gap: 0.15rem;
+}
+
+.readout-row {
+  display: grid;
+  grid-template-columns: 5.5rem 1fr;
+  gap: 0.5rem;
+}
+
+.readout dt {
+  color: var(--ink-faint);
+  letter-spacing: 0.06em;
+}
+
+.readout dd {
+  margin: 0;
+  color: var(--ink-dim);
+  /* Values change ten times a second; a fixed width keeps them from jittering. */
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Panel ---------------------------------------------------------------- */
+
+#panel-toggle {
+  position: absolute;
+  top: var(--gutter);
+  right: var(--gutter);
+  z-index: 1;
+  padding: 0.4rem 0.8rem;
+  font: inherit;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+}
+
+#panel-toggle:hover {
+  border-color: var(--accent);
+}
+
+#panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: var(--panel-width);
+  padding: calc(var(--gutter) * 3.2) var(--gutter) var(--gutter);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--surface);
+  border-left: 1px solid var(--line);
+  backdrop-filter: blur(12px);
+  transition: transform 0.25s ease;
+}
+
+body.panel-collapsed #panel {
+  transform: translateX(100%);
+}
+
+.section {
+  padding-bottom: 1.1rem;
+  margin-bottom: 1.1rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.section:last-child {
+  border-bottom: none;
+  margin-bottom: 0;
+}
+
+.section h2 {
+  margin: 0 0 0.7rem;
+  font-size: 0.72rem;
+  font-weight: 400;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.detail {
+  margin: 0.45rem 0 0;
+  color: var(--ink-faint);
+  font-size: 0.92em;
+}
+
+/* --- Controls ------------------------------------------------------------- */
+
+.row {
+  display: grid;
+  grid-template-columns: 5.5rem 1fr;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.45rem;
+}
+
+.row-label {
+  color: var(--ink-faint);
+}
+
+.select,
+.coordinate {
+  width: 100%;
+  padding: 0.35rem 0.4rem;
+  font: inherit;
+  color: var(--ink);
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+}
+
+.select:focus,
+.coordinate:focus,
+.button:focus-visible,
+.choice-option:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.buttons,
+.places {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.6rem;
+}
+
+.button,
+.choice-option {
+  flex: 1 1 auto;
+  padding: 0.35rem 0.6rem;
+  font: inherit;
+  color: var(--ink-dim);
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.button:hover,
+.choice-option:hover {
+  color: var(--ink);
+  border-color: var(--accent);
+}
+
+.places .button {
+  /* Nine places in a column this narrow: let them pack rather than stretch. */
+  flex: 0 1 auto;
+  font-size: 0.92em;
+  color: var(--ink-faint);
+}
+
+.choice {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.choice-option.selected {
+  color: #06121f;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.2rem 0;
+  cursor: pointer;
+}
+
+.toggle input {
+  accent-color: var(--accent);
+  margin: 0;
+}
+
+.slider-row {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0.5rem 0;
+}
+
+.slider {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.slider-value {
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Loading and failure -------------------------------------------------- */
+
+#status {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  gap: 0.75rem;
+  text-align: center;
+  font-size: 0.8rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: #000;
+  transition: opacity 0.4s ease;
+}
+
+#status[hidden] {
+  display: none;
+}
+
+#status.faded {
+  opacity: 0;
+}
+
+#status h1 {
+  margin: 0;
+  font-size: 1.1rem;
+  letter-spacing: 0.35em;
+}
+
+#status p {
+  margin: 0;
+  max-width: 34rem;
+  opacity: 0.6;
+  line-height: 1.7;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+#status a {
+  color: inherit;
+}
+
+.spinner {
+  width: 1.5rem;
+  height: 1.5rem;
+  margin: 0 auto;
+  border: 1px solid var(--ink-faint);
+  border-top-color: var(--ink);
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* --- Narrow screens ------------------------------------------------------- */
+
+@media (max-width: 40rem) {
+  #panel {
+    top: auto;
+    left: 0;
+    width: 100%;
+    max-height: 62vh;
+    padding-top: var(--gutter);
+    border-left: none;
+    border-top: 1px solid var(--line);
+  }
+
+  body.panel-collapsed #panel {
+    transform: translateY(100%);
+  }
+
+  #overlay-left {
+    max-width: calc(100vw - var(--gutter) * 2);
+  }
+
+  .readout-row {
+    grid-template-columns: 4.5rem 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #panel,
+  #status {
+    transition: none;
+  }
+
+  .spinner {
+    animation: none;
+  }
+}

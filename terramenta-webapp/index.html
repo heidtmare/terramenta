@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+    <title>Terramenta</title>
+    <link rel="stylesheet" href="styles/app.css" />
+  </head>
+  <body>
+    <!-- Bevy sizes the canvas to its parent, so the container is what decides
+         how much of the window the globe gets. -->
+    <div id="canvas-container">
+      <canvas id="terramenta"></canvas>
+    </div>
+
+    <!-- Hidden until the module is loaded: the controls are built from the
+         globe's own catalogue, so there is nothing to show before then. -->
+    <div id="shell" hidden>
+      <div id="overlay-left">
+        <header id="masthead">
+          <h1>Terramenta</h1>
+          <p>reference implementation</p>
+        </header>
+        <div id="readout"></div>
+      </div>
+      <button id="panel-toggle" type="button" aria-expanded="true" aria-controls="panel">
+        Controls
+      </button>
+      <aside id="panel"></aside>
+    </div>
+
+    <div id="status">
+      <h1>TERRAMENTA</h1>
+      <div class="spinner"></div>
+      <p id="status-message">Loading…</p>
+    </div>
+
+    <script type="module" src="src/main.js"></script>
+  </body>
+</html>

@@ -1,0 +1,286 @@
+# terramenta-globe
+
+The renderer: a navigable 3D globe of Earth on [Bevy](https://bevy.org), drawn
+through WebGPU in the browser and through Metal, Vulkan or DX12 on the desktop,
+from the same code.
+
+It is a component, not an application. Everything it can do is reachable from
+outside — see [The control surface](#the-control-surface) — and
+[`terramenta-webapp`](../terramenta-webapp/) is the reference example of driving
+it. The native binary is the same globe with its own overlay and key bindings,
+which is the quickest way to work on the renderer itself.
+
+## Building it
+
+```sh
+./scripts/fetch-assets.sh                     # once: the NASA base textures
+cargo run --release --bin terramenta-globe    # native
+./scripts/build-wasm.sh --release             # WebAssembly, into ./dist
+```
+
+`build-wasm.sh` compiles to `wasm32-unknown-unknown`, runs `wasm-bindgen`, and
+writes the module and an `assets/` folder to `--out-dir` (`./dist` by default).
+That is the whole deliverable — no page, no styling. The web app's own
+`scripts/build.sh` calls this with its own output directory.
+
+The `wasm-bindgen` CLI must match the crate version exactly; the script checks
+and tells you the command if it does not.
+
+## The control surface
+
+[`src/api.rs`](src/api.rs) is the whole of it, and [`src/wasm.rs`](src/wasm.rs)
+binds it to JavaScript. It works in two directions, and both are one-way.
+
+**Commands go in.** They are queued from wherever the caller happens to be and
+drained inside the schedule, which is the only place that touches the `World`.
+Nothing is applied mid-tick, so a burst from one interaction lands together on
+the next frame — and a command sent before the globe has started is fine, it
+lands on the first one. That is what lets an interface be built and wired up
+while the module is still downloading.
+
+**State comes out.** A snapshot is rebuilt from the same resources the built-in
+readout draws from, and pushed to a listener about ten times a second — and
+immediately whenever something with a control on it changes, so a toggle answers
+on the next frame rather than on the next tick of the throttle. Nothing polls.
+
+Because the built-in overlay reads that same snapshot, an external interface and
+the globe's own readout cannot disagree; and because the key bindings go through
+the same commands, an interface stays in step with the keyboard for free. Press
+`P` with the reference app open and its pause control changes with it.
+
+### From JavaScript
+
+```js
+import init, * as globe from "./globe/terramenta_globe.js";
+
+await init();
+
+// The catalogue answers before the globe exists, so an interface can be built
+// from it rather than from a hard-coded copy.
+globe.layers();  // [{index, label, protocol, maxLevel, tileSize, format}, ...]
+globe.limits();  // {minAltitudeKm, maxAltitudeKm, minTimeScale, maxTimeScale}
+
+globe.onState((state) => {
+  // {camera: {center, altitudeKm}, frame: {mode, label}, sun, imagery, hud,
+  //  cursor, keyboard} — see `GlobeState` in src/api.rs
+});
+
+globe.setHudVisible(false);        // queued; applied when the globe starts
+globe.start("#terramenta", "globe/assets");
+```
+
+`start` takes the canvas to draw on and where the assets are, both relative to
+the page. The asset path matters if the module is kept in a subfolder: the
+browser resolves it against the page, not against the module, so a globe at
+`globe/terramenta_globe.js` still looks in `assets/` unless told otherwise.
+
+`start` does not return the way it looks like it should. Winit hands control to
+the browser's event loop by unwinding through an exception, so the call throws
+once the globe is running. [`globe.js`][globejs] in the reference app shows how
+to tell that apart from a real failure.
+
+[globejs]: ../terramenta-webapp/src/globe.js
+
+| | |
+| --- | --- |
+| `layers()` `limits()` | The imagery presets and the ranges the controls accept |
+| `lookAt(lat, lon, altitudeKm?)` | Look straight down at a coordinate |
+| `setAltitude(km)` `zoomBy(exp)` `orbitBy(yawDeg, pitchDeg)` `resetView()` | Move the camera |
+| `setFrame("ecef" \| "eci")` `toggleFrame()` | Which frame the scene is drawn in |
+| `setSunPaused(bool)` `setTimeScale(n)` `setClock(unixSeconds)` `snapClockToNow()` | The simulated clock |
+| `setSunShaded(bool)` | Terminator, or flat full daylight |
+| `setLayer(i)` `nextLayer()` `previousLayer()` `setImageryEnabled(bool)` | Streamed imagery |
+| `setHudVisible(bool)` `setHelpVisible(bool)` `setKeyboardEnabled(bool)` | The globe's own overlay and keys |
+| `onState(callback)` | The state stream. One listener; registering again replaces it |
+
+### From Rust
+
+A native embedder uses the same queue through `api::send`, and reads state
+straight out of the `World` from the `LatestState` resource rather than through
+a listener. `app(GlobeConfig { .. })` builds the `App` without running it, for a
+host that wants to add plugins of its own first.
+
+## Controls
+
+The globe binds these itself. `setKeyboardEnabled(false)` switches them all off
+for an embedder that would rather bind its own.
+
+| Input | Action |
+| --- | --- |
+| Drag / one-finger drag | Orbit |
+| Scroll, pinch, two-finger pinch | Zoom |
+| `W` `A` `S` `D` or arrows | Orbit |
+| `+` `-` | Zoom |
+| `Space` | Switch between the ECEF and ECI reference frames |
+| `R` | Reset the view |
+| `P` | Pause the sun |
+| `,` `.` | Halve / double the sun's speed |
+| `N` | Snap the clock back to now |
+| `I` | Drop the terminator and light the whole globe |
+| `T` | Toggle streamed imagery |
+| `L` / `Shift`+`L` | Next / previous imagery layer |
+| `H` | Hide the control legend |
+
+## Layout
+
+```
+src/
+  lib.rs       Plugin wiring, the layer presets, and the two ways in
+  main.rs      The native entry point, and nothing else
+  api.rs       Commands in, state out — the control surface
+  wasm.rs      That surface, bound to JavaScript
+  geo.rs       Lat/lon conventions, ray-sphere math, the sphere mesh builder
+  globe.rs     Surface, atmosphere and starfield materials and entities
+  camera.rs    Altitude-scaled orbit controller (mouse, keys, touch, gestures)
+  frame.rs     ECEF/ECI, and the rotation that relates them
+  sun.rs       Simulated clock and solar position
+  imagery.rs   Layer selection and the `imagery://` asset source
+  wms.rs       WMS GetMap request URLs
+  wmts.rs      WMTS GetTile request URLs, REST and KVP
+  tiles.rs     Tile grids, level-of-detail selection and streaming
+  hud.rs       The built-in readout, formatted from the state snapshot
+assets/shaders/
+  globe.wgsl        Day/night, city lights, ocean specular, clouds, limb haze
+  atmosphere.wgsl   Additive scattering shell
+  starfield.wgsl    Procedural stars and galactic band
+  tile.wgsl         A single streamed imagery tile
+scripts/
+  fetch-assets.sh  Downloads the NASA imagery
+  build-wasm.sh    Builds the WebAssembly module and its assets
+```
+
+### Conventions worth knowing
+
+The globe is a unit sphere in Bevy's Y-up world space: `+Y` is the north pole,
+`+Z` is the prime meridian, `+X` is 90° east — that is the Earth-fixed (ECEF)
+frame, which everything geographic is stored in. Textures are equirectangular with
+`v == 0` at the north pole. Bevy's built-in `Sphere` primitive is Z-up and wraps
+the other way, so [`geo::equirectangular_sphere`](src/geo.rs) generates its own
+grid instead — that one convention is what makes the coordinate readout, the
+texture alignment and the sun position agree.
+
+[`frame::ReferenceFrame`](src/frame.rs) decides which frame world space *is*.
+In ECEF it is the identity: the globe stands still and the sun sweeps around it
+once a day. In ECI, world space is inertial — the stars hold still, the sun
+holds still but for the degree a day the Earth's orbit moves it, and the globe
+turns underneath at the sidereal rate. Anything Earth-fixed (the globe mesh, the
+imagery tiles) is rotated into world space by `earth_to_world`, and anything
+read back out of the scene — the cursor coordinate, the tile quadtree walk — is
+rotated back by `world_to_earth`. The sun direction handed to the shaders is
+always a world-space vector, so the terminator lands on the same ground in
+either frame.
+
+The surface is lit in [`globe.wgsl`](assets/shaders/globe.wgsl) rather than
+through Bevy's PBR pipeline. There is no `DirectionalLight` in the scene at all:
+one sun direction uniform drives the terminator, the specular and the city
+lights, which keeps the planet to a single draw call and makes the look directly
+adjustable.
+
+## Streaming imagery
+
+The globe can drape itself in imagery from any [OGC Web Map
+Service](https://www.ogc.org/standards/wms/) or [Web Map Tile
+Service](https://www.ogc.org/standards/wmts/). The readout shows the protocol
+and layer in use, the deepest level on screen, and how many tiles are drawn or
+in flight.
+
+### The two protocols
+
+They differ in who owns the tiling, and that difference drives the design.
+
+**WMS** answers `GetMap` for an arbitrary bounding box. That is too open-ended to
+cache, so requests are pinned to a grid of our choosing — the **global geodetic
+quadtree**: level 0 is two 180°x180° tiles, and each level quarters them, giving
+`2^(n+1) x 2^n` tiles at level `n`.
+
+**WMTS** only serves tiles it has already cut, addressed by a **tile matrix set**
+the server publishes. That is the better deal — every tile is pre-rendered and
+cached, so responses are fast and identical for everybody — but the grid is no
+longer ours to pick, and published grids are often not the tidy one.
+
+NASA GIBS is the case in point. Its `EPSG:4326` matrix sets start from a level-0
+tile 288° on a side, not 180°, so:
+
+- the coarse levels **hang off the edge of the world** — tile `0/0/0` covers
+  180° W to 108° E and runs 108° past the south pole, with the overhang
+  returned as black pixels;
+- the matrices are **not square powers of two**. They run 2x1, 3x2, 5x3, 10x5,
+  20x10 — enough tiles of that span to reach the far edge, rounded up. Asking
+  for a column past the end is a `400`, not an empty tile.
+
+Both are handled by [`TileGrid`](src/tiles.rs), which describes any plate-carrée
+pyramid with two numbers — the north-west origin and the level-0 tile span — and
+by `TileGrid::clipped_bounds`, which trims a tile to the part that is really on
+the globe. A clipped tile is meshed over only its real extent, with texture
+coordinates still measured against its full one, and given fewer quads rather
+than smaller ones so its geometry meets its neighbours' without a crack.
+
+### Level of detail
+
+Each frame the tree is walked from the roots. A tile splits when its projected
+size on screen exceeds the resolution of the image behind it, so detail follows
+the camera; tiles over the horizon, and tiles that fall entirely off the world,
+are skipped. Tiles that have not arrived yet fall back to the nearest ancestor
+that has, and failing that to the base globe underneath, so the view is never
+holed. Requests are capped both in flight and per frame, because one fast zoom
+will otherwise queue hundreds of tiles that are stale before they land.
+
+### Fetching
+
+Fetching is handed to Bevy rather than hand-rolled.
+[`imagery.rs`](src/imagery.rs) registers an `imagery://` asset source whose
+reader turns a tile path like `0/4/9/3.jpg` into whatever URL the active layer
+wants — a `GetMap` query for WMS, a REST path or `GetTile` query for WMTS — and
+delegates to Bevy's HTTP reader. A tile then loads with an ordinary
+`asset_server.load`, and async I/O, image decoding, GPU upload and reference
+counting all come for free — identically on native and on the web.
+
+### Pointing it at your own server
+
+Layers live in `imagery_layers()` in [`lib.rs`](src/lib.rs). For WMTS, the
+quickest route is a `ResourceURL` template copied out of the server's
+`WMTSCapabilities.xml`:
+
+```rust
+WmtsConfig {
+    label: "My layer".into(),
+    layer: "workspace:layer".into(),
+    style: "default".into(),
+    tile_matrix_set: "EPSG:4326".into(),
+    grid: TileGrid::from_scale_denominator(LatLon::new(90.0, -180.0), 279_541_132.0, 256),
+    encoding: WmtsEncoding::Rest {
+        template: "https://example.org/wmts/{Layer}/{Style}/{TileMatrixSet}/\
+                   {TileMatrix}/{TileRow}/{TileCol}.png".into(),
+    },
+    format: ImageFormat::Png,
+    tile_size: 256,
+    max_level: 9,
+    ..
+}
+.with_dimension("Time", "2026-09-10")
+```
+
+`TileGrid::from_scale_denominator` does the conversion the specification
+prescribes — denominator x 0.28 mm, read as degrees — so the level-0
+`ScaleDenominator` and `TileWidth` can be transcribed straight from the document
+rather than worked out by hand. Servers that publish no template take
+`.with_kvp(endpoint)` instead, which sends `GetTile` as a query string.
+
+Things to get right:
+
+- **Row is latitude, column is longitude.** `TileRow` counts south and `TileCol`
+  counts east, so a `{TileRow}/{TileCol}` template takes `y` before `x`.
+  Swapping them yields imagery that is wrong rather than missing.
+- **`max_level` means different things.** For WMS it is taste — how far to
+  refine before the imagery stops repaying the requests. For WMTS it is the
+  depth of the matrix set, and a level past it is an error from the server.
+- **Axis order, for WMS.** 1.3.0 declares `EPSG:4326` latitude-first and renamed
+  `SRS` to `CRS`; 1.1.1 treats the same code as longitude-first. Picking the
+  wrong `WmsVersion` yields a world turned on its side rather than an error, so
+  `WmsVersion` encodes both differences together.
+- **CORS.** The browser build needs `Access-Control-Allow-Origin` from the
+  imagery host. NASA GIBS sends `*`; a private GeoServer usually needs
+  configuring.
+
+Adding a layer needs nothing on the JavaScript side: the presets are published
+through `layers()`, so an interface built from the catalogue picks it up.

@@ -1,5 +1,9 @@
 /target
-/web/dist
-# Earth imagery is fetched by scripts/fetch-assets.sh, not committed.
-/assets/textures/*.jpg
-/assets/textures/*.png
+
+# Earth imagery is fetched by terramenta-globe/scripts/fetch-assets.sh, not committed.
+/terramenta-globe/assets/textures/*.jpg
+/terramenta-globe/assets/textures/*.png
+
+# The WebAssembly module and the assets copied next to it are build output.
+/terramenta-globe/dist
+/terramenta-webapp/globe

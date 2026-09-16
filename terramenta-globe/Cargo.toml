@@ -1,0 +1,79 @@
+[package]
+name = "terramenta-globe"
+description = "A navigable 3D globe of Earth, rendered with Bevy and WebGPU"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# `cdylib` is what wasm-bindgen links against for the browser; `rlib` keeps the
+# crate usable as a normal Rust dependency, which is what the native binary and
+# the tests link against.
+[lib]
+name = "terramenta_globe"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "terramenta-globe"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+bevy = { version = "0.19", default-features = false, features = [
+    "std",
+    "async_executor",
+    "bevy_asset",
+    "bevy_camera",
+    "bevy_color",
+    "bevy_core_pipeline",
+    "bevy_image",
+    "bevy_light",
+    "bevy_material",
+    "bevy_mesh",
+    "bevy_pbr",
+    "bevy_post_process",
+    "bevy_render",
+    "bevy_shader",
+    "bevy_state",
+    "bevy_text",
+    "bevy_ui",
+    "bevy_ui_render",
+    "bevy_window",
+    "bevy_winit",
+    "bevy_log",
+    "default_font",
+    "gestures",
+    "hdr",
+    # `https` registers the asset source that imagery tile requests travel over.
+    "https",
+    "jpeg",
+    "keyboard",
+    "ktx2",
+    "mouse",
+    "png",
+    "tonemapping_luts",
+    "touch",
+    # Pure-Rust zstd: the C implementation cannot link on wasm32, and this is
+    # only used to unpack the tonemapping LUT once at startup.
+    "zstd_rust",
+] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+bevy = { version = "0.19", default-features = false, features = [
+    "multi_threaded",
+    "wayland",
+    "x11",
+] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+bevy = { version = "0.19", default-features = false, features = [
+    "web",
+    "webgpu",
+] }
+# `std::time::SystemTime` is unimplemented on wasm32-unknown-unknown; this shim
+# reads the wall clock from JS so the globe can start at the real UTC time.
+web-time = "1.1"
+# The control surface `terramenta-webapp` drives the globe through.
+wasm-bindgen = "0.2"
+js-sys = "0.3"

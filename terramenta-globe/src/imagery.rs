@@ -186,6 +186,11 @@ impl ImagerySettings {
         self.with(|layer| format!("{} · {}", layer.protocol(), layer.label()))
     }
 
+    /// The protocol the active layer speaks.
+    pub fn protocol(&self) -> &'static str {
+        self.with(ImageryLayer::protocol)
+    }
+
     pub fn grid(&self) -> TileGrid {
         self.with(ImageryLayer::grid)
     }
@@ -214,7 +219,8 @@ impl ImagerySettings {
         self.select_preset(self.preset_index + self.presets.len().saturating_sub(1));
     }
 
-    fn select_preset(&mut self, index: usize) {
+    /// Switches to a preset by index, wrapping past the end of the list.
+    pub fn select_preset(&mut self, index: usize) {
         if self.presets.is_empty() {
             return;
         }

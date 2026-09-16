@@ -9,7 +9,7 @@
 //! continents; a hundred kilometres up the same drag nudges a city block, which
 //! is what makes the globe feel navigable instead of twitchy.
 
-use std::f32::consts::FRAC_PI_2;
+use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
 use bevy::camera::Hdr;
 use bevy::core_pipeline::tonemapping::Tonemapping;
@@ -18,7 +18,9 @@ use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseSc
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 
+use crate::api::keyboard_enabled;
 use crate::frame::{FrameRealigned, FrameSet};
+use crate::geo::{EARTH_RADIUS_KM, LatLon};
 use crate::globe::GLOBE_RADIUS;
 
 /// Closest approach, ~130 km above the surface.
@@ -42,7 +44,11 @@ impl Plugin for OrbitCameraPlugin {
             .add_systems(
                 Update,
                 (
-                    (mouse_input, keyboard_input, touch_input),
+                    (
+                        mouse_input,
+                        keyboard_input.run_if(keyboard_enabled),
+                        touch_input,
+                    ),
                     // Whatever the frame switch did to the globe has to reach
                     // the camera before the transform is rebuilt from it, and
                     // the finished transform is what the tile walk reads.
@@ -86,12 +92,60 @@ impl OrbitCamera {
         ((self.distance - GLOBE_RADIUS) / GLOBE_RADIUS).clamp(0.015, 1.0)
     }
 
-    fn zoom_by(&mut self, exponent: f32) {
+    /// Height of the camera above the surface in kilometres, as it is being
+    /// drawn rather than where it is heading.
+    pub fn altitude_km(&self) -> f32 {
+        (self.distance - GLOBE_RADIUS) * EARTH_RADIUS_KM
+    }
+
+    /// The altitudes the camera can be flown to, in kilometres.
+    pub fn altitude_limits_km() -> (f32, f32) {
+        (
+            (MIN_DISTANCE - GLOBE_RADIUS) * EARTH_RADIUS_KM,
+            (MAX_DISTANCE - GLOBE_RADIUS) * EARTH_RADIUS_KM,
+        )
+    }
+
+    /// Flies to a given height above the surface.
+    pub fn set_altitude_km(&mut self, altitude_km: f32) {
+        self.target_distance =
+            (GLOBE_RADIUS + altitude_km / EARTH_RADIUS_KM).clamp(MIN_DISTANCE, MAX_DISTANCE);
+    }
+
+    /// The coordinate the camera is looking straight down at, in world space.
+    ///
+    /// Yaw and pitch are the longitude and latitude of the point the camera
+    /// hangs over, which falls out of how the orbit transform is built — so
+    /// this and [`OrbitCamera::look_at`] are a pair of conversions rather than
+    /// a search.
+    pub fn world_center(&self) -> LatLon {
+        LatLon::new(self.pitch.to_degrees(), self.yaw.to_degrees())
+    }
+
+    /// Swings around to look straight down at a world-space direction.
+    pub fn look_at(&mut self, direction: Vec3) {
+        let target = LatLon::from_direction(direction);
+        self.target_pitch = target.lat.to_radians().clamp(-PITCH_LIMIT, PITCH_LIMIT);
+        // Yaw is smoothed toward rather than snapped to, so take the short way
+        // round: the nearest revolution, not three turns about the pole.
+        let yaw = target.lon.to_radians();
+        self.target_yaw += (yaw - self.target_yaw + PI).rem_euclid(TAU) - PI;
+    }
+
+    /// Returns the view to where it started.
+    pub fn reset(&mut self) {
+        let start = Self::default();
+        self.target_yaw = start.target_yaw;
+        self.target_pitch = start.target_pitch;
+        self.target_distance = start.target_distance;
+    }
+
+    pub fn zoom_by(&mut self, exponent: f32) {
         self.target_distance =
             (self.target_distance * (-exponent).exp()).clamp(MIN_DISTANCE, MAX_DISTANCE);
     }
 
-    fn orbit_by(&mut self, yaw: f32, pitch: f32) {
+    pub fn orbit_by(&mut self, yaw: f32, pitch: f32) {
         self.target_yaw -= yaw;
         self.target_pitch = (self.target_pitch + pitch).clamp(-PITCH_LIMIT, PITCH_LIMIT);
     }
@@ -193,10 +247,7 @@ fn keyboard_input(
     }
 
     if keys.just_pressed(KeyCode::KeyR) {
-        let reset = OrbitCamera::default();
-        camera.target_yaw = reset.target_yaw;
-        camera.target_pitch = reset.target_pitch;
-        camera.target_distance = reset.target_distance;
+        camera.reset();
     }
 }
 

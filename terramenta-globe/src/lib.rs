@@ -1,6 +1,20 @@
 //! Terramenta — a navigable 3D globe of Earth, built on Bevy and rendered
 //! through WebGPU in the browser or the native backend on the desktop.
+//!
+//! The crate is the globe and nothing else: it draws the Earth, streams imagery
+//! onto it and lets it be flown around, and it exposes all of that through
+//! [`api`] so an embedder can put its own interface on top. `terramenta-webapp`
+//! in this workspace is the reference one, and [`crate::wasm`] is the binding
+//! it reaches the globe through.
+//!
+//! There are two ways in:
+//!
+//! * [`run`], which starts the globe and does not return. That is what the
+//!   native binary calls and what [`wasm::start`] calls in the browser.
+//! * [`app`], which builds the same `App` without running it, for a host that
+//!   wants to add plugins of its own first.
 
+pub mod api;
 mod camera;
 mod frame;
 mod geo;
@@ -9,6 +23,8 @@ mod hud;
 mod imagery;
 mod sun;
 mod tiles;
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;
 mod wms;
 mod wmts;
 
@@ -16,6 +32,7 @@ use bevy::asset::AssetMetaCheck;
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSamplerDescriptor};
 use bevy::prelude::*;
 
+use api::ApiPlugin;
 use camera::OrbitCameraPlugin;
 use frame::FramePlugin;
 use globe::GlobePlugin;
@@ -26,9 +43,43 @@ use tiles::TilePlugin;
 use wms::WmsConfig;
 use wmts::WmtsConfig;
 
-fn main() {
-    App::new()
-        .insert_resource(ClearColor(Color::BLACK))
+/// Where the globe is drawn and what it loads from.
+#[derive(Debug, Clone)]
+pub struct GlobeConfig {
+    /// The canvas to draw on, as a CSS selector. The web build attaches to it
+    /// and tracks its size; native ignores it, where the window is the whole app.
+    pub canvas_selector: String,
+    /// Where the shaders and base textures are, relative to the page on the web
+    /// and to the crate on the desktop.
+    ///
+    /// An embedder that keeps the module in a folder of its own has to say so
+    /// here: the browser resolves this against the page, not against the module,
+    /// so a globe at `globe/terramenta_globe.js` still loads its assets from
+    /// `assets/` unless told otherwise.
+    pub asset_path: String,
+}
+
+impl Default for GlobeConfig {
+    fn default() -> Self {
+        Self {
+            canvas_selector: "#terramenta".into(),
+            asset_path: "assets".into(),
+        }
+    }
+}
+
+/// Starts the globe with the default configuration. This does not return: Bevy
+/// takes the thread on the desktop and the browser's event loop on the web.
+pub fn run() {
+    app(GlobeConfig::default()).run();
+}
+
+/// Builds the globe's `App` without running it, for a host that wants to add
+/// plugins of its own first.
+pub fn app(config: GlobeConfig) -> App {
+    let mut app = App::new();
+    app.insert_resource(ClearColor(Color::BLACK));
+    app
         // The imagery asset source has to be registered before `AssetPlugin`
         // builds, which is why this plugin goes in ahead of `DefaultPlugins`.
         .add_plugins(ImageryPlugin {
@@ -42,7 +93,7 @@ fn main() {
                         title: "Terramenta".into(),
                         // On the web the app binds to this canvas and tracks
                         // its size; both are ignored on native.
-                        canvas: Some("#terramenta".into()),
+                        canvas: Some(config.canvas_selector.clone()),
                         fit_canvas_to_parent: true,
                         // Keep the browser from scrolling the page or showing a
                         // context menu when the globe is being dragged.
@@ -52,6 +103,7 @@ fn main() {
                     ..default()
                 })
                 .set(AssetPlugin {
+                    file_path: config.asset_path.clone(),
                     // Every tile would otherwise be preceded by a request for a
                     // `.meta` file that an imagery endpoint will never have,
                     // doubling the traffic to serve nothing.
@@ -72,26 +124,23 @@ fn main() {
                 }),
         )
         .add_plugins((
+            ApiPlugin,
             GlobePlugin,
             OrbitCameraPlugin,
             SunPlugin,
             FramePlugin,
             TilePlugin,
             HudPlugin,
-        ))
-        .run();
+        ));
+
+    app
 }
 
-/// The layers offered at startup, cycled through with `L` (and back with
-/// `Shift+L`).
-///
-/// All of these come from NASA's Global Imagery Browse Services, which needs no
-/// API key, and the first four are offered over both protocols so the two can be
-/// compared on the same imagery — WMTS is the one to prefer in practice, since
-/// its tiles are pre-cut and cached rather than rendered per request.
-///
-/// The dated layers are pinned to a fixed day: GIBS serves the most recent
-/// imagery a day or two in arrears, so asking for "today" returns an empty tile.
+/// The imagery presets the globe starts with, in the order they cycle.
+pub fn layers() -> Vec<api::LayerInfo> {
+    api::describe_layers(&imagery_layers())
+}
+
 fn imagery_layers() -> Vec<ImageryLayer> {
     vec![
         // WMTS. The tile matrix set is not a free choice — GIBS publishes each

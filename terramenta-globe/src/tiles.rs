@@ -576,7 +576,12 @@ impl Plugin for TilePlugin {
             .init_resource::<TileCache>()
             .add_systems(
                 Update,
-                (tile_controls, stream_tiles, orient_tiles, sync_tile_sun)
+                (
+                    tile_controls.run_if(crate::api::keyboard_enabled),
+                    stream_tiles,
+                    orient_tiles,
+                    sync_tile_sun,
+                )
                     .chain()
                     .in_set(FrameSet::Apply),
             );

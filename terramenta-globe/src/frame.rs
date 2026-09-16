@@ -54,6 +54,23 @@ pub enum FrameMode {
 }
 
 impl FrameMode {
+    /// The stable name the control surface names this frame by.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Ecef => "ecef",
+            Self::Eci => "eci",
+        }
+    }
+
+    /// Parses [`FrameMode::id`] back, for a frame named by an embedder.
+    pub fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "ecef" => Some(Self::Ecef),
+            "eci" => Some(Self::Eci),
+            _ => None,
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Ecef => "ECEF · Earth-fixed",
@@ -61,7 +78,7 @@ impl FrameMode {
         }
     }
 
-    fn toggled(self) -> Self {
+    pub fn toggled(self) -> Self {
         match self {
             Self::Ecef => Self::Eci,
             Self::Eci => Self::Ecef,
@@ -89,7 +106,7 @@ pub struct FrameRealigned {
 impl ReferenceFrame {
     /// How far Earth-fixed coordinates are turned in world space, in radians
     /// about the poles.
-    fn earth_yaw(&self) -> f32 {
+    pub(crate) fn earth_yaw(&self) -> f32 {
         match self.mode {
             FrameMode::Ecef => 0.0,
             FrameMode::Eci => self.earth_rotation,
@@ -120,6 +137,15 @@ impl ReferenceFrame {
             FrameMode::Ecef => -self.earth_rotation,
             FrameMode::Eci => 0.0,
         }
+    }
+
+    /// Points the Earth where the given moment says it should be.
+    ///
+    /// This runs once a tick from the simulated clock, and again whenever an
+    /// embedder jumps that clock — a jump of days would otherwise be drawn at
+    /// the previous tick's rotation until the next one caught up.
+    pub(crate) fn sync_rotation(&mut self, unix_seconds: f64) {
+        self.earth_rotation = sidereal_angle(unix_seconds);
     }
 }
 
@@ -178,8 +204,8 @@ pub(crate) fn frame_controls(
     });
 }
 
-fn sync_earth_rotation(sun: Res<Sun>, mut frame: ResMut<ReferenceFrame>) {
-    frame.earth_rotation = sidereal_angle(sun.unix_seconds);
+pub(crate) fn sync_earth_rotation(sun: Res<Sun>, mut frame: ResMut<ReferenceFrame>) {
+    frame.sync_rotation(sun.unix_seconds);
 }
 
 /// Greenwich mean sidereal time as an angle in radians.

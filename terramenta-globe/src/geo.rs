@@ -19,7 +19,10 @@ use std::f32::consts::{PI, TAU};
 pub const EARTH_RADIUS_KM: f32 = 6371.0;
 
 /// A point on the globe in degrees.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// This is the shape every coordinate in [`crate::api::GlobeState`] takes, so
+/// it serializes straight into the state an embedder reads.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
 pub struct LatLon {
     pub lat: f32,
     pub lon: f32,

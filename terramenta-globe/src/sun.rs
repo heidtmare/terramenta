@@ -12,6 +12,7 @@
 
 use bevy::prelude::*;
 
+use crate::api::keyboard_enabled;
 use crate::geo::LatLon;
 
 const SECONDS_PER_DAY: f64 = 86_400.0;
@@ -20,6 +21,10 @@ const DAYS_PER_YEAR: f32 = 365.2422;
 const OBLIQUITY_DEG: f32 = 23.44;
 /// Simulated seconds that pass per real second by default: one day every four minutes.
 const DEFAULT_TIME_SCALE: f32 = 360.0;
+/// The slowest the clock runs: real time.
+pub const MIN_TIME_SCALE: f32 = 1.0;
+/// The fastest: a whole day every second.
+pub const MAX_TIME_SCALE: f32 = 86_400.0;
 
 /// The simulated clock and the resulting sun direction.
 #[derive(Resource, Debug, Clone)]
@@ -78,8 +83,18 @@ impl Sun {
 
     /// Jumps the simulated clock back to the real one.
     pub fn snap_to_now(&mut self) {
-        self.unix_seconds = wall_clock_unix_seconds();
+        self.set_clock(wall_clock_unix_seconds());
+    }
+
+    /// Jumps the simulated clock to a given moment.
+    pub fn set_clock(&mut self, unix_seconds: f64) {
+        self.unix_seconds = unix_seconds;
         self.recompute();
+    }
+
+    /// Sets how fast the clock runs, within the range the controls allow.
+    pub fn set_time_scale(&mut self, time_scale: f32) {
+        self.time_scale = time_scale.clamp(MIN_TIME_SCALE, MAX_TIME_SCALE);
     }
 
     fn recompute(&mut self) {
@@ -104,8 +119,10 @@ pub struct SunPlugin;
 
 impl Plugin for SunPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Sun>()
-            .add_systems(Update, (sun_controls, advance_sun).chain());
+        app.init_resource::<Sun>().add_systems(
+            Update,
+            (sun_controls.run_if(keyboard_enabled), advance_sun).chain(),
+        );
     }
 }
 
@@ -114,10 +131,12 @@ fn sun_controls(keys: Res<ButtonInput<KeyCode>>, mut sun: ResMut<Sun>) {
         sun.paused = !sun.paused;
     }
     if keys.just_pressed(KeyCode::Comma) {
-        sun.time_scale = (sun.time_scale / 2.0).max(1.0);
+        let halved = sun.time_scale / 2.0;
+        sun.set_time_scale(halved);
     }
     if keys.just_pressed(KeyCode::Period) {
-        sun.time_scale = (sun.time_scale * 2.0).min(86_400.0);
+        let doubled = sun.time_scale * 2.0;
+        sun.set_time_scale(doubled);
     }
     if keys.just_pressed(KeyCode::KeyN) {
         sun.snap_to_now();

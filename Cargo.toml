@@ -1,65 +1,17 @@
-[package]
-name = "terramenta"
+# Terramenta is a workspace of two halves: the globe renderer, which compiles to
+# a WebAssembly module with a JavaScript control surface, and the web app that
+# embeds it.
+#
+# `terramenta-webapp` is not a Cargo member — it is plain HTML, CSS and ES
+# modules with no build step. See `terramenta-webapp/README.md`.
+[workspace]
+resolver = "3"
+members = ["terramenta-globe"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
-description = "A navigable 3D globe of Earth, rendered with Bevy and WebGPU"
 license = "MIT OR Apache-2.0"
-
-[dependencies]
-bevy = { version = "0.19", default-features = false, features = [
-    "std",
-    "async_executor",
-    "bevy_asset",
-    "bevy_camera",
-    "bevy_color",
-    "bevy_core_pipeline",
-    "bevy_image",
-    "bevy_light",
-    "bevy_material",
-    "bevy_mesh",
-    "bevy_pbr",
-    "bevy_post_process",
-    "bevy_render",
-    "bevy_shader",
-    "bevy_state",
-    "bevy_text",
-    "bevy_ui",
-    "bevy_ui_render",
-    "bevy_window",
-    "bevy_winit",
-    "bevy_log",
-    "default_font",
-    "gestures",
-    "hdr",
-    # `https` registers the asset source that imagery tile requests travel over.
-    "https",
-    "jpeg",
-    "keyboard",
-    "ktx2",
-    "mouse",
-    "png",
-    "tonemapping_luts",
-    "touch",
-    # Pure-Rust zstd: the C implementation cannot link on wasm32, and this is
-    # only used to unpack the tonemapping LUT once at startup.
-    "zstd_rust",
-] }
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-bevy = { version = "0.19", default-features = false, features = [
-    "multi_threaded",
-    "wayland",
-    "x11",
-] }
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-bevy = { version = "0.19", default-features = false, features = [
-    "web",
-    "webgpu",
-] }
-# `std::time::SystemTime` is unimplemented on wasm32-unknown-unknown; this shim
-# reads the wall clock from JS so the globe can start at the real UTC time.
-web-time = "1.1"
 
 # Debug builds of a renderer are unusably slow without optimized dependencies.
 [profile.dev.package."*"]
@@ -70,7 +22,7 @@ codegen-units = 1
 lto = "thin"
 panic = "abort"
 
-# Size-oriented profile used by `scripts/build-web.sh --release`.
+# Size-oriented profile used by `terramenta-globe/scripts/build-wasm.sh --release`.
 [profile.web-release]
 inherits = "release"
 opt-level = "s"
