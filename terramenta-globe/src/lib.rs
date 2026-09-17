@@ -25,6 +25,7 @@ mod geojson;
 mod globe;
 mod hud;
 mod imagery;
+mod moon;
 mod mvt;
 mod omm;
 mod overlays;
@@ -50,6 +51,7 @@ use frame::FramePlugin;
 use globe::GlobePlugin;
 use hud::HudPlugin;
 use imagery::{ImageFormat, ImageryLayer, ImageryPlugin};
+use moon::MoonPlugin;
 use overlays::{OverlayPlugin, OverlayRequest, OverlaySourcePlugin};
 use placemark::PlacemarkPlugin;
 use sun::SunPlugin;
@@ -168,6 +170,7 @@ pub fn app(config: GlobeConfig) -> App {
             GlobePlugin,
             OrbitCameraPlugin,
             SunPlugin,
+            MoonPlugin,
             FramePlugin,
             TilePlugin,
             VectorTilePlugin,

@@ -1,16 +1,26 @@
 //! Placemarks: an icon pinned to a coordinate and drawn at a fixed size on
 //! screen.
 //!
-//! One is up from the moment the globe starts — the subsolar point, the place
-//! the sun is directly overhead, which moves west across the ground at fifteen
-//! degrees an hour and up and down with the season. It is where the terminator
-//! is drawn *from*, so having it marked turns the lighting on the globe from
-//! something to look at into something to read: the bright spot under the icon
-//! is local noon, and the ring of twilight is a quarter of the planet away.
+//! Two are up from the moment the globe starts, and both are the same thing
+//! seen from the ground: the point a body is directly overhead.
 //!
-//! The coordinate comes straight from [`crate::sun::Sun`], the one place that
-//! works it out — the shading, the HUD's `sun over` line and this icon can
-//! never disagree about where the sun is.
+//! The **subsolar** point moves west at fifteen degrees an hour and up and down
+//! with the season. It is where the terminator is drawn *from*, so having it
+//! marked turns the lighting on the globe from something to look at into
+//! something to read: the bright spot under the icon is local noon, and the
+//! ring of twilight is a quarter of the planet away.
+//!
+//! The **sublunar** point is the moon's, and it moves differently enough to be
+//! worth watching — a little over twelve degrees further west each day, and
+//! wandering as far as 28° from the equator over the nineteen years its orbit's
+//! nodes take to come round. How far it is from the sun's icon is the phase:
+//! together is new, opposite is full, and a quarter of the planet apart is a
+//! half moon.
+//!
+//! Neither coordinate is worked out here. They come from [`crate::sun::Sun`]
+//! and [`crate::moon::Moon`], which are the only places that know — so the
+//! shading, the HUD's `sun over` line and these icons can never disagree about
+//! where either body is.
 //!
 //! Like an overlay marker, a placemark is **sized in pixels rather than in
 //! kilometres**: the mesh is one quad with all four corners on the anchor, and
@@ -32,12 +42,14 @@ use bevy::shader::ShaderRef;
 use crate::frame::{FrameSet, ReferenceFrame};
 use crate::geo::LatLon;
 use crate::globe::GLOBE_RADIUS;
+use crate::moon::Moon;
 use crate::sun::Sun;
 use crate::tiles::MAX_TILE_RADIUS;
 
-/// The sun icon, drawn at the size it was authored at.
+/// The icons, drawn at the size they were authored at.
 const SUN_ICON: &str = "icons/sun32.png";
-const SUN_ICON_PX: f32 = 32.0;
+const MOON_ICON: &str = "icons/moon32.png";
+const ICON_PX: f32 = 32.0;
 
 /// How far out a placemark's anchor sits, in scene units.
 ///
@@ -70,48 +82,67 @@ pub struct Placemark {
 #[derive(Component, Debug)]
 pub struct Subsolar;
 
+/// Marks the placemark that follows the moon.
+#[derive(Component, Debug)]
+pub struct Sublunar;
+
 pub struct PlacemarkPlugin;
 
 impl Plugin for PlacemarkPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(MaterialPlugin::<IconMaterial>::default())
-            .add_systems(Startup, spawn_subsolar)
+            .add_systems(Startup, spawn_placemarks)
             .add_systems(
                 Update,
                 // The clock has already been advanced by the time `Apply` runs,
-                // so the subsolar point read here is this frame's, not last
-                // frame's — and the frame rotation it is placed under has been
-                // settled for this tick as well.
-                (follow_the_sun, place_placemarks)
+                // so the points read here are this frame's, not last frame's —
+                // and the frame rotation they are placed under has been settled
+                // for this tick as well.
+                (follow_the_sun, follow_the_moon, place_placemarks)
                     .chain()
                     .in_set(FrameSet::Apply),
             );
     }
 }
 
-fn spawn_subsolar(
+fn spawn_placemarks(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<IconMaterial>>,
     assets: Res<AssetServer>,
     sun: Res<Sun>,
+    moon: Res<Moon>,
 ) {
+    // One quad serves both, and every placemark added after them: the mesh is
+    // four corners on the origin, and everything that makes one icon different
+    // from another is in its material and its transform.
+    let quad = meshes.add(icon_quad());
+
     commands.spawn((
         Name::new("Subsolar placemark"),
         Placemark {
             coordinate: sun.subsolar,
         },
         Subsolar,
-        Mesh3d(meshes.add(icon_quad())),
-        MeshMaterial3d(materials.add(IconMaterial::new(
-            assets.load(SUN_ICON),
-            SUN_ICON_PX,
-        ))),
+        Mesh3d(quad.clone()),
+        MeshMaterial3d(materials.add(IconMaterial::new(assets.load(SUN_ICON), ICON_PX))),
         Transform::from_translation(anchor(sun.subsolar)),
         // The quad is spread in the vertex shader from four corners sitting on
         // top of one another, so its own bounds are a point: left to cull
         // itself it would vanish the moment the anchor left the screen, with
         // half the icon still on it.
+        NoFrustumCulling,
+    ));
+
+    commands.spawn((
+        Name::new("Sublunar placemark"),
+        Placemark {
+            coordinate: moon.sublunar,
+        },
+        Sublunar,
+        Mesh3d(quad),
+        MeshMaterial3d(materials.add(IconMaterial::new(assets.load(MOON_ICON), ICON_PX))),
+        Transform::from_translation(anchor(moon.sublunar)),
         NoFrustumCulling,
     ));
 }
@@ -120,6 +151,13 @@ fn spawn_subsolar(
 fn follow_the_sun(sun: Res<Sun>, mut placemarks: Query<&mut Placemark, With<Subsolar>>) {
     for mut placemark in &mut placemarks {
         placemark.coordinate = sun.subsolar;
+    }
+}
+
+/// And the sublunar one on the point the moon is.
+fn follow_the_moon(moon: Res<Moon>, mut placemarks: Query<&mut Placemark, With<Sublunar>>) {
+    for mut placemark in &mut placemarks {
+        placemark.coordinate = moon.sublunar;
     }
 }
 
@@ -239,7 +277,7 @@ mod tests {
     fn a_placemark_hangs_above_the_imagery() {
         // Clear of the highest a tile is ever drawn, or the icon's anchor would
         // be inside the terrain it is meant to be marking.
-        assert!(PLACEMARK_RADIUS > MAX_TILE_RADIUS);
+        const { assert!(PLACEMARK_RADIUS > MAX_TILE_RADIUS) };
         let anchor = anchor(LatLon::new(0.0, 0.0));
         assert!((anchor.length() - PLACEMARK_RADIUS).abs() < 1.0e-6);
     }

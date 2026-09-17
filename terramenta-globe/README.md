@@ -693,6 +693,7 @@ src/
   camera.rs    Altitude-scaled orbit controller (mouse, keys, touch, gestures)
   frame.rs     ECEF/ECI, and the rotation that relates them
   sun.rs       Simulated clock and solar position
+  moon.rs      Lunar position, as the point the moon is overhead
   imagery.rs   Layer selection and the `imagery://` asset source
   wms.rs       WMS GetMap request URLs
   wmts.rs      WMTS GetTile request URLs, REST and KVP
@@ -707,7 +708,7 @@ src/
   picking.rs   Which feature is under the cursor
   overlays.rs  Overlay layers: sources, refresh, meshes and the `geojson://` source
   ephemeris.rs Satellite layers: the `omm://` source, propagation, markers and arcs
-  placemark.rs Icons pinned to a coordinate — the subsolar point
+  placemark.rs Icons pinned to a coordinate — the subsolar and sublunar points
   hud.rs       The built-in readout, formatted from the state snapshot
 assets/shaders/
   globe.wgsl        Day/night, city lights, ocean specular, clouds, limb haze
@@ -718,6 +719,7 @@ assets/shaders/
   icon.wgsl         A placemark's icon, sized in pixels
 assets/icons/
   sun32.png         The subsolar placemark
+  moon32.png        The sublunar placemark
 scripts/
   fetch-assets.sh  Downloads the NASA imagery
   build-wasm.sh    Builds the WebAssembly module and its assets

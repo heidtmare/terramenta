@@ -155,7 +155,11 @@ pub(crate) fn advance_sun(time: Res<Time>, mut sun: ResMut<Sun>) {
 }
 
 /// Seconds since the Unix epoch, falling back to zero if the platform has no clock.
-fn wall_clock_unix_seconds() -> f64 {
+///
+/// Shared with [`crate::moon`], which starts on the same wall clock this does —
+/// a moon that began at the epoch and caught up on the first tick would be
+/// drawn half a world from where it belongs for one frame.
+pub(crate) fn wall_clock_unix_seconds() -> f64 {
     #[cfg(not(target_arch = "wasm32"))]
     use std::time::{SystemTime, UNIX_EPOCH};
     #[cfg(target_arch = "wasm32")]
