@@ -16,7 +16,7 @@ use wasm_bindgen::prelude::*;
 use crate::GlobeConfig;
 use crate::api::{
     self, AltitudeMode, EphemerisRequest, GlobeCommand, GlobeState, Limits, OverlayAltitude,
-    OverlayRequest, OverlaySource, OverlayStyle, Selection, TrailWindow,
+    OverlayRequest, OverlaySource, OverlayStyle, Selection, TrailPath, TrailWindow,
 };
 use crate::frame::FrameMode;
 use crate::geo::LatLon;
@@ -486,6 +486,12 @@ struct TrailOptions {
     /// Samples per whole orbit. A ceiling: a layer with many trails divides one
     /// budget among them, so this is what a lightly loaded layer gets.
     trail_samples: Option<u32>,
+    /// `"track"` for where the satellite went over the ground — a corkscrew in
+    /// ECEF, and the figure of eight a navigation constellation is usually
+    /// drawn as — or `"orbit"` for the orbit itself, which is the same curve in
+    /// both frames and so does not move when the frame is switched. Only ECEF
+    /// tells them apart. `"track"` if omitted or unrecognised.
+    trail_path: Option<String>,
 }
 
 impl TrailOptions {
@@ -495,6 +501,11 @@ impl TrailOptions {
             leading_orbits: self.leading_orbits.unwrap_or(defaults.leading_orbits),
             trailing_orbits: self.trailing_orbits.unwrap_or(defaults.trailing_orbits),
             samples: self.trail_samples.unwrap_or(defaults.samples),
+            path: self
+                .trail_path
+                .as_deref()
+                .and_then(TrailPath::from_id)
+                .unwrap_or(defaults.path),
         }
     }
 }
@@ -625,9 +636,18 @@ pub fn set_ephemeris_trails(id: String, trails: bool) {
     api::send(GlobeCommand::SetEphemerisTrails { id, trails });
 }
 
-/// How far the arcs run either side of now, and how finely. Takes
-/// `leadingOrbits`, `trailingOrbits` and `trailSamples`; anything left out goes
-/// back to its default.
+/// How far the arcs run either side of now, how finely, and what they are a
+/// picture of. Takes `leadingOrbits`, `trailingOrbits`, `trailSamples` and
+/// `trailPath`; anything left out goes back to its default.
+///
+/// `trailPath` is `"track"` or `"orbit"`, and it is the answer to why an arc
+/// changes shape when the frame is switched. A track is where the satellite
+/// passed over the ground, so each sample is placed against the rotation at
+/// *its own* moment — which is what makes it a corkscrew in ECEF, and the
+/// figure of eight a navigation constellation is usually drawn as. An orbit is
+/// the path itself, every sample placed against the *current* rotation, so it
+/// is the same curve in ECEF and ECI and switching between them does not move
+/// it. Only ECEF can tell the two apart.
 #[wasm_bindgen(js_name = setEphemerisTrail)]
 pub fn set_ephemeris_trail(id: String, trail: JsValue) -> bool {
     let Some(trail) = from_js::<TrailOptions>(&trail) else {
@@ -898,8 +918,15 @@ pub fn clear_pinned_feature() {
 /// number rather than by position, so the pin holds when the layer refetches
 /// and the document is renumbered.
 #[wasm_bindgen(js_name = pinSatellite)]
-pub fn pin_satellite(layer: String, norad_id: u64) {
-    api::send(GlobeCommand::PinSatellite { layer, norad_id });
+pub fn pin_satellite(layer: String, norad_id: u32) {
+    api::send(GlobeCommand::PinSatellite {
+        layer,
+        // `u32` at the boundary and `u64` behind it, as every other control
+        // that names an object does it: taken as a `u64`, wasm-bindgen would
+        // demand a `BigInt` from JavaScript, and the catalogue number in a
+        // snapshot is an ordinary number.
+        norad_id: u64::from(norad_id),
+    });
 }
 
 #[wasm_bindgen(js_name = clearPinnedSatellite)]

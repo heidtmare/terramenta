@@ -298,9 +298,16 @@ export const setEphemerisTrails = (id, trails) => required().setEphemerisTrails(
 
 /**
  * How far the arcs run either side of now, and how finely:
- * `{leadingOrbits, trailingOrbits, trailSamples}`. In orbits rather than
- * minutes, so half an orbit is half an orbit for the station at ninety minutes
- * and for a navigation satellite at twelve hours alike.
+ * `{leadingOrbits, trailingOrbits, trailSamples, trailPath}`. The window is in
+ * orbits rather than minutes, so half an orbit is half an orbit for the station
+ * at ninety minutes and for a navigation satellite at twelve hours alike.
+ *
+ * `trailPath` is why an arc changes shape when the frame is switched.
+ * `"track"` draws where the satellite passed over the ground, each sample
+ * placed against the rotation at its own moment — a corkscrew in ECEF, and the
+ * figure of eight a navigation constellation is usually drawn as. `"orbit"`
+ * draws the path itself, every sample against the current rotation, which is
+ * the same curve in both frames and does not move when they are switched.
  */
 export const setEphemerisTrail = (id, trail) => required().setEphemerisTrail(id, trail);
 

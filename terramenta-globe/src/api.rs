@@ -44,7 +44,7 @@ use crate::vector_tiles::{self, VectorTileCache, VectorTileSettings};
 /// globe's own business.
 pub use crate::ephemeris::{
     EphemerisLayerInfo, EphemerisRequest, EphemerisState, MAX_TRACKED, MAX_TRAILED, SatelliteInfo,
-    Selection, TrailWindow, default_style as ephemeris_style,
+    Selection, TrailPath, TrailWindow, default_style as ephemeris_style,
 };
 // `SetFrame` takes one of these, so a native embedder has to be able to name
 // it; the module it lives in is the globe's own business.

@@ -78,7 +78,11 @@ interface, and the reference app is there to show what that takes.
   sweeps. Which objects are drawn and which are trailed is chosen per object,
   and the reference app wires up Celestrak's keyless catalogue: the crewed
   stations, GPS, the geostationary ring, the Molniya ellipses and a full
-  Starlink shell.
+  Starlink shell. An arc draws either the ground track — each sample placed
+  against the Earth's rotation at its own moment, which is what makes it a
+  corkscrew in ECEF and the figure of eight a navigation constellation is
+  usually drawn as — or the orbit itself, which is the same curve in both
+  frames and so does not move when they are switched.
 - **Pickable features and satellites.** The cursor hit-tests the overlay
   geometry: what it is over is haloed on the globe and its properties are listed
   in the app, and a click keeps one selected. Satellites are picked by the same

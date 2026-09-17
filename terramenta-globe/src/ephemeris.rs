@@ -43,6 +43,20 @@
 //! already in world space, and the entities carry no rotation at all. Switching
 //! frames rebuilds them.
 //!
+//! Which is also the one thing about an arc that surprises people, so
+//! [`TrailPath`] makes it a choice. Turning every sample by *its own* moment
+//! draws where the satellite went over the ground — the figure of eight a
+//! navigation constellation is usually drawn as, and the stationary dot a
+//! geostationary one really is. Turning them all by the *current* moment
+//! instead draws the orbit itself, frozen into Earth-fixed space as it stands
+//! now, and that is the same curve in both frames — so switching frames leaves
+//! it exactly where it was, which is what an orbit rather than a track ought to
+//! do. The difference between the two, sample by sample, is precisely how far
+//! the Earth turned between that sample's moment and now: nothing at the
+//! satellite, and growing to a quarter of a turn at each end of a full-orbit
+//! window for anything as high as a navigation satellite. In ECI there is no
+//! difference at all, because there is nothing to turn by.
+//!
 //! **Coordinates are geocentric, not geodetic.** A position is reduced to a
 //! declination, a right ascension and a radius, and the radius becomes a height
 //! above a sphere of [`EARTH_RADIUS_KM`]. That is not the WGS 84 ellipsoid — it
@@ -167,7 +181,44 @@ const ALTITUDE: OverlayAltitude = OverlayAltitude {
 // What a layer is
 // ---------------------------------------------------------------------------
 
-/// How long a trail is and how finely it is drawn.
+/// What an arc is a picture of.
+///
+/// Only ECEF can tell the two apart. In ECI world space is already inertial, so
+/// there is no rotation to apply and both draw the same orbit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TrailPath {
+    /// Where the satellite passed over the ground: each sample placed at the
+    /// longitude it was over *at its own moment*. A corkscrew in ECEF, because
+    /// the planet turned underneath between one sample and the next.
+    #[default]
+    GroundTrack,
+    /// The orbit itself, as it stands at this moment: every sample placed
+    /// against the *current* rotation, so the arc is the same curve whichever
+    /// frame is drawn and switching between them does not move it. It drifts
+    /// westward over the ground as the clock runs, which is what an inertial
+    /// ellipse does when the Earth turns under it.
+    Orbit,
+}
+
+impl TrailPath {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::GroundTrack => "track",
+            Self::Orbit => "orbit",
+        }
+    }
+
+    /// Parses [`TrailPath::id`] back, for a path named by an embedder.
+    pub fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "track" => Some(Self::GroundTrack),
+            "orbit" => Some(Self::Orbit),
+            _ => None,
+        }
+    }
+}
+
+/// How long a trail is, how finely it is drawn, and what it is a picture of.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TrailWindow {
     /// How far ahead the leading arc runs, in orbits.
@@ -181,6 +232,8 @@ pub struct TrailWindow {
     /// ninety minutes and for a navigation satellite at twelve hours, where
     /// "forty minutes" is most of one and a twentieth of the other.
     pub samples: u32,
+    /// A ground track or an orbit. See [`TrailPath`].
+    pub path: TrailPath,
 }
 
 impl Default for TrailWindow {
@@ -192,6 +245,9 @@ impl Default for TrailWindow {
             leading_orbits: 0.5,
             trailing_orbits: 0.5,
             samples: 128,
+            // A track rather than an orbit, because it is the one of the two
+            // that ECEF alone can show: the orbit is what ECI already draws.
+            path: TrailPath::GroundTrack,
         }
     }
 }
@@ -210,6 +266,7 @@ impl TrailWindow {
             leading_orbits: orbits(self.leading_orbits),
             trailing_orbits: orbits(self.trailing_orbits),
             samples: self.samples.clamp(MIN_TRAIL_SAMPLES, MAX_TRAIL_SAMPLES),
+            path: self.path,
         }
     }
 
@@ -1376,6 +1433,14 @@ fn arcs_of(layer: &Ephemeris, catalogue: &Catalogue, now: f64, mode: FrameMode) 
         .min(share)
         .clamp(MIN_TRAIL_SAMPLES, MAX_TRAIL_SAMPLES);
 
+    // An orbit is drawn against one rotation for the whole arc — the one the
+    // marker is placed with — so the curve is the same in both frames. A track
+    // is drawn against each sample's own, which is what makes it a track.
+    let anchor = match window.path {
+        TrailPath::Orbit => Some(reference_angle(mode, now)),
+        TrailPath::GroundTrack => None,
+    };
+
     let mut path = Vec::new();
     for index in trailing {
         let satellite = &catalogue.satellites[index];
@@ -1399,7 +1464,10 @@ fn arcs_of(layer: &Ephemeris, catalogue: &Catalogue, now: f64, mode: FrameMode) 
                 diverged = true;
                 break;
             };
-            path.push(place(teme, reference_angle(mode, at)));
+            path.push(place(
+                teme,
+                anchor.unwrap_or_else(|| reference_angle(mode, at)),
+            ));
         }
         if diverged {
             continue;
@@ -1829,6 +1897,8 @@ pub struct TrailWindowInfo {
     pub leading_orbits: f32,
     pub trailing_orbits: f32,
     pub samples: u32,
+    /// `"track"` or `"orbit"`.
+    pub path: &'static str,
 }
 
 impl From<&TrailWindow> for TrailWindowInfo {
@@ -1837,6 +1907,7 @@ impl From<&TrailWindow> for TrailWindowInfo {
             leading_orbits: trail.leading_orbits,
             trailing_orbits: trail.trailing_orbits,
             samples: trail.samples,
+            path: trail.path.id(),
         }
     }
 }
@@ -2123,6 +2194,7 @@ mod tests {
             leading_orbits: 1.0,
             trailing_orbits: 0.0,
             samples: 64,
+            ..TrailWindow::default()
         };
         let catalogue = layer.catalogue.clone().expect("a catalogue");
         let now = catalogue.satellites[0].epoch_unix_seconds;
@@ -2164,6 +2236,7 @@ mod tests {
             leading_orbits: 9.0,
             trailing_orbits: f32::NAN,
             samples: 1,
+            ..TrailWindow::default()
         }
         .sanitized();
         assert_eq!(window.leading_orbits, MAX_TRAIL_ORBITS);
@@ -2357,5 +2430,85 @@ mod tests {
             height - expected < 20.0 / f64::from(EARTH_RADIUS_KM),
             "{anchor:?}"
         );
+    }
+    #[test]
+    fn an_arc_stays_on_its_satellite_in_either_frame() {
+        let layer = layer();
+        let catalogue = layer.catalogue.clone().expect("a catalogue");
+        let now = catalogue.satellites[0].epoch_unix_seconds;
+
+        // The window is half an orbit either way, so the middle sample is the
+        // moment the marker is drawn at. The two have to agree in both frames:
+        // a switch rebuilds the arc into the frame it is drawn in, and if it
+        // ever did not, every arc would hang the whole Earth rotation away from
+        // the satellite it belongs to.
+        for mode in [FrameMode::Ecef, FrameMode::Eci] {
+            let positions = positions_of(&layer, &catalogue, now, mode).0;
+            let marker = positions.point(0).1;
+            let arcs = arcs_of(&layer, &catalogue, now, mode);
+            let (_, line) = arcs.line(0);
+            let middle = line.get(line.len() / 2);
+            assert!((middle.lat - marker.lat).abs() < 1.0e-6, "{mode:?}");
+            assert!((middle.lon - marker.lon).abs() < 1.0e-6, "{mode:?}");
+        }
+    }
+    #[test]
+    fn an_orbit_is_the_same_curve_in_both_frames_and_a_track_is_not() {
+        let mut layer = layer();
+        let catalogue = layer.catalogue.clone().expect("a catalogue");
+        let now = catalogue.satellites[0].epoch_unix_seconds;
+
+        // Both arcs as places on the ground: the inertial one brought back
+        // through the rotation the globe is drawn with, which is what the eye
+        // compares across a frame switch.
+        let turn = crate::frame::sidereal_radians(now).to_degrees();
+        let ends = |layer: &Ephemeris, mode| {
+            let arcs = arcs_of(layer, &catalogue, now, mode);
+            let (_, line) = arcs.line(0);
+            let back = match mode {
+                FrameMode::Eci => turn,
+                FrameMode::Ecef => 0.0,
+            };
+            let ground = |lon: f64| (lon - back + 180.0).rem_euclid(360.0) - 180.0;
+            (
+                ground(line.get(0).lon),
+                ground(line.get(line.len() - 1).lon),
+            )
+        };
+        let apart = |(a, b): (f64, f64), (c, d): (f64, f64)| {
+            let wrap = |value: f64| ((value + 180.0).rem_euclid(360.0) - 180.0).abs();
+            wrap(a - c).max(wrap(b - d))
+        };
+
+        // A track is a different curve in each frame, by exactly the Earth's
+        // rotation over half the window either way — a little under twelve
+        // degrees for the station's ninety-minute orbit.
+        layer.trail.path = TrailPath::GroundTrack;
+        let moved = apart(ends(&layer, FrameMode::Ecef), ends(&layer, FrameMode::Eci));
+        assert!((11.0..12.5).contains(&moved), "{moved}");
+
+        // An orbit is the same curve in both, which is the whole point of it:
+        // switching frames leaves it where it was.
+        layer.trail.path = TrailPath::Orbit;
+        let moved = apart(ends(&layer, FrameMode::Ecef), ends(&layer, FrameMode::Eci));
+        assert!(moved < 1.0e-6, "{moved}");
+    }
+
+    #[test]
+    fn an_orbit_arc_still_runs_through_its_satellite() {
+        let mut layer = layer();
+        layer.trail.path = TrailPath::Orbit;
+        let catalogue = layer.catalogue.clone().expect("a catalogue");
+        let now = catalogue.satellites[0].epoch_unix_seconds;
+
+        for mode in [FrameMode::Ecef, FrameMode::Eci] {
+            let positions = positions_of(&layer, &catalogue, now, mode).0;
+            let marker = positions.point(0).1;
+            let arcs = arcs_of(&layer, &catalogue, now, mode);
+            let (_, line) = arcs.line(0);
+            let middle = line.get(line.len() / 2);
+            assert!((middle.lat - marker.lat).abs() < 1.0e-6, "{mode:?}");
+            assert!((middle.lon - marker.lon).abs() < 1.0e-6, "{mode:?}");
+        }
     }
 }

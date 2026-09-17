@@ -203,7 +203,9 @@ export function mountEphemeris(bind) {
       { class: "detail" },
       "Switch to the ECI frame to see an orbit as the closed ellipse it is. " +
         "In ECEF the same arc is a corkscrew, because the Earth turns " +
-        "underneath it while the satellite goes round.",
+        "underneath it while the satellite goes round — which is why switching " +
+        "frames reshapes it. A layer can draw the orbit itself instead, which " +
+        "is the same curve in both.",
     ),
     adding,
     list,
@@ -233,9 +235,15 @@ function layerRow(layer) {
       leadingOrbits: Number(leading.input.value),
       trailingOrbits: Number(trailing.input.value),
       trailSamples: layer.trail.samples,
+      trailPath: pathToggle.input.checked ? "orbit" : "track",
     });
   const trailing = orbits("Behind", sendTrail);
   const leading = orbits("Ahead", sendTrail);
+
+  // The one control that explains why an arc changes shape when the frame is
+  // switched: a track is where the satellite went over the ground, an orbit is
+  // the path itself and is the same curve in both frames.
+  const pathToggle = toggle("Draw the orbit, not the ground track", sendTrail);
 
   const periodInput = el("input", {
     class: "coordinate",
@@ -261,6 +269,7 @@ function layerRow(layer) {
     detail,
     trailsToggle.node,
     el("div", { class: "trail-window" }, trailing.node, leading.node),
+    pathToggle.node,
     objects.node,
     el(
       "div",
@@ -280,6 +289,7 @@ function layerRow(layer) {
       trailsToggle.set(next.trails);
       leading.set(next.trail.leadingOrbits);
       trailing.set(next.trail.trailingOrbits);
+      pathToggle.set(next.trail.path === "orbit");
       node.dataset.status = next.status;
 
       refreshToggle.set(Boolean(next.refreshSeconds));
