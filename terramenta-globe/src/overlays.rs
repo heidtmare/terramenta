@@ -1561,6 +1561,13 @@ pub(crate) fn marker_mesh(
 
 /// Every line, plus every polygon's rings — so a polygon still reads as a shape
 /// when its fill is transparent, or when it was too big to triangulate.
+///
+/// Extruded, a ring is outlined three times over: around its own corners, again
+/// around the footprint on the ground, and up the corner posts joining the two.
+/// The walls [`push_walls`] builds are a flat wash of one colour with no edge
+/// between the faces, because the overlay is drawn unlit — so without these the
+/// only crisp thing in the drawing is the lid's outline, and a box reads as a
+/// square hanging in the air. See [`push_ring_edges`].
 pub(crate) fn line_mesh(
     document: &FeatureSet,
     only: Option<u32>,
@@ -1581,10 +1588,74 @@ pub(crate) fn line_mesh(
             }
             for ring in polygon.rings() {
                 push_ribbon(&mut builder, &densify(ring, true, altitude, LINE_RADIUS));
+                if altitude.extrude {
+                    push_ring_edges(&mut builder, ring, altitude);
+                }
             }
         }
     }
     builder.finish()
+}
+
+/// What an extruded ring is outlined with besides itself: a post at every
+/// corner, dropped to the ground, and the footprint those posts stand on.
+///
+/// Corners rather than densified steps, which is the whole difference between
+/// an edge and a fence. A post is radial, so it is straight in space however
+/// far it runs and has no sag to subdivide away; the footprint is a path across
+/// the globe like any other, so it is densified like any other.
+///
+/// A ring already on the ground has nothing to stand up from, and drawing its
+/// footprint would be drawing the ring a second time over itself — so a ring
+/// with no corner off the ground is left exactly as an unextruded one.
+fn push_ring_edges(builder: &mut MeshBuilder, ring: Coords<'_>, altitude: OverlayAltitude) {
+    let lift = chord_lift(MAX_SEGMENT_DEGREES);
+    let floor = LINE_RADIUS * lift;
+
+    let mut standing = false;
+    for index in 0..ring.len() {
+        let corner = ring.get(index);
+        let radius = radius_of(corner, altitude, LINE_RADIUS, lift);
+        // A corner on the ground is already on its own footprint.
+        if radius <= floor {
+            continue;
+        }
+        standing = true;
+        push_post(builder, corner.to_direction(), floor, radius);
+    }
+
+    if standing {
+        // The same ring, drawn as if it had no heights at all.
+        push_ribbon(
+            builder,
+            &densify(ring, true, OverlayAltitude::CLAMPED, LINE_RADIUS),
+        );
+    }
+}
+
+/// One corner post: a ribbon straight out from the globe, from `floor` to
+/// `radius`.
+///
+/// Not [`push_ribbon`], which works out which way a path is running from the
+/// difference between neighbouring points — and the two ends of a post lie in
+/// the same direction, so that difference is zero and the ribbon would come out
+/// with no width. A post runs *outward*, so its own direction is what the
+/// shader has to step off from.
+fn push_post(builder: &mut MeshBuilder, direction: Vec3, floor: f32, radius: f32) {
+    let base = builder.next_index();
+    for end in [floor, radius] {
+        for side in [-1.0_f32, 1.0] {
+            builder.push(
+                direction,
+                end,
+                [side, 0.0],
+                [direction.x, direction.y, direction.z, side],
+            );
+        }
+    }
+    builder
+        .indices
+        .extend([base, base + 1, base + 2, base + 1, base + 3, base + 2]);
 }
 
 /// Every polygon, filled.
@@ -2547,6 +2618,87 @@ mod tests {
         let count = |altitude| {
             fill_mesh(&on_the_ground, None, altitude)
                 .expect("a fill")
+                .count_vertices()
+        };
+        assert_eq!(count(extruded), count(OverlayAltitude::default()));
+    }
+
+    #[test]
+    fn extruding_outlines_the_footprint_and_the_corner_posts() {
+        // The same box as above, seen by the half of the drawing that has
+        // edges: without these, the only crisp thing on screen is the lid's
+        // outline and the box reads as a square in the air.
+        let side = 1.0;
+        let top = 200_000.0;
+        let box_lid = polygon_set(&[vec![
+            Position::new(-side, -side, top),
+            Position::new(-side, side, top),
+            Position::new(side, side, top),
+            Position::new(side, -side, top),
+        ]]);
+
+        let spread = |altitude| {
+            let mesh = line_mesh(&box_lid, None, true, altitude).expect("an outline");
+            let radii: Vec<f32> = mesh
+                .attribute(Mesh::ATTRIBUTE_POSITION)
+                .and_then(|values| values.as_float3())
+                .expect("positions")
+                .iter()
+                .map(|position| Vec3::from_array(*position).length())
+                .collect();
+            let low = radii.iter().copied().fold(f32::MAX, f32::min);
+            let high = radii.iter().copied().fold(f32::MIN, f32::max);
+            (low, high, radii.len())
+        };
+
+        // Unextruded, the outline is the lid's ring and nothing else: every
+        // vertex of it is at the one height.
+        let (low, high, lid_only) = spread(OverlayAltitude::default());
+        assert!(high - low < 1.0e-6, "{low} to {high}");
+
+        let extruded = OverlayAltitude {
+            extrude: true,
+            ..OverlayAltitude::default()
+        };
+        let (low, high, walled) = spread(extruded);
+        // The lid's ring, the footprint under it, and a post at each of the
+        // four corners — every one of them vertices the lid alone did not have.
+        assert!(walled > lid_only * 2, "{walled} vs {lid_only}");
+        assert!(
+            (high - low - top as f32 * units_per_metre()).abs() < 1.0e-5,
+            "{low} to {high}"
+        );
+        assert!(low < LINE_RADIUS * 1.001, "{low} should be on the ground");
+
+        // A post is drawn out from the globe rather than across it, so its two
+        // ends lie in the same direction — which is exactly what a ribbon built
+        // from the difference between neighbouring points cannot do. The
+        // tangents are what carry that, so they have to be the direction
+        // itself, not the zero a collapsed ribbon would leave.
+        let mesh = line_mesh(&box_lid, None, true, extruded).expect("an outline");
+        let bevy::mesh::VertexAttributeValues::Float32x4(tangents) =
+            mesh.attribute(Mesh::ATTRIBUTE_TANGENT).expect("tangents")
+        else {
+            panic!("a tangent is four floats");
+        };
+        assert!(
+            tangents
+                .iter()
+                .all(|tangent| Vec3::from_slice(tangent).length_squared() > 1.0e-12),
+            "a ribbon with no direction is a ribbon with no width"
+        );
+
+        // A ring already on the ground stands on its own footprint, so
+        // extruding it is the same drawing as not.
+        let on_the_ground = polygon_set(&[vec![
+            at(-side, -side),
+            at(-side, side),
+            at(side, side),
+            at(side, -side),
+        ]]);
+        let count = |altitude| {
+            line_mesh(&on_the_ground, None, true, altitude)
+                .expect("an outline")
                 .count_vertices()
         };
         assert_eq!(count(extruded), count(OverlayAltitude::default()));
