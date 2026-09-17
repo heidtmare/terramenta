@@ -105,6 +105,7 @@ to tell that apart from a real failure.
 | `setOverlayAltitude(id, altitude)` | How high it is drawn |
 | `setOverlayRefresh(id, seconds)` `refreshOverlay(id)` | When it refetches |
 | `setPickingEnabled(bool)` `pinFeature(layer, index)` `clearPinnedFeature()` | Picking features out of an overlay |
+| `overlayGeometry(id)` | A layer's coordinates as typed arrays, without a copy |
 | `setHudVisible(bool)` `setHelpVisible(bool)` `setKeyboardEnabled(bool)` | The globe's own overlay and keys |
 | `onState(callback)` | The state stream. One listener; registering again replaces it |
 
@@ -458,6 +459,84 @@ different earthquake.
   back when a feature is picked, but nothing reads them to decide a colour:
   styling is per layer, so two feeds are told apart by being two colours.
 
+## Geometry in memory
+
+Everything that arrives as vector data — a GeoJSON document, a Mapbox Vector
+Tile — is flattened into one [GeoArrow] store, built with the [`geoarrow`]
+crates and held in [`features.rs`](src/features.rs). Not a tree of `Vec`s: three
+GeoArrow arrays of points, lines and polygons, a column saying which feature
+each shape belongs to, and two columns of per-feature attributes.
+
+```
+points     coords                                              owner
+           [ lon lat h | lon lat h | ... ]                      [ 0, 0, 3, ... ]
+
+lines      coords                                   offsets     owner
+           [ lon lat h | lon lat h | ... ]           [0, 2, 7]   [ 1, 4, ... ]
+
+polygons   coords                    ringOffsets    offsets     owner
+           [ lon lat h | ... ]        [0, 4, 7]      [0, 2]      [ 2, ... ]
+```
+
+Three things follow from it, and they are the reasons for it.
+
+**The coordinates are `f64`, end to end.** A coordinate goes from the document
+into the store, through the hit test and the tessellator, and out to an embedder
+without ever being narrowed — [`geo::Position`](src/geo.rs) is `f64` and so is
+everything that reads it. The one narrowing left is the last one, where a vertex
+is written into a mesh, because a GPU vertex buffer is `f32` and nothing can be
+done about that. Eleven significant figures is the difference between a building
+and the street it is on, and it is now preserved everywhere except on screen.
+
+**It is one allocation per buffer, not one per ring.** A layer of ten thousand
+country outlines is six allocations rather than ten thousand, and walking it is
+a linear scan. Picking, which walks every shape of every visible layer on every
+frame the cursor is over the globe, reads straight out of those buffers and
+copies nothing.
+
+**The buffers cross into JavaScript without being copied.**
+
+```js
+const g = globe.overlayGeometry("quakes");
+const [lon, lat, height] = g.points.coords.subarray(0, 3);  // f64, exactly as fetched
+const feature = g.points.features[0];                        // what pinFeature takes
+```
+
+`coords` is a `Float64Array` viewing the module's own linear memory, so an
+embedder reads the same bytes the renderer is drawing from. Offsets say where
+each shape starts and ends *in coordinates*: line `i` runs `offsets[i]` to
+`offsets[i + 1]`; a polygon's `offsets` index into `ringOffsets`, which index
+into `coords`, outer ring first and holes after it. Rings are stored open — the
+repeated closing position GeoJSON requires is dropped on the way in, so a ring's
+last edge is the one back to its first point.
+
+The arrays are windows onto live memory, with the two ways of losing one that
+implies: anything that allocates inside the module detaches every view onto it,
+and refreshing or removing the layer frees what they point at. Read them
+synchronously, and to keep the data — or to post it to a worker — `.slice()`
+first, which returns an ordinary array that owns its bytes.
+
+Coordinates are interleaved (`xyzxyzxyz`) rather than separated (`xxx`, `yyy`,
+`zzz`), which is the other layout GeoArrow allows and the one its Rust crate
+defaults to. Every consumer here walks a shape vertex by vertex reading all
+three values at once, so one cache line carrying a whole coordinate beats three
+streams carrying a third of one each — and it is the layout that hands out as a
+single typed array.
+
+Attributes are two string arrays rather than a parsed tree: the `id` member, and
+the `properties` object as the JSON text it arrived as. Nothing in the globe
+reads them, so holding them as text keeps a tile of five thousand features to
+two allocations and costs one parse when a feature is actually picked.
+
+What the store is *not* is a general geometry library. There is no
+`MultiLineString` and no `GeometryCollection`: a globe draws points, lines and
+filled rings, and the readers flatten everything else into those three on the
+way in — a `MultiPolygon` of forty islands becomes forty polygons that all name
+the same feature, which is what makes picking one island highlight the country.
+
+[GeoArrow]: https://geoarrow.org
+[`geoarrow`]: https://github.com/geoarrow/geoarrow-rs
+
 ## Controls
 
 The globe binds these itself. `setKeyboardEnabled(false)` switches them all off
@@ -499,6 +578,7 @@ src/
   tiles.rs     Tile grids, level-of-detail selection and streaming
   mvt.rs       Mapbox Vector Tiles: the protobuf, the Web Mercator grid, clipping
   vector_tiles.rs  Vector tile layers: the `mvt://` source, streaming and meshing
+  features.rs  The GeoArrow store every vector coordinate lives in
   geojson.rs   The GeoJSON document format, flattened to drawable geometry
   tessellate.rs  Rings to triangles: ear clipping, holes and the antimeridian
   picking.rs   Which feature is under the cursor

@@ -1,19 +1,21 @@
 //! GeoJSON, as much of [RFC 7946](https://datatracker.ietf.org/doc/html/rfc7946)
 //! as a globe has anything to draw with.
 //!
-//! The document is flattened as it is parsed. A globe draws points, lines and
-//! filled rings; it does not care whether a line arrived as a `LineString`, as
-//! one strand of a `MultiLineString`, or nested three deep inside a
-//! `GeometryCollection` inside a `Feature`. So the whole tree collapses into a
-//! [`GeoJson`] of three lists, which is exactly what [`crate::overlays`] builds
-//! meshes from.
+//! The document is flattened as it is parsed, straight into the GeoArrow
+//! buffers of a [`FeatureSet`]. A globe draws points, lines and filled rings; it
+//! does not care whether a line arrived as a `LineString`, as one strand of a
+//! `MultiLineString`, or nested three deep inside a `GeometryCollection` inside
+//! a `Feature`. So the whole tree collapses into three arrays, which is exactly
+//! what [`crate::overlays`] builds meshes from — and no intermediate tree of
+//! `Vec`s is built on the way, because the reader writes coordinates into the
+//! final buffers as it walks.
 //!
 //! What the flattening does *not* throw away is which feature each shape came
-//! from. Every [`Shape`] carries an index into [`GeoJson::features`], and that
-//! is what makes a shape pickable: the globe hit-tests the geometry, and the
-//! feature behind the shape it hits is what an interface is handed, properties
-//! and all. It is also why a `MultiPolygon` of forty islands highlights as one
-//! country rather than as the island under the cursor.
+//! from. Every shape carries an index into the feature columns, and that is
+//! what makes it pickable: the globe hit-tests the geometry, and the feature
+//! behind the shape it hits is what an interface is handed, properties and all.
+//! It is also why a `MultiPolygon` of forty islands highlights as one country
+//! rather than as the island under the cursor.
 //!
 //! Parsing is deliberately forgiving about everything except the shape of the
 //! document. A coordinate that is not a pair of finite numbers is dropped, a
@@ -23,88 +25,30 @@
 //! wrong depth, is an error: that is not one bad record, it is a document that
 //! was never GeoJSON.
 //!
-//! Properties are kept exactly as they arrived, as JSON, and handed back out
-//! untouched when a feature is picked. Nothing here reads them: what a `mag` or
-//! a `place` means is the feed's business and the interface's, not the globe's.
+//! Properties are kept exactly as they arrived, as the JSON text the store
+//! holds them in, and handed back out untouched when a feature is picked.
+//! Nothing here reads them: what a `mag` or a `place` means is the feed's
+//! business and the interface's, not the globe's.
+//!
+//! They are written back out to text rather than lifted out of the source
+//! unparsed, and that is a `serde` constraint rather than a choice: a GeoJSON
+//! object is discriminated by its `type` member, which makes it an internally
+//! tagged enum, and `serde` buffers the body of one of those before handing it
+//! to the variant — which is exactly what a `RawValue` cannot survive. So the
+//! cost is one round trip through `Value` per feature, paid once when a
+//! document loads.
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
+use crate::features::{FeatureSet, FeatureSetBuilder};
 use crate::geo::Position;
 
-/// The drawable geometry of one GeoJSON document, and the features it belongs
-/// to.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct GeoJson {
-    /// Every `Feature` the document held, in the order it held them — which is
-    /// what a feed means by "how many earthquakes". The geometry lists below
-    /// are lists of *shapes*, and one feature can be many of those.
-    ///
-    /// A geometry that arrived outside any feature gets one of its own, with no
-    /// properties, so that everything drawn is pickable and nothing has to
-    /// special-case a document written without features.
-    pub features: Vec<Feature>,
-    /// Every `Point`, and every position of every `MultiPoint`.
-    pub points: Vec<Shape<Position>>,
-    /// Every `LineString`, and every strand of every `MultiLineString`.
-    pub lines: Vec<Shape<Vec<Position>>>,
-    pub polygons: Vec<Shape<Polygon>>,
-}
-
-impl GeoJson {
-    /// Parses a document. See the module docs for what is tolerated.
-    pub fn parse(text: &str) -> Result<Self, GeoJsonError> {
-        let object: Object = serde_json::from_str(text)?;
-        let mut collected = Self::default();
-        object.collect(&mut collected, None);
-        Ok(collected)
-    }
-
-    /// The feature a geometry belongs to, inventing one for a geometry that
-    /// arrived outside any.
-    fn owner(&mut self, feature: Option<usize>) -> usize {
-        feature.unwrap_or_else(|| {
-            self.features.push(Feature::default());
-            self.features.len() - 1
-        })
-    }
-}
-
-/// One drawable shape, and which feature it belongs to.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Shape<T> {
-    /// An index into [`GeoJson::features`].
-    pub feature: usize,
-    pub geometry: T,
-}
-
-/// One `Feature`: everything about it that is not geometry.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
-pub struct Feature {
-    /// The `id` member, if it had one. GeoJSON allows a string or a number and
-    /// says nothing about what either means, so both arrive here as text.
-    pub id: Option<String>,
-    /// The `properties` object, exactly as it arrived — `null` when there was
-    /// none. Handed straight back out to whoever picks the feature.
-    pub properties: serde_json::Value,
-}
-
-/// A polygon: an outer ring, then one ring per hole in it.
-///
-/// Rings are stored open — the closing position RFC 7946 requires is dropped,
-/// because every consumer here would otherwise have to drop it again.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Polygon {
-    pub rings: Vec<Vec<Position>>,
-}
-
-impl Polygon {
-    pub fn outer(&self) -> &[Position] {
-        self.rings.first().map(Vec::as_slice).unwrap_or_default()
-    }
-
-    pub fn holes(&self) -> &[Vec<Position>] {
-        self.rings.get(1..).unwrap_or_default()
-    }
+/// Parses a document. See the module docs for what is tolerated.
+pub fn parse(text: &str) -> Result<FeatureSet, GeoJsonError> {
+    let object: Object = serde_json::from_str(text)?;
+    let mut builder = FeatureSetBuilder::new();
+    object.collect(&mut builder, None);
+    Ok(builder.finish())
 }
 
 /// Why a document could not be read.
@@ -163,6 +107,8 @@ enum Object {
     Feature {
         #[serde(default)]
         geometry: Option<Box<Object>>,
+        /// Written straight back out as text on the way into the store — see
+        /// the module docs for why it cannot simply be carried as one.
         #[serde(default)]
         properties: serde_json::Value,
         /// A string or a number, per the specification; kept as whichever it
@@ -205,9 +151,9 @@ impl Object {
     ///
     /// `feature` is the feature whatever is found belongs to: `Some` once a
     /// `Feature` has been entered, `None` above that. A geometry reached with
-    /// `None` gets a feature of its own — see [`GeoJson::owner`] — so a bare
-    /// `Point` of a document is as pickable as one inside a feed.
-    fn collect(self, into: &mut GeoJson, feature: Option<usize>) {
+    /// `None` gets a feature of its own — see [`owner`] — so a bare `Point` of a
+    /// document is as pickable as one inside a feed.
+    fn collect(self, into: &mut FeatureSetBuilder, feature: Option<u32>) {
         match self {
             Self::FeatureCollection { features } => {
                 for member in features {
@@ -219,11 +165,13 @@ impl Object {
                 properties,
                 id,
             } => {
-                into.features.push(Feature {
-                    id: id.as_ref().and_then(identifier),
-                    properties,
-                });
-                let index = into.features.len() - 1;
+                let index = into.feature(
+                    id.as_ref().and_then(identifier),
+                    // A member that was absent, or explicitly `null`, is no
+                    // properties — and storing the word for every feature of a
+                    // large feed would be four bytes apiece to say so.
+                    (!properties.is_null()).then(|| properties.to_string()),
+                );
                 if let Some(geometry) = geometry {
                     geometry.collect(into, Some(index));
                 }
@@ -235,21 +183,17 @@ impl Object {
             }
             Self::Point { coordinates } => {
                 if let Some(point) = position(&coordinates) {
-                    let feature = into.owner(feature);
-                    into.points.push(Shape {
-                        feature,
-                        geometry: point,
-                    });
+                    let feature = owner(into, feature);
+                    into.push_point(feature, point);
                 }
             }
             Self::MultiPoint { coordinates } => {
                 let points: Vec<Position> = coordinates.iter().filter_map(position).collect();
                 if !points.is_empty() {
-                    let feature = into.owner(feature);
-                    into.points.extend(points.into_iter().map(|point| Shape {
-                        feature,
-                        geometry: point,
-                    }));
+                    let feature = owner(into, feature);
+                    for point in points {
+                        into.push_point(feature, point);
+                    }
                 }
             }
             Self::LineString { coordinates } => push_line(into, feature, &coordinates),
@@ -268,6 +212,13 @@ impl Object {
     }
 }
 
+/// The feature a geometry belongs to, inventing one for a geometry that arrived
+/// outside any — so that everything drawn is pickable and nothing has to
+/// special-case a document written without features.
+fn owner(into: &mut FeatureSetBuilder, feature: Option<u32>) -> u32 {
+    feature.unwrap_or_else(|| into.feature(None, None))
+}
+
 /// A feature's `id`, as text. A number is written the way JSON wrote it;
 /// anything else — an object, an array — is not an identifier and is dropped.
 fn identifier(id: &serde_json::Value) -> Option<String> {
@@ -278,30 +229,24 @@ fn identifier(id: &serde_json::Value) -> Option<String> {
     }
 }
 
-fn push_line(into: &mut GeoJson, feature: Option<usize>, positions: &[RawPosition]) {
+fn push_line(into: &mut FeatureSetBuilder, feature: Option<u32>, positions: &[RawPosition]) {
     let line: Vec<Position> = positions.iter().filter_map(position).collect();
-    // A line of one point is a point that cannot be drawn, not a point.
+    // A line of one point is a point that cannot be drawn, not a point. Checked
+    // before a feature is invented for it, so a document of nothing but
+    // unusable lines does not come back full of empty features.
     if line.len() >= 2 {
-        let feature = into.owner(feature);
-        into.lines.push(Shape {
-            feature,
-            geometry: line,
-        });
+        let feature = owner(into, feature);
+        into.push_line(feature, line);
     }
 }
 
-fn push_polygon(into: &mut GeoJson, feature: Option<usize>, rings: &[Vec<RawPosition>]) {
+fn push_polygon(into: &mut FeatureSetBuilder, feature: Option<u32>, rings: &[Vec<RawPosition>]) {
     let rings: Vec<Vec<Position>> = rings.iter().filter_map(|ring| self::ring(ring)).collect();
     // Holes without an outer ring are not holes in anything. Because the outer
     // ring is first, a polygon that lost it would silently promote a hole.
-    if let Some(outer) = rings.first()
-        && !outer.is_empty()
-    {
-        let feature = into.owner(feature);
-        into.polygons.push(Shape {
-            feature,
-            geometry: Polygon { rings },
-        });
+    if rings.first().is_some_and(|outer| outer.len() >= 3) {
+        let feature = owner(into, feature);
+        into.push_polygon(feature, rings);
     }
 }
 
@@ -313,7 +258,7 @@ fn ring(positions: &[RawPosition]) -> Option<Vec<Position>> {
     // height is still a ring closing on itself, and keeping the repeat would
     // leave a zero-length edge for the outline to step off.
     let closes = match (ring.first(), ring.last()) {
-        (Some(first), Some(last)) => first.coordinate == last.coordinate,
+        (Some(first), Some(last)) => first.lat == last.lat && first.lon == last.lon,
         _ => false,
     };
     if ring.len() >= 2 && closes {
@@ -324,28 +269,27 @@ fn ring(positions: &[RawPosition]) -> Option<Vec<Position>> {
 
 /// Reads one position, or `None` for anything that is not a usable coordinate.
 ///
-/// The third element is optional and, unlike the first two, not worth dropping
-/// a record over: a height that is not a finite number is no height, which is
-/// what most positions have anyway.
+/// Nothing is narrowed: the numbers JSON wrote are the numbers the store holds,
+/// which is the whole reason the coordinate buffers are `f64`. The third
+/// element is optional and, unlike the first two, not worth dropping a record
+/// over: a height that is not a finite number is no height, which is what most
+/// positions have anyway.
 fn position(position: &RawPosition) -> Option<Position> {
     let (&longitude, &latitude) = (position.first()?, position.get(1)?);
     if !longitude.is_finite() || !latitude.is_finite() {
         return None;
     }
-    // Checked after the narrowing rather than before it: a number JSON is happy
-    // with can still be past what an `f32` can hold, and the height that comes
-    // out of that is an infinity rather than a height.
     let altitude = position
         .get(2)
-        .map(|altitude| *altitude as f32)
+        .copied()
         .filter(|altitude| altitude.is_finite())
         .unwrap_or(0.0);
     Some(Position::new(
         // A latitude past the pole is meaningless rather than wrong-by-a-turn,
         // so it is clamped; a longitude past the antimeridian is the same place
         // said the long way round, so it is wrapped.
-        latitude.clamp(-90.0, 90.0) as f32,
-        wrap_longitude(longitude) as f32,
+        latitude.clamp(-90.0, 90.0),
+        wrap_longitude(longitude),
         altitude,
     ))
 }
@@ -359,19 +303,19 @@ fn wrap_longitude(longitude: f64) -> f64 {
 mod tests {
     use super::*;
 
-    /// The geometry of a shape list, without the feature indices.
-    fn geometry<T: Clone>(shapes: &[Shape<T>]) -> Vec<T> {
-        shapes.iter().map(|shape| shape.geometry.clone()).collect()
+    /// A position on the ground, which most of these are.
+    fn at(lat: f64, lon: f64) -> Position {
+        Position::new(lat, lon, 0.0)
     }
 
-    /// A position on the ground, which most of these are.
-    fn at(lat: f32, lon: f32) -> Position {
-        Position::new(lat, lon, 0.0)
+    /// Every point of a set, without the feature indices.
+    fn points(set: &FeatureSet) -> Vec<Position> {
+        set.points().map(|(_, point)| point).collect()
     }
 
     #[test]
     fn a_feature_collection_flattens_to_its_geometry() {
-        let parsed = GeoJson::parse(
+        let parsed = parse(
             r#"{
                 "type": "FeatureCollection",
                 "features": [
@@ -393,33 +337,30 @@ mod tests {
         )
         .expect("valid");
 
-        assert_eq!(parsed.features.len(), 2);
+        assert_eq!(parsed.feature_count(), 2);
         // The third element is kept as it was written. What -8000 *means* is
         // the layer's to say: this feed counts depth, and a layer reading it as
         // metres up would have to be told to clamp.
-        assert_eq!(
-            geometry(&parsed.points),
-            vec![Position::new(37.8, -122.4, -8000.0)]
-        );
-        assert_eq!(parsed.lines.len(), 2);
-        assert_eq!(parsed.lines[1].geometry.len(), 3);
+        assert_eq!(points(&parsed), vec![Position::new(37.8, -122.4, -8000.0)]);
+        assert_eq!(parsed.line_count(), 2);
+        assert_eq!(parsed.line(1).1.len(), 3);
 
         // The point belongs to the first feature and both strands of the
         // `MultiLineString` to the second, which is what makes picking either
         // strand highlight the whole of it.
-        assert_eq!(parsed.points[0].feature, 0);
-        assert_eq!(parsed.lines[0].feature, 1);
-        assert_eq!(parsed.lines[1].feature, 1);
+        assert_eq!(parsed.point(0).0, 0);
+        assert_eq!(parsed.line(0).0, 1);
+        assert_eq!(parsed.line(1).0, 1);
         assert_eq!(
-            parsed.features[0].properties,
+            parsed.feature_properties(0),
             serde_json::json!({"mag": 4.2})
         );
-        assert_eq!(parsed.features[1].properties, serde_json::Value::Null);
+        assert_eq!(parsed.feature_properties(1), serde_json::Value::Null);
     }
 
     #[test]
     fn an_id_arrives_as_text_whichever_way_it_was_written() {
-        let parsed = GeoJson::parse(
+        let parsed = parse(
             r#"{
                 "type": "FeatureCollection",
                 "features": [
@@ -432,28 +373,26 @@ mod tests {
         )
         .expect("valid");
 
-        let ids: Vec<Option<&str>> = parsed
-            .features
-            .iter()
-            .map(|feature| feature.id.as_deref())
+        let ids: Vec<Option<&str>> = (0..parsed.feature_count())
+            .map(|index| parsed.feature_id(index))
             .collect();
         assert_eq!(ids, vec![Some("nc75096121"), Some("42"), None, None]);
     }
 
     #[test]
     fn a_bare_geometry_is_a_document_too() {
-        let parsed =
-            GeoJson::parse(r#"{"type": "Point", "coordinates": [10, 20]}"#).expect("valid");
-        assert_eq!(geometry(&parsed.points), vec![at(20.0, 10.0)]);
+        let parsed = parse(r#"{"type": "Point", "coordinates": [10, 20]}"#).expect("valid");
+        assert_eq!(points(&parsed), vec![at(20.0, 10.0)]);
         // Nothing wrapped it in a feature, so it is given one — otherwise the
         // point would be drawn and then not be pickable.
-        assert_eq!(parsed.features.len(), 1);
-        assert_eq!(parsed.features[0], Feature::default());
+        assert_eq!(parsed.feature_count(), 1);
+        assert_eq!(parsed.feature_id(0), None);
+        assert_eq!(parsed.feature_properties(0), serde_json::Value::Null);
     }
 
     #[test]
     fn geometry_collections_nest() {
-        let parsed = GeoJson::parse(
+        let parsed = parse(
             r#"{
                 "type": "GeometryCollection",
                 "geometries": [
@@ -466,15 +405,15 @@ mod tests {
             }"#,
         )
         .expect("valid");
-        assert_eq!(parsed.points.len(), 2);
+        assert_eq!(parsed.point_count(), 2);
         // Two geometries outside any feature are two things to pick, not one.
-        assert_eq!(parsed.features.len(), 2);
-        assert_eq!(parsed.points[1].feature, 1);
+        assert_eq!(parsed.feature_count(), 2);
+        assert_eq!(parsed.point(1).0, 1);
     }
 
     #[test]
     fn rings_are_opened_and_holes_kept_in_order() {
-        let parsed = GeoJson::parse(
+        let parsed = parse(
             r#"{
                 "type": "Polygon",
                 "coordinates": [
@@ -485,15 +424,15 @@ mod tests {
         )
         .expect("valid");
 
-        let polygon = &parsed.polygons[0].geometry;
+        let (_, polygon) = parsed.polygon(0);
         assert_eq!(polygon.outer().len(), 4);
-        assert_eq!(polygon.holes().len(), 1);
-        assert_eq!(polygon.holes()[0].len(), 4);
+        assert_eq!(polygon.holes().count(), 1);
+        assert_eq!(polygon.holes().next().expect("a hole").len(), 4);
     }
 
     #[test]
     fn one_bad_record_does_not_take_the_document_with_it() {
-        let parsed = GeoJson::parse(
+        let parsed = parse(
             r#"{
                 "type": "FeatureCollection",
                 "features": [
@@ -510,60 +449,69 @@ mod tests {
 
         // Every feature is still counted — a feed reporting five earthquakes
         // reported five, whether or not each came with usable geometry.
-        assert_eq!(parsed.features.len(), 5);
-        assert_eq!(geometry(&parsed.points), vec![at(6.0, 5.0)]);
-        assert_eq!(parsed.points[0].feature, 4);
-        assert!(parsed.lines.is_empty());
-        assert!(parsed.polygons.is_empty());
+        assert_eq!(parsed.feature_count(), 5);
+        assert_eq!(points(&parsed), vec![at(6.0, 5.0)]);
+        assert_eq!(parsed.point(0).0, 4);
+        assert_eq!(parsed.line_count(), 0);
+        assert_eq!(parsed.polygon_count(), 0);
     }
 
     #[test]
     fn a_document_that_was_never_geojson_is_an_error() {
-        assert!(GeoJson::parse("not json at all").is_err());
-        assert!(GeoJson::parse(r#"{"type": "Raster", "coordinates": []}"#).is_err());
-        assert!(GeoJson::parse(r#"{"type": "Point", "coordinates": [[1, 2]]}"#).is_err());
+        assert!(parse("not json at all").is_err());
+        assert!(parse(r#"{"type": "Raster", "coordinates": []}"#).is_err());
+        assert!(parse(r#"{"type": "Point", "coordinates": [[1, 2]]}"#).is_err());
     }
 
     #[test]
     fn a_third_element_is_kept_as_a_height() {
-        let parsed =
-            GeoJson::parse(r#"{"type": "MultiPoint", "coordinates": [[10, 20, 1500], [11, 21]]}"#)
-                .expect("valid");
+        let parsed = parse(r#"{"type": "MultiPoint", "coordinates": [[10, 20, 1500], [11, 21]]}"#)
+            .expect("valid");
         assert_eq!(
-            geometry(&parsed.points),
+            points(&parsed),
             vec![Position::new(20.0, 10.0, 1500.0), at(21.0, 11.0)]
         );
     }
 
     #[test]
-    fn a_height_too_large_to_be_one_is_no_height() {
-        // A fourth element is not ours to read either: RFC 7946 leaves anything
-        // past the third to whoever wrote the document.
-        let parsed = GeoJson::parse(r#"{"type": "Point", "coordinates": [10, 20, 1e300, 4]}"#)
+    fn a_fourth_element_is_not_ours_to_read() {
+        // RFC 7946 leaves anything past the third to whoever wrote the
+        // document, and the third is read as it stands — no longer narrowed to
+        // an `f32`, so a height no longer has a ceiling to fall off.
+        let parsed =
+            parse(r#"{"type": "Point", "coordinates": [10, 20, 1e30, 4]}"#).expect("valid");
+        assert_eq!(points(&parsed), vec![Position::new(20.0, 10.0, 1.0e30)]);
+    }
+
+    #[test]
+    fn a_coordinate_keeps_every_digit_it_was_written_with() {
+        // Eleven significant figures: past the seven an `f32` holds, which on
+        // the ground is the difference between a building and its street.
+        let parsed = parse(r#"{"type": "Point", "coordinates": [-122.4194159983, 37.7749294961]}"#)
             .expect("valid");
-        assert_eq!(geometry(&parsed.points), vec![at(20.0, 10.0)]);
+        assert_eq!(
+            points(&parsed),
+            vec![Position::new(37.774_929_496_1, -122.419_415_998_3, 0.0)]
+        );
     }
 
     #[test]
     fn a_ring_closing_at_another_height_is_still_closed() {
-        let parsed = GeoJson::parse(
+        let parsed = parse(
             r#"{"type": "Polygon", "coordinates":
                 [[[0, 0, 100], [1, 0, 200], [1, 1, 300], [0, 0, 400]]]}"#,
         )
         .expect("valid");
         // Three corners left, not four: the repeat went, height and all.
-        assert_eq!(parsed.polygons[0].geometry.outer().len(), 3);
-        assert_eq!(parsed.polygons[0].geometry.outer()[0].altitude_m, 100.0);
+        let (_, polygon) = parsed.polygon(0);
+        assert_eq!(polygon.outer().len(), 3);
+        assert_eq!(polygon.outer().get(0).altitude_m, 100.0);
     }
 
     #[test]
     fn coordinates_are_wrapped_and_clamped() {
-        let parsed =
-            GeoJson::parse(r#"{"type": "MultiPoint", "coordinates": [[190, 95], [-200, -95]]}"#)
-                .expect("valid");
-        assert_eq!(
-            geometry(&parsed.points),
-            vec![at(90.0, -170.0), at(-90.0, 160.0)]
-        );
+        let parsed = parse(r#"{"type": "MultiPoint", "coordinates": [[190, 95], [-200, -95]]}"#)
+            .expect("valid");
+        assert_eq!(points(&parsed), vec![at(90.0, -170.0), at(-90.0, 160.0)]);
     }
 }

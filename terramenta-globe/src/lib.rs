@@ -16,6 +16,7 @@
 
 pub mod api;
 mod camera;
+mod features;
 mod frame;
 mod geo;
 mod geojson;

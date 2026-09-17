@@ -67,6 +67,14 @@ impl LatLon {
 /// A coordinate with a height above the surface — GeoJSON's position, with its
 /// optional third element kept.
 ///
+/// `f64`, and deliberately so: this is the type every vector coordinate is read
+/// into and written back out of, and it is the one place in the globe where the
+/// numbers are data rather than geometry on their way to a vertex buffer. It
+/// matches the `f64` the GeoArrow buffers in [`crate::features`] store, so a
+/// coordinate makes the round trip from the document, through the store and out
+/// to an embedder without ever being narrowed. Only the mesh builders narrow,
+/// because a GPU vertex is `f32` and nothing can be done about that.
+///
 /// Height is carried through the document and into the mesh builder rather than
 /// resolved on the way in, because what a height *means* on screen is the
 /// layer's business: a layer may be clamped to the surface, and a feed that
@@ -74,24 +82,23 @@ impl LatLon {
 /// that knows it. See [`crate::overlays::OverlayAltitude`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Position {
-    pub coordinate: LatLon,
+    pub lat: f64,
+    pub lon: f64,
     /// Metres above the surface, as the source stated it. Zero for a position
     /// that gave no third element, which is most of them.
-    pub altitude_m: f32,
+    pub altitude_m: f64,
 }
 
 impl Position {
     /// A position on the ground, which is what a two-element position is.
-    pub const fn surface(coordinate: LatLon) -> Self {
-        Self {
-            coordinate,
-            altitude_m: 0.0,
-        }
+    pub fn surface(coordinate: LatLon) -> Self {
+        Self::new(f64::from(coordinate.lat), f64::from(coordinate.lon), 0.0)
     }
 
-    pub const fn new(lat: f32, lon: f32, altitude_m: f32) -> Self {
+    pub const fn new(lat: f64, lon: f64, altitude_m: f64) -> Self {
         Self {
-            coordinate: LatLon::new(lat, lon),
+            lat,
+            lon,
             altitude_m,
         }
     }
@@ -99,16 +106,10 @@ impl Position {
     /// The outward unit normal at this position. Height plays no part: it is a
     /// direction, and how far out along it anything is drawn is decided where
     /// the mesh is built.
+    ///
+    /// Narrowed, because the only thing that ever asks is a mesh builder.
     pub fn to_direction(self) -> Vec3 {
-        self.coordinate.to_direction()
-    }
-
-    pub fn lat(self) -> f32 {
-        self.coordinate.lat
-    }
-
-    pub fn lon(self) -> f32 {
-        self.coordinate.lon
+        direction(self.lat, self.lon)
     }
 }
 
@@ -116,6 +117,23 @@ impl From<LatLon> for Position {
     fn from(coordinate: LatLon) -> Self {
         Self::surface(coordinate)
     }
+}
+
+/// The outward unit normal at a coordinate in degrees, computed at `f64` and
+/// handed back as the `f32` a vertex buffer takes.
+///
+/// Free of any coordinate type, because the mesh builders work in `DVec2`
+/// — longitude on `x`, latitude on `y` — once a polygon has been through
+/// [`crate::tessellate`].
+pub fn direction(lat: f64, lon: f64) -> Vec3 {
+    let (lat, lon) = (lat.to_radians(), lon.to_radians());
+    let (sin_lat, cos_lat) = lat.sin_cos();
+    let (sin_lon, cos_lon) = lon.sin_cos();
+    Vec3::new(
+        (cos_lat * sin_lon) as f32,
+        sin_lat as f32,
+        (cos_lat * cos_lon) as f32,
+    )
 }
 
 /// An axis-aligned latitude/longitude rectangle, as WMS understands a bounding box.

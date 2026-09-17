@@ -13,10 +13,10 @@
 //! Mercator (EPSG:3857) grid. [`unproject`] takes them back to WGS 84 latitude
 //! and longitude, which is the one coordinate system the rest of the globe
 //! speaks — the camera, the imagery and the GeoJSON overlays all address the
-//! sphere in degrees. So the result of decoding a tile is a [`GeoJson`], the
-//! same flattened lists of points, lines and rings a GeoJSON document collapses
-//! into, and from there [`crate::vector_tiles`] builds vertex buffers out of it
-//! with exactly the mesh builders an overlay uses.
+//! sphere in degrees. So the result of decoding a tile is a [`FeatureSet`], the
+//! same GeoArrow arrays a GeoJSON document collapses into, and from there
+//! [`crate::vector_tiles`] builds vertex buffers out of it with exactly the mesh
+//! builders an overlay uses.
 //!
 //! Worth being precise about what "WGS 84" means here, because the two halves
 //! of the round trip do not use the same Earth. Web Mercator projects *geodetic*
@@ -44,9 +44,9 @@
 //! so the piece of Brazil in this tile and the piece in the next meet along the
 //! seam with no gap and no overlap. An *outline* wants the opposite: the tile
 //! edge is not a coastline, and closing the ring against it would draw the
-//! grid. So [`decode`] clips every ring both ways — as a ring for
-//! [`GeoJson::polygons`], and as an open path for [`GeoJson::lines`], which is
-//! where the parts of it that are really a boundary end up. A consumer draws
+//! grid. So [`decode`] clips every ring both ways — as a ring for the polygon
+//! array, and as an open path for the line array, which is where the parts of
+//! it that are really a boundary end up. A consumer draws
 //! the fills from the first and *all* of its lines from the second; it must not
 //! also outline the polygons, or every border would be drawn twice.
 
@@ -54,8 +54,8 @@ use geozero::mvt::{Message, Tile, tile};
 use geozero::{ColumnValue, FeatureProcessor, GeomProcessor, PropertyProcessor};
 use serde_json::{Map, Value};
 
+use crate::features::{FeatureSet, FeatureSetBuilder};
 use crate::geo::{GeoBounds, LatLon, Position};
-use crate::geojson::{Feature, GeoJson, Polygon, Shape};
 use crate::tiles::TileId;
 
 /// The extent a layer is assumed to use when it does not say — which is the
@@ -170,10 +170,10 @@ impl std::error::Error for MvtError {}
 /// The result is in the same shape a GeoJSON document parses into, with every
 /// coordinate already back in degrees, so everything downstream of here can
 /// treat a vector tile and an overlay alike. With one difference, and it
-/// matters: a polygon's outline is in [`GeoJson::lines`] rather than implied by
-/// its rings, because clipping gives a ring edges that are not boundaries. See
-/// the module docs.
-pub fn decode(bytes: &[u8], tile: TileId, wanted: &[String]) -> Result<GeoJson, MvtError> {
+/// matters: a polygon's outline is in the line array rather than implied by its
+/// rings, because clipping gives a ring edges that are not boundaries. See the
+/// module docs.
+pub fn decode(bytes: &[u8], tile: TileId, wanted: &[String]) -> Result<FeatureSet, MvtError> {
     // Two bytes, and the difference between a clear report and a puzzle.
     if bytes.starts_with(&[0x1f, 0x8b]) {
         return Err(MvtError::Gzipped);
@@ -181,7 +181,7 @@ pub fn decode(bytes: &[u8], tile: TileId, wanted: &[String]) -> Result<GeoJson, 
 
     let decoded = Tile::decode(bytes).map_err(|error| MvtError::Malformed(error.to_string()))?;
 
-    let mut collected = GeoJson::default();
+    let mut collected = FeatureSetBuilder::new();
     for layer in &decoded.layers {
         if !wanted.is_empty() && !wanted.iter().any(|name| name == &layer.name) {
             continue;
@@ -190,7 +190,7 @@ pub fn decode(bytes: &[u8], tile: TileId, wanted: &[String]) -> Result<GeoJson, 
         geozero::mvt::process(layer, &mut decoder)
             .map_err(|error| MvtError::Geometry(error.to_string()))?;
     }
-    Ok(collected)
+    Ok(collected.finish())
 }
 
 /// Walks one source layer, turning what the reader hands back into shapes.
@@ -214,9 +214,9 @@ struct LayerDecoder<'a> {
     ids: Vec<Option<String>>,
     /// The feature being read, held back until it has geometry worth keeping —
     /// a feature clipped away entirely should not leave a row behind it.
-    pending: Option<Feature>,
+    pending: Option<PendingFeature>,
     /// Its index once it has been kept.
-    owner: Option<usize>,
+    owner: Option<u32>,
     /// The coordinates of the ring, strand or point group being read.
     current: Vec<[f64; 2]>,
     /// The rings of the polygon being read, outer first.
@@ -224,11 +224,18 @@ struct LayerDecoder<'a> {
     /// How deep inside a polygon the walk is, which is what tells a ring from a
     /// line: the reader announces both as linestrings.
     polygon_depth: u32,
-    into: &'a mut GeoJson,
+    into: &'a mut FeatureSetBuilder,
+}
+
+/// A feature read off the wire, before it is known to be worth keeping.
+#[derive(Debug, Default)]
+struct PendingFeature {
+    id: Option<String>,
+    properties: Map<String, Value>,
 }
 
 impl<'a> LayerDecoder<'a> {
-    fn new(tile: TileId, layer: &tile::Layer, into: &'a mut GeoJson) -> Self {
+    fn new(tile: TileId, layer: &tile::Layer, into: &'a mut FeatureSetBuilder) -> Self {
         let size = f64::from(matrix_size(tile.level));
         let extent = f64::from(layer.extent.unwrap_or(DEFAULT_EXTENT).max(1));
         Self {
@@ -266,14 +273,16 @@ impl<'a> LayerDecoder<'a> {
     /// are clipped away or dropped; taking the properties along only for the
     /// ones that survive is the difference between a few hundred rows per tile
     /// and a few thousand.
-    fn owner(&mut self) -> usize {
+    fn owner(&mut self) -> u32 {
         if let Some(owner) = self.owner {
             return owner;
         }
-        self.into
-            .features
-            .push(self.pending.take().unwrap_or_default());
-        let owner = self.into.features.len() - 1;
+        let pending = self.pending.take().unwrap_or_default();
+        // The properties go into the store as the JSON text every other reader
+        // puts there, so that a tile feature and an overlay feature are handed
+        // back to an interface in exactly the same shape.
+        let properties = serde_json::to_string(&Value::Object(pending.properties)).ok();
+        let owner = self.into.feature(pending.id, properties);
         self.owner = Some(owner);
         owner
     }
@@ -286,10 +295,7 @@ impl<'a> LayerDecoder<'a> {
             }
             let line: Vec<Position> = run.iter().map(|point| self.position(*point)).collect();
             let feature = self.owner();
-            self.into.lines.push(Shape {
-                feature,
-                geometry: line,
-            });
+            self.into.push_line(feature, line);
         }
     }
 
@@ -315,14 +321,14 @@ impl<'a> LayerDecoder<'a> {
         // Holes without an outer ring are not holes in anything — the outer
         // ring can be the one clipping removed, when a polygon reaches into the
         // tile only through the buffer.
-        if rings.first().is_none_or(Vec::is_empty) {
+        // Checked here rather than left to the builder, because inventing the
+        // feature is what the check is guarding against: a polygon that will be
+        // dropped must not leave a row behind it.
+        if rings.first().is_none_or(|outer| outer.len() < 3) {
             return;
         }
         let feature = self.owner();
-        self.into.polygons.push(Shape {
-            feature,
-            geometry: Polygon { rings },
-        });
+        self.into.push_polygon(feature, rings);
     }
 }
 
@@ -356,10 +362,7 @@ impl GeomProcessor for LayerDecoder<'_> {
             }
             let position = self.position(point);
             let feature = self.owner();
-            self.into.points.push(Shape {
-                feature,
-                geometry: position,
-            });
+            self.into.push_point(feature, position);
         }
         Ok(())
     }
@@ -431,10 +434,8 @@ impl PropertyProcessor for LayerDecoder<'_> {
             ColumnValue::Binary(_) => Value::Null,
         };
 
-        if let Some(feature) = self.pending.as_mut()
-            && let Value::Object(properties) = &mut feature.properties
-        {
-            properties.insert(name.to_string(), converted);
+        if let Some(feature) = self.pending.as_mut() {
+            feature.properties.insert(name.to_string(), converted);
         }
         // `false` would stop the walk; every property is wanted.
         Ok(true)
@@ -448,9 +449,9 @@ impl FeatureProcessor for LayerDecoder<'_> {
             SOURCE_LAYER_PROPERTY.to_string(),
             Value::String(self.layer_name.clone()),
         );
-        self.pending = Some(Feature {
+        self.pending = Some(PendingFeature {
             id: self.ids.get(idx as usize).cloned().flatten(),
-            properties: Value::Object(properties),
+            properties,
         });
         self.owner = None;
         self.rings.clear();
@@ -539,7 +540,7 @@ fn clip_segment(from: [f64; 2], to: [f64; 2], extent: f64) -> Option<([f64; 2], 
 /// meet along the seam without overlapping.
 ///
 /// The ring arrives closed, as the tile wrote it, and leaves open, which is how
-/// [`crate::geojson::Polygon`] keeps rings.
+/// [`crate::features`] keeps rings.
 fn clip_ring(ring: &[[f64; 2]], extent: f64) -> Vec<[f64; 2]> {
     /// Which side of one edge a point is on, positive inside.
     fn inside(point: [f64; 2], edge: usize, extent: f64) -> f64 {
@@ -773,15 +774,15 @@ mod tests {
         )]);
 
         let decoded = decode(&bytes, ROOT, &[]).expect("a tile");
-        assert_eq!(decoded.lines.len(), 1);
-        let line = &decoded.lines[0].geometry;
+        assert_eq!(decoded.line_count(), 1);
+        let line = decoded.line(0).1;
         assert_eq!(line.len(), 2);
         // Halfway across the world square is the equator on the prime meridian.
-        assert!(line[0].lat().abs() < 1.0e-3);
-        assert!(line[0].lon().abs() < 1.0e-3);
+        assert!(line.get(0).lat.abs() < 1.0e-3);
+        assert!(line.get(0).lon.abs() < 1.0e-3);
         // A quarter of the tile further east is a quarter of the world east.
-        assert!((line[1].lon() - 90.0).abs() < 1.0e-2);
-        assert!(line[1].lat().abs() < 1.0e-3);
+        assert!((line.get(1).lon - 90.0).abs() < 1.0e-2);
+        assert!(line.get(1).lat.abs() < 1.0e-3);
     }
 
     #[test]
@@ -793,14 +794,12 @@ mod tests {
         )]);
 
         let decoded = decode(&bytes, ROOT, &[]).expect("a tile");
-        let feature = &decoded.features[decoded.lines[0].feature];
-        assert_eq!(feature.id.as_deref(), Some("7"));
+        let feature = decoded.line(0).0 as usize;
+        assert_eq!(decoded.feature_id(feature), Some("7"));
+        let properties = decoded.feature_properties(feature);
+        assert_eq!(properties["kind"], Value::String("coastline".into()));
         assert_eq!(
-            feature.properties["kind"],
-            Value::String("coastline".into())
-        );
-        assert_eq!(
-            feature.properties[SOURCE_LAYER_PROPERTY],
+            properties[SOURCE_LAYER_PROPERTY],
             Value::String("boundary".into())
         );
     }
@@ -813,11 +812,11 @@ mod tests {
             layer_with("transportation", tile::GeomType::Linestring, geometry),
         ]);
 
-        assert_eq!(decode(&bytes, ROOT, &[]).expect("a tile").lines.len(), 2);
+        assert_eq!(decode(&bytes, ROOT, &[]).expect("a tile").line_count(), 2);
         let filtered = decode(&bytes, ROOT, &["boundary".to_string()]).expect("a tile");
-        assert_eq!(filtered.lines.len(), 1);
+        assert_eq!(filtered.line_count(), 1);
         assert_eq!(
-            filtered.features[0].properties[SOURCE_LAYER_PROPERTY],
+            filtered.feature_properties(0)[SOURCE_LAYER_PROPERTY],
             Value::String("boundary".into())
         );
     }
@@ -833,23 +832,21 @@ mod tests {
         )]);
 
         let decoded = decode(&bytes, ROOT, &[]).expect("a tile");
-        assert_eq!(decoded.polygons.len(), 1);
+        assert_eq!(decoded.polygon_count(), 1);
         // Three corners, with the closing repeat dropped the way every ring
         // reaching the mesh builders has to be.
-        assert_eq!(decoded.polygons[0].geometry.outer().len(), 3);
+        assert_eq!(decoded.polygon(0).1.outer().len(), 3);
 
         // And the same ring again as a strand, because that is what the
         // outline is drawn from. This one is wholly inside the tile, so it is
         // the whole loop: four positions, closing where it started.
-        assert_eq!(decoded.lines.len(), 1);
-        let outline = &decoded.lines[0].geometry;
+        assert_eq!(decoded.line_count(), 1);
+        let outline = decoded.line(0).1;
         assert_eq!(outline.len(), 4);
-        assert_eq!(
-            outline.first().map(|p| p.coordinate),
-            outline.last().map(|p| p.coordinate)
-        );
+        let (first, last) = (outline.get(0), outline.get(outline.len() - 1));
+        assert_eq!((first.lat, first.lon), (last.lat, last.lon));
         // Both belong to the one feature, so nothing double-counts it.
-        assert_eq!(decoded.features.len(), 1);
+        assert_eq!(decoded.feature_count(), 1);
     }
 
     #[test]
@@ -866,17 +863,17 @@ mod tests {
         let decoded = decode(&bytes, ROOT, &[]).expect("a tile");
         // The fill is squared off against the tile: it gains corners on the
         // western edge that the original triangle never had.
-        assert_eq!(decoded.polygons.len(), 1);
-        assert!(decoded.polygons[0].geometry.outer().len() > 3);
+        assert_eq!(decoded.polygon_count(), 1);
+        assert!(decoded.polygon(0).1.outer().len() > 3);
 
         // The outline does not. It is the two stretches of real boundary that
         // reach into the tile, and nothing along the edge between them.
-        assert_eq!(decoded.lines.len(), 2);
-        let west = tile_bounds(ROOT).lon_min;
-        for strand in &decoded.lines {
+        assert_eq!(decoded.line_count(), 2);
+        let west = f64::from(tile_bounds(ROOT).lon_min);
+        for (_, strand) in decoded.lines() {
             // No strand may run *along* the western edge — both of its ends may
             // touch it, but not every one of its positions.
-            assert!(strand.geometry.iter().any(|p| (p.lon() - west).abs() > 1.0));
+            assert!(strand.iter().any(|p| (p.lon - west).abs() > 1.0));
         }
     }
 
@@ -891,8 +888,8 @@ mod tests {
         )]);
 
         let decoded = decode(&bytes, ROOT, &[]).expect("a tile");
-        assert!(decoded.lines.is_empty());
-        assert!(decoded.features.is_empty());
+        assert_eq!(decoded.line_count(), 0);
+        assert_eq!(decoded.feature_count(), 0);
     }
 
     #[test]

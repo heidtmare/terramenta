@@ -438,6 +438,116 @@ pub fn set_overlays_enabled(enabled: bool) {
 }
 
 // ---------------------------------------------------------------------------
+// Geometry, without a copy
+// ---------------------------------------------------------------------------
+
+/// Hands back a layer's geometry as typed arrays viewing the module's own
+/// memory — the GeoArrow buffers the globe is drawing from, not a copy of them.
+///
+/// The shape returned is [GeoArrow], which is what [`crate::features`] stores:
+///
+/// ```js
+/// {
+///   features: 1234,
+///   points:   { coords, features },
+///   lines:    { coords, offsets, features },
+///   polygons: { coords, ringOffsets, offsets, features },
+/// }
+/// ```
+///
+/// `coords` is a `Float64Array` of `longitude, latitude, height` repeated —
+/// degrees on WGS 84, metres above the surface, exactly as the document wrote
+/// them and at full precision. `offsets` is an `Int32Array` one longer than the
+/// number of shapes, giving where each one starts and ends *in coordinates*
+/// rather than in doubles: line `i` runs from `offsets[i]` to `offsets[i + 1]`.
+/// A polygon's `offsets` index into `ringOffsets`, and `ringOffsets` index into
+/// `coords`, so ring `r` of polygon `i` is `ringOffsets[offsets[i] + r]`
+/// onward, with the outer ring first and the holes after it. `features` is a
+/// `Uint32Array` saying which feature each shape belongs to — the same index
+/// `pinFeature` takes and `overlays.hovered.index` reports.
+///
+/// Rings are stored *open*: the repeated closing position GeoJSON requires has
+/// been dropped, so the last edge of a ring is the one back to its first point.
+///
+/// **These arrays are windows onto live memory, and there are two ways to lose
+/// them.** The module's memory may be resized by anything that allocates, which
+/// detaches every view onto it; and the layer may be refreshed or removed,
+/// which frees the buffers underneath. So read them *synchronously*, before
+/// calling anything else on the globe — and to keep the data, copy it first:
+/// `geometry.points.coords.slice()` returns an ordinary array that owns its
+/// bytes and is safe to keep, to post to a worker, or to transfer.
+///
+/// Returns `null` for a layer that is not up, or is still loading.
+///
+/// [GeoArrow]: https://geoarrow.org
+#[wasm_bindgen(js_name = overlayGeometry)]
+pub fn overlay_geometry(id: &str) -> JsValue {
+    let Some(document) = crate::overlays::geometry_of(id) else {
+        return JsValue::NULL;
+    };
+
+    // SAFETY: every view below is built from a slice of `document`, which is
+    // held alive by the `Arc` for the whole of this function, and is handed to
+    // the caller without anything in between being allocated. Past the return
+    // the guarantee is the caller's to keep, which is what the note above is
+    // for — there is no way to express "do not allocate" in a JavaScript type.
+    let points = object(&[
+        ("coords", unsafe { view_f64(document.point_coords()) }),
+        ("features", unsafe { view_u32(document.point_owners()) }),
+    ]);
+    let lines = object(&[
+        ("coords", unsafe { view_f64(document.line_coords()) }),
+        ("offsets", unsafe { view_i32(document.line_offsets()) }),
+        ("features", unsafe { view_u32(document.line_owners()) }),
+    ]);
+    let polygons = object(&[
+        ("coords", unsafe { view_f64(document.polygon_coords()) }),
+        ("ringOffsets", unsafe { view_i32(document.ring_offsets()) }),
+        ("offsets", unsafe { view_i32(document.polygon_offsets()) }),
+        ("features", unsafe { view_u32(document.polygon_owners()) }),
+    ]);
+
+    object(&[
+        ("features", JsValue::from(document.feature_count() as u32)),
+        ("points", points),
+        ("lines", lines),
+        ("polygons", polygons),
+    ])
+}
+
+/// Builds a plain JavaScript object out of named values.
+fn object(fields: &[(&str, JsValue)]) -> JsValue {
+    let object = js_sys::Object::new();
+    for (name, value) in fields {
+        // Setting a fresh string key on a fresh object cannot fail.
+        let _ = js_sys::Reflect::set(&object, &JsValue::from_str(name), value);
+    }
+    object.into()
+}
+
+/// # Safety
+///
+/// The returned array views this module's memory and is invalidated by anything
+/// that resizes it, and by `slice` being dropped. See [`overlay_geometry`].
+unsafe fn view_f64(slice: &[f64]) -> JsValue {
+    unsafe { js_sys::Float64Array::view(slice) }.into()
+}
+
+/// # Safety
+///
+/// As [`view_f64`].
+unsafe fn view_i32(slice: &[i32]) -> JsValue {
+    unsafe { js_sys::Int32Array::view(slice) }.into()
+}
+
+/// # Safety
+///
+/// As [`view_f64`].
+unsafe fn view_u32(slice: &[u32]) -> JsValue {
+    unsafe { js_sys::Uint32Array::view(slice) }.into()
+}
+
+// ---------------------------------------------------------------------------
 // Picking
 // ---------------------------------------------------------------------------
 

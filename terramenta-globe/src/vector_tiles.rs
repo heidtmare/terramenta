@@ -46,9 +46,9 @@ use bevy::color::Srgba;
 use bevy::prelude::*;
 use serde::Serialize;
 
+use crate::features::FeatureSet;
 use crate::frame::{FrameSet, ReferenceFrame};
 use crate::geo::{GeoBounds, LatLon};
-use crate::geojson::GeoJson;
 use crate::globe::GLOBE_RADIUS;
 use crate::mvt::{self, MvtError};
 use crate::overlays::{OverlayAltitude, OverlayStyle, VectorMaterial, VectorMode};
@@ -275,7 +275,7 @@ impl VectorTileSettings {
 
 /// One decoded tile: its geometry, already in degrees.
 #[derive(Asset, TypePath, Debug)]
-pub struct VectorTileAsset(pub GeoJson);
+pub struct VectorTileAsset(pub FeatureSet);
 
 #[derive(Debug)]
 pub enum VectorTileLoadError {
@@ -849,7 +849,7 @@ fn build_vector_tiles(
             continue;
         };
         let document = &decoded.0;
-        slot.features = document.features.len();
+        slot.features = document.feature_count();
 
         // Vector tiles are flat by construction — the format has no third
         // element — so the height rules an overlay carries have nothing to act
@@ -867,7 +867,7 @@ fn build_vector_tiles(
                 // geometry, and triangulating them to blend nothing would be
                 // the most expensive part of the whole tile.
                 (style.fill_color.alpha > 0.0)
-                    .then(|| crate::overlays::fill_mesh(&document.polygons, altitude))
+                    .then(|| crate::overlays::fill_mesh(document, None, altitude))
                     .flatten(),
             ),
             (
@@ -878,13 +878,13 @@ fn build_vector_tiles(
                 // are not all boundaries, so `mvt` puts the parts that are into
                 // the line list; outlining the rings as well would draw every
                 // border twice and the tile grid once. See `crate::mvt`.
-                crate::overlays::line_mesh(&document.lines, &[], altitude),
+                crate::overlays::line_mesh(document, None, false, altitude),
             ),
             (
                 VectorMode::Marker,
                 style.point_color,
                 style.point_size_px,
-                crate::overlays::marker_mesh(&document.points, altitude),
+                crate::overlays::marker_mesh(document, None, altitude),
             ),
         ];
 

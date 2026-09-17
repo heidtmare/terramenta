@@ -39,13 +39,14 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, LazyLock, RwLock};
 
 use bevy::asset::io::web::WebAssetReader;
 use bevy::asset::io::{AssetReader, AssetReaderError, AssetSourceBuilder, PathStream, Reader};
 use bevy::asset::{AssetApp, AssetLoader, LoadContext, LoadState, RenderAssetUsages};
 use bevy::camera::visibility::NoFrustumCulling;
 use bevy::color::Srgba;
+use bevy::math::DVec2;
 use bevy::mesh::{Indices, MeshVertexBufferLayoutRef, PrimitiveTopology};
 use bevy::pbr::{MaterialPipeline, MaterialPipelineKey};
 use bevy::prelude::*;
@@ -56,9 +57,9 @@ use bevy::shader::ShaderRef;
 use serde::Serialize;
 
 use crate::api::Cursor;
+use crate::features::{Coords, FeatureSet};
 use crate::frame::{FrameSet, ReferenceFrame};
-use crate::geo::{EARTH_RADIUS_KM, LatLon, Position};
-use crate::geojson::{GeoJson, Polygon, Shape};
+use crate::geo::{EARTH_RADIUS_KM, Position};
 use crate::globe::GLOBE_RADIUS;
 use crate::picking::{self, Hit, PickIndex, PickKind, Tolerance};
 use crate::tessellate;
@@ -88,7 +89,7 @@ const MARKER_RADIUS: f32 = MAX_TILE_RADIUS + GLOBE_RADIUS * 2.0e-4;
 /// The furthest apart two corners of a line may be before the segment between
 /// them is subdivided. A straight chord over a long span cuts under the globe
 /// and disappears; this keeps a line on the surface it belongs to.
-const MAX_SEGMENT_DEGREES: f32 = 2.0;
+const MAX_SEGMENT_DEGREES: f64 = 2.0;
 
 /// The most triangles one polygon's fill may be refined into. Past it the fill
 /// is drawn coarser — lifted further off the surface to compensate — rather
@@ -288,11 +289,14 @@ impl OverlayAltitude {
         if self.mode == AltitudeMode::ClampToSurface || !self.scale.is_finite() {
             return 0.0;
         }
-        let metres = position.altitude_m * self.scale;
+        // In `f64`, because the height came out of the store at `f64` and the
+        // scale is the only thing that has ever been stated at `f32`.
+        let metres = position.altitude_m * f64::from(self.scale);
         if !metres.is_finite() {
             return 0.0;
         }
-        (metres / (EARTH_RADIUS_KM * 1000.0) * GLOBE_RADIUS).max(0.0)
+        let units = metres / (f64::from(EARTH_RADIUS_KM) * 1000.0) * f64::from(GLOBE_RADIUS);
+        (units as f32).max(0.0)
     }
 }
 
@@ -399,12 +403,12 @@ struct Overlay {
     ///
     /// Behind an `Arc` so a system holding `&mut OverlaySettings` can take a
     /// reference to one layer's document and still spawn entities for it.
-    data: Option<Arc<GeoJson>>,
+    data: Option<Arc<FeatureSet>>,
     /// Where each of that document's shapes is, roughly, so the hit test can
     /// dismiss most of them without walking their vertices.
     index: Arc<PickIndex>,
     /// Geometry waiting to be meshed, from a text source or a finished fetch.
-    pending: Option<GeoJson>,
+    pending: Option<FeatureSet>,
     /// Set when a fetch is due; cleared once one has been started.
     wants_fetch: bool,
     /// Set when the colours changed but the geometry did not.
@@ -451,6 +455,30 @@ impl Overlay {
 /// The URL behind each overlay slot, shared with the asset reader outside the
 /// `World`.
 type SharedOverlayUrls = Arc<RwLock<HashMap<u64, String>>>;
+
+/// Every drawn layer's geometry, by layer id, reachable from outside the
+/// `World`.
+///
+/// This exists for one caller: [`crate::wasm::overlay_geometry`], which hands
+/// an embedder a view straight onto the GeoArrow buffers and has no `World` to
+/// ask. It is a second handle on the same `Arc` the layer is drawing from, so
+/// publishing into it is a reference count and no copy.
+///
+/// Global rather than threaded through the plugin because the binding is a free
+/// function that JavaScript calls whenever it likes, not a system with access
+/// to resources — the same reason [`crate::api`] keeps its command queue here.
+static GEOMETRY: LazyLock<RwLock<HashMap<String, Arc<FeatureSet>>>> =
+    LazyLock::new(RwLock::default);
+
+/// The geometry of one layer as it is currently drawn, or `None` for a layer
+/// that is not up or has not loaded.
+///
+/// Only the WebAssembly binding asks; a native host holding the `App` reads the
+/// resource directly.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub fn geometry_of(id: &str) -> Option<Arc<FeatureSet>> {
+    GEOMETRY.read().ok()?.get(id).cloned()
+}
 
 /// Every overlay, and the master switch over all of them.
 #[derive(Resource)]
@@ -595,7 +623,7 @@ impl OverlaySettings {
         };
         overlay.set_refresh(request.refresh_seconds);
         if let OverlaySource::Text(text) = &overlay.source {
-            match GeoJson::parse(text) {
+            match crate::geojson::parse(text) {
                 Ok(parsed) => overlay.pending = Some(parsed),
                 Err(error) => overlay.status = OverlayStatus::Failed(error.to_string()),
             }
@@ -611,6 +639,9 @@ impl OverlaySettings {
             return false;
         };
         let overlay = self.overlays.remove(index);
+        if let Ok(mut published) = GEOMETRY.write() {
+            published.remove(&overlay.id);
+        }
         self.forget_picks(overlay.slot);
         if let Ok(mut urls) = self.urls.write() {
             urls.remove(&overlay.slot);
@@ -802,7 +833,7 @@ impl Material for VectorMaterial {
 /// A parsed GeoJSON document, so that fetching, decoding and reference counting
 /// are Bevy's problem rather than this module's.
 #[derive(Asset, TypePath, Debug)]
-pub struct GeoJsonAsset(pub GeoJson);
+pub struct GeoJsonAsset(pub FeatureSet);
 
 #[derive(Debug)]
 pub enum GeoJsonLoadError {
@@ -843,7 +874,7 @@ impl AssetLoader for GeoJsonLoader {
             .await
             .map_err(GeoJsonLoadError::Io)?;
         let text = String::from_utf8(bytes).map_err(GeoJsonLoadError::NotText)?;
-        GeoJson::parse(&text)
+        crate::geojson::parse(&text)
             .map(GeoJsonAsset)
             .map_err(GeoJsonLoadError::NotGeoJson)
     }
@@ -1110,14 +1141,17 @@ fn rebuild_overlays(
         let document = match overlay.pending.take() {
             Some(document) => {
                 overlay.counts = OverlayCounts {
-                    features: document.features.len(),
-                    points: document.points.len(),
-                    lines: document.lines.len(),
-                    polygons: document.polygons.len(),
+                    features: document.feature_count(),
+                    points: document.point_count(),
+                    lines: document.line_count(),
+                    polygons: document.polygon_count(),
                 };
                 overlay.index = Arc::new(PickIndex::build(&document));
                 let document = Arc::new(document);
                 overlay.data = Some(document.clone());
+                if let Ok(mut published) = GEOMETRY.write() {
+                    published.insert(overlay.id.clone(), document.clone());
+                }
                 // Whatever was picked was picked in the document this one
                 // replaces, and feature seven of a refreshed feed is a
                 // different earthquake.
@@ -1146,19 +1180,19 @@ fn rebuild_overlays(
                 VectorMode::Fill,
                 style.fill_color,
                 0.0,
-                fill_mesh(&document.polygons, altitude),
+                fill_mesh(&document, None, altitude),
             ),
             (
                 VectorMode::Line,
                 style.line_color,
                 style.line_width_px,
-                line_mesh(&document.lines, &document.polygons, altitude),
+                line_mesh(&document, None, true, altitude),
             ),
             (
                 VectorMode::Marker,
                 style.point_color,
                 style.point_size_px,
-                marker_mesh(&document.points, altitude),
+                marker_mesh(&document, None, altitude),
             ),
         ];
 
@@ -1349,28 +1383,30 @@ fn highlight_pick(
 
     let style = overlay.style;
     let altitude = overlay.altitude;
-    let points = of_feature(&document.points, pick.feature);
-    let lines = of_feature(&document.lines, pick.feature);
-    let polygons = of_feature(&document.polygons, pick.feature);
+    // The same builders the layer itself was drawn with, told to walk past
+    // every shape that is not this feature's. Cheap, because walking past a
+    // shape is reading one integer out of the owner column — which is what
+    // having that column separate from the coordinates buys.
+    let only = Some(pick.feature as u32);
 
     let built = [
         (
             VectorMode::Fill,
             HIGHLIGHT_FILL,
             0.0,
-            fill_mesh(&polygons, altitude),
+            fill_mesh(&document, only, altitude),
         ),
         (
             VectorMode::Line,
             HIGHLIGHT_COLOR,
             style.line_width_px + HIGHLIGHT_GROW_PX,
-            line_mesh(&lines, &polygons, altitude),
+            line_mesh(&document, only, true, altitude),
         ),
         (
             VectorMode::Marker,
             HIGHLIGHT_COLOR,
             style.point_size_px + HIGHLIGHT_GROW_PX,
-            marker_mesh(&points, altitude),
+            marker_mesh(&document, only, altitude),
         ),
     ];
 
@@ -1392,15 +1428,6 @@ fn highlight_pick(
             .id();
         settings.highlight.push(entity);
     }
-}
-
-/// The shapes of one feature.
-fn of_feature<T: Clone>(shapes: &[Shape<T>], feature: usize) -> Vec<Shape<T>> {
-    shapes
-        .iter()
-        .filter(|shape| shape.feature == feature)
-        .cloned()
-        .collect()
 }
 
 /// Carries the overlays around with the globe, and draws only what should be
@@ -1507,13 +1534,20 @@ fn radius_of(position: Position, altitude: OverlayAltitude, base: f32, lift: f32
 /// One quad per point, all four corners on the same anchor. The shader spreads
 /// them into a disc facing the camera, and the UV says which corner is which —
 /// which is also what the disc is rounded off with.
-pub(crate) fn marker_mesh(points: &[Shape<Position>], altitude: OverlayAltitude) -> Option<Mesh> {
+pub(crate) fn marker_mesh(
+    document: &FeatureSet,
+    only: Option<u32>,
+    altitude: OverlayAltitude,
+) -> Option<Mesh> {
     let mut builder = MeshBuilder::new();
-    for point in points {
-        let direction = point.geometry.to_direction();
+    for (feature, point) in document.points() {
+        if only.is_some_and(|wanted| wanted != feature) {
+            continue;
+        }
+        let direction = point.to_direction();
         // A marker is a flat quad on one anchor, so there is no span across it
         // to sag: no chord correction of its own.
-        let radius = radius_of(point.geometry, altitude, MARKER_RADIUS, 1.0);
+        let radius = radius_of(point, altitude, MARKER_RADIUS, 1.0);
         let base = builder.next_index();
         for corner in [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]] {
             builder.push(direction, radius, corner, NO_TANGENT);
@@ -1528,20 +1562,26 @@ pub(crate) fn marker_mesh(points: &[Shape<Position>], altitude: OverlayAltitude)
 /// Every line, plus every polygon's rings — so a polygon still reads as a shape
 /// when its fill is transparent, or when it was too big to triangulate.
 pub(crate) fn line_mesh(
-    lines: &[Shape<Vec<Position>>],
-    polygons: &[Shape<Polygon>],
+    document: &FeatureSet,
+    only: Option<u32>,
+    outline_rings: bool,
     altitude: OverlayAltitude,
 ) -> Option<Mesh> {
     let mut builder = MeshBuilder::new();
-    for line in lines {
-        push_ribbon(
-            &mut builder,
-            &densify(&line.geometry, false, altitude, LINE_RADIUS),
-        );
+    for (feature, line) in document.lines() {
+        if only.is_some_and(|wanted| wanted != feature) {
+            continue;
+        }
+        push_ribbon(&mut builder, &densify(line, false, altitude, LINE_RADIUS));
     }
-    for polygon in polygons {
-        for ring in &polygon.geometry.rings {
-            push_ribbon(&mut builder, &densify(ring, true, altitude, LINE_RADIUS));
+    if outline_rings {
+        for (feature, polygon) in document.polygons() {
+            if only.is_some_and(|wanted| wanted != feature) {
+                continue;
+            }
+            for ring in polygon.rings() {
+                push_ribbon(&mut builder, &densify(ring, true, altitude, LINE_RADIUS));
+            }
         }
     }
     builder.finish()
@@ -1562,25 +1602,34 @@ pub(crate) fn line_mesh(
 /// corner would have to be carried through ear clipping to reach the mesh, and
 /// what it would buy is a fill that folds. A lid at the average height, ringed
 /// by an outline that climbs, is both simpler and easier to read.
-pub(crate) fn fill_mesh(polygons: &[Shape<Polygon>], altitude: OverlayAltitude) -> Option<Mesh> {
+pub(crate) fn fill_mesh(
+    document: &FeatureSet,
+    only: Option<u32>,
+    altitude: OverlayAltitude,
+) -> Option<Mesh> {
     let mut builder = MeshBuilder::new();
-    for polygon in polygons {
-        let (mut corners, indices) = tessellate::triangulate(&polygon.geometry);
+    for (feature, polygon) in document.polygons() {
+        if only.is_some_and(|wanted| wanted != feature) {
+            continue;
+        }
+        let (mut corners, indices) = tessellate::triangulate(polygon);
         let indices = refine(&mut corners, indices);
         if indices.is_empty() {
             continue;
         }
 
         let lift = chord_lift(longest_edge_degrees(&corners, &indices));
-        let radius = radius_of(
-            mean_height(polygon.geometry.outer()),
-            altitude,
-            FILL_RADIUS,
-            lift,
-        );
+        let radius = radius_of(mean_height(polygon.outer()), altitude, FILL_RADIUS, lift);
         let base = builder.next_index();
         for corner in &corners {
-            builder.push(corner.to_direction(), radius, [0.0, 0.0], NO_TANGENT);
+            // The corner is still `f64` here, and is narrowed exactly once, on
+            // its way into the vertex buffer.
+            builder.push(
+                crate::geo::direction(corner.y, corner.x),
+                radius,
+                [0.0, 0.0],
+                NO_TANGENT,
+            );
         }
         builder
             .indices
@@ -1591,7 +1640,7 @@ pub(crate) fn fill_mesh(polygons: &[Shape<Polygon>], altitude: OverlayAltitude) 
         // on, and a wall in a different colour from the lid it holds up would
         // read as two shapes rather than one solid.
         if altitude.extrude {
-            for ring in &polygon.geometry.rings {
+            for ring in polygon.rings() {
                 push_walls(&mut builder, ring, altitude);
             }
         }
@@ -1609,7 +1658,7 @@ pub(crate) fn fill_mesh(polygons: &[Shape<Polygon>], altitude: OverlayAltitude) 
 ///
 /// A hole gets walls too, which is what makes an extruded ring with a hole read
 /// as a shape with a shaft through it rather than as a lid with a gap.
-fn push_walls(builder: &mut MeshBuilder, ring: &[Position], altitude: OverlayAltitude) {
+fn push_walls(builder: &mut MeshBuilder, ring: Coords<'_>, altitude: OverlayAltitude) {
     let floor = FILL_RADIUS * chord_lift(MAX_SEGMENT_DEGREES);
     let path = densify(ring, true, altitude, FILL_RADIUS);
 
@@ -1646,7 +1695,7 @@ fn push_walls(builder: &mut MeshBuilder, ring: &[Position], altitude: OverlayAlt
 /// a neighbour's unsplit edge with a hairline of background showing through.
 /// Each triangle is then rebuilt from however many of its three edges were
 /// marked, which is why there are eight cases below rather than one.
-fn refine(corners: &mut Vec<LatLon>, mut indices: Vec<u32>) -> Vec<u32> {
+fn refine(corners: &mut Vec<DVec2>, mut indices: Vec<u32>) -> Vec<u32> {
     let mut midpoints: HashMap<(u32, u32), u32> = HashMap::new();
 
     loop {
@@ -1704,20 +1753,17 @@ fn edge(from: u32, to: u32) -> (u32, u32) {
 
 /// The corner halfway along an edge, made once and shared by both sides.
 fn midpoint(
-    corners: &mut Vec<LatLon>,
+    corners: &mut Vec<DVec2>,
     cache: &mut HashMap<(u32, u32), u32>,
     from: u32,
     to: u32,
 ) -> u32 {
     *cache.entry(edge(from, to)).or_insert_with(|| {
         let (from, to) = (corners[from as usize], corners[to as usize]);
-        corners.push(LatLon::new(
-            (from.lat + to.lat) * 0.5,
-            // Longitudes within one polygon are unwrapped to run continuously,
-            // so the plain average is the point between them even across the
-            // antimeridian — see `tessellate`.
-            (from.lon + to.lon) * 0.5,
-        ));
+        // Longitudes within one polygon are unwrapped to run continuously, so
+        // the plain average is the point between them even across the
+        // antimeridian — see `tessellate`.
+        corners.push((from + to) * 0.5);
         corners.len() as u32 - 1
     })
 }
@@ -1726,11 +1772,11 @@ fn midpoint(
 ///
 /// An overestimate near the poles, where a degree of longitude is much less
 /// than a degree of arc. Overestimating only refines more than it has to.
-fn span_degrees(from: LatLon, to: LatLon) -> f32 {
-    (from.lat - to.lat).abs().max((from.lon - to.lon).abs())
+fn span_degrees(from: DVec2, to: DVec2) -> f64 {
+    (from - to).abs().max_element()
 }
 
-fn longest_edge_degrees(corners: &[LatLon], indices: &[u32]) -> f32 {
+fn longest_edge_degrees(corners: &[DVec2], indices: &[u32]) -> f64 {
     indices
         .chunks_exact(3)
         .flat_map(|triangle| {
@@ -1741,7 +1787,7 @@ fn longest_edge_degrees(corners: &[LatLon], indices: &[u32]) -> f32 {
             ]
         })
         .map(|(from, to)| span_degrees(corners[from as usize], corners[to as usize]))
-        .fold(0.0, f32::max)
+        .fold(0.0, f64::max)
 }
 
 /// How far out to push corners so that the flat surface between them sits at or
@@ -1750,11 +1796,11 @@ fn longest_edge_degrees(corners: &[LatLon], indices: &[u32]) -> f32 {
 /// The same correction `TileGrid::radius` applies to a tile patch, for the same
 /// reason: a polygon inscribed in a sphere is entirely inside it, and what is
 /// drawn on the globe has to be entirely outside.
-fn chord_lift(span_degrees: f32) -> f32 {
+fn chord_lift(span_degrees: f64) -> f32 {
     if span_degrees <= 0.0 {
         return 1.0;
     }
-    1.0 / (span_degrees * 0.5).to_radians().cos()
+    (1.0 / (span_degrees * 0.5).to_radians().cos()) as f32
 }
 
 /// One vertex of a densified path: which way it lies, and how far out it is
@@ -1827,7 +1873,7 @@ fn push_ribbon(builder: &mut MeshBuilder, path: &[Anchor]) {
 /// way: a segment between two corners at different heights climbs evenly across
 /// however many steps it was split into, so a line runs to where it was told to
 /// rather than stepping up at each corner.
-fn densify(path: &[Position], closed: bool, altitude: OverlayAltitude, base: f32) -> Vec<Anchor> {
+fn densify(path: Coords<'_>, closed: bool, altitude: OverlayAltitude, base: f32) -> Vec<Anchor> {
     if path.is_empty() {
         return Vec::new();
     }
@@ -1844,15 +1890,16 @@ fn densify(path: &[Position], closed: bool, altitude: OverlayAltitude, base: f32
     let count = path.len();
     let segments = if closed { count } else { count - 1 };
     let mut out = Vec::with_capacity(count);
-    out.push(anchor(path[0]));
+    let first = path.get(0);
+    out.push(anchor(first));
 
-    let mut latitude = path[0].lat();
-    let mut longitude = path[0].lon();
-    let mut height = path[0].altitude_m;
+    let mut latitude = first.lat;
+    let mut longitude = first.lon;
+    let mut height = first.altitude_m;
     for index in 0..segments {
-        let corner = path[(index + 1) % count];
-        let target_longitude = longitude + shortest_turn(corner.lon() - longitude);
-        let steps = ((corner.lat() - latitude)
+        let corner = path.wrapping(index + 1);
+        let target_longitude = longitude + shortest_turn(corner.lon - longitude);
+        let steps = ((corner.lat - latitude)
             .abs()
             .max((target_longitude - longitude).abs())
             / MAX_SEGMENT_DEGREES)
@@ -1860,9 +1907,9 @@ fn densify(path: &[Position], closed: bool, altitude: OverlayAltitude, base: f32
             .max(1.0) as u32;
 
         for step in 1..=steps {
-            let fraction = step as f32 / steps as f32;
+            let fraction = f64::from(step) / f64::from(steps);
             let stepped = anchor(Position::new(
-                latitude + (corner.lat() - latitude) * fraction,
+                latitude + (corner.lat - latitude) * fraction,
                 longitude + (target_longitude - longitude) * fraction,
                 height + (corner.altitude_m - height) * fraction,
             ));
@@ -1875,7 +1922,7 @@ fn densify(path: &[Position], closed: bool, altitude: OverlayAltitude, base: f32
                 out.push(stepped);
             }
         }
-        latitude = corner.lat();
+        latitude = corner.lat;
         longitude = target_longitude;
         height = corner.altitude_m;
     }
@@ -1889,19 +1936,17 @@ fn densify(path: &[Position], closed: bool, altitude: OverlayAltitude, base: f32
 /// built from the triangulated corners and only the radius comes from here, but
 /// averaging longitudes across the antimeridian would be wrong in a way that
 /// would matter if anything ever did.
-fn mean_height(ring: &[Position]) -> Position {
-    let Some(first) = ring.first() else {
+fn mean_height(ring: Coords<'_>) -> Position {
+    if ring.is_empty() {
         return Position::new(0.0, 0.0, 0.0);
-    };
-    let total: f32 = ring.iter().map(|position| position.altitude_m).sum();
-    Position {
-        coordinate: first.coordinate,
-        altitude_m: total / ring.len() as f32,
     }
+    let first = ring.get(0);
+    let total: f64 = ring.iter().map(|position| position.altitude_m).sum();
+    Position::new(first.lat, first.lon, total / ring.len() as f64)
 }
 
 /// Brings an angle in degrees into `[-180, 180)`.
-fn shortest_turn(degrees: f32) -> f32 {
+fn shortest_turn(degrees: f64) -> f64 {
     (degrees + 180.0).rem_euclid(360.0) - 180.0
 }
 
@@ -2006,14 +2051,19 @@ pub fn describe_pick(settings: &OverlaySettings, pick: Pick) -> Option<PickedFea
         .overlays
         .iter()
         .find(|overlay| overlay.slot == pick.slot)?;
-    let feature = overlay.data.as_ref()?.features.get(pick.feature)?;
+    let document = overlay.data.as_ref()?;
+    if pick.feature >= document.feature_count() {
+        return None;
+    }
     Some(PickedFeature {
         layer: overlay.id.clone(),
         label: overlay.label.clone(),
         index: pick.feature,
-        id: feature.id.clone(),
+        id: document.feature_id(pick.feature).map(str::to_string),
         kind: pick.kind.id(),
-        properties: feature.properties.clone(),
+        // Parsed here rather than held parsed — see `crate::features`. This
+        // runs once when the pick changes, not once a frame.
+        properties: document.feature_properties(pick.feature),
     })
 }
 
@@ -2069,17 +2119,14 @@ pub fn describe(settings: &OverlaySettings) -> Vec<OverlayInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bevy::math::Vec2;
+    use crate::features::FeatureSetBuilder;
 
     /// Planar area of a triangulation, in square degrees.
-    fn area(corners: &[LatLon], indices: &[u32]) -> f32 {
+    fn area(corners: &[DVec2], indices: &[u32]) -> f64 {
         indices
             .chunks_exact(3)
             .map(|triangle| {
-                let corner = |index: u32| {
-                    let point = corners[index as usize];
-                    Vec2::new(point.lon, point.lat)
-                };
+                let corner = |index: u32| corners[index as usize];
                 let (a, b, c) = (
                     corner(triangle[0]),
                     corner(triangle[1]),
@@ -2090,27 +2137,51 @@ mod tests {
             .sum()
     }
 
-    fn big_polygon() -> Shape<Polygon> {
+    /// A set holding one point, which is a layer of one marker.
+    fn point_set(point: Position) -> FeatureSet {
+        let mut builder = FeatureSetBuilder::new();
+        let feature = builder.feature(None, None);
+        builder.push_point(feature, point);
+        builder.finish()
+    }
+
+    /// A set holding one line, which is also how a path is handed to
+    /// `densify` — it takes a run of the store's coordinates, not a slice.
+    fn line_set(path: &[Position]) -> FeatureSet {
+        let mut builder = FeatureSetBuilder::new();
+        let feature = builder.feature(None, None);
+        builder.push_line(feature, path.iter().copied());
+        builder.finish()
+    }
+
+    /// A set holding one polygon per ring given, all naming one feature.
+    fn polygon_set(rings: &[Vec<Position>]) -> FeatureSet {
+        let mut builder = FeatureSetBuilder::new();
+        let feature = builder.feature(None, None);
+        for ring in rings {
+            builder.push_polygon(feature, [ring.iter().copied()]);
+        }
+        builder.finish()
+    }
+
+    fn big_polygon() -> FeatureSet {
         big_polygon_at(0.0)
     }
 
     /// The same polygon with every corner at one height.
-    fn big_polygon_at(altitude_m: f32) -> Shape<Polygon> {
-        let rings = vec![vec![
+    fn big_polygon_at(altitude_m: f64) -> FeatureSet {
+        polygon_set(&[vec![
             Position::new(30.0, -10.0, altitude_m),
             Position::new(30.0, 20.0, altitude_m),
             Position::new(50.0, 20.0, altitude_m),
             Position::new(50.0, -10.0, altitude_m),
-        ]];
-        Shape {
-            feature: 0,
-            geometry: Polygon { rings },
-        }
+        ]])
     }
 
     #[test]
     fn refining_leaves_no_edge_long_enough_to_sag_off_the_globe() {
-        let (mut corners, indices) = tessellate::triangulate(&big_polygon().geometry);
+        let set = big_polygon();
+        let (mut corners, indices) = tessellate::triangulate(set.polygon(0).1);
         assert!(longest_edge_degrees(&corners, &indices) > MAX_SEGMENT_DEGREES);
 
         let refined = refine(&mut corners, indices);
@@ -2119,7 +2190,8 @@ mod tests {
 
     #[test]
     fn refining_covers_exactly_the_same_ground() {
-        let (mut corners, indices) = tessellate::triangulate(&big_polygon().geometry);
+        let set = big_polygon();
+        let (mut corners, indices) = tessellate::triangulate(set.polygon(0).1);
         let before = area(&corners, &indices);
         let refined = refine(&mut corners, indices);
         // Signed, so an arm of the refinement that came out wound backwards
@@ -2133,7 +2205,7 @@ mod tests {
 
     #[test]
     fn a_refined_fill_is_lifted_clear_of_the_imagery() {
-        let mesh = fill_mesh(&[big_polygon()], OverlayAltitude::default()).expect("a fill");
+        let mesh = fill_mesh(&big_polygon(), None, OverlayAltitude::default()).expect("a fill");
         let positions = mesh
             .attribute(Mesh::ATTRIBUTE_POSITION)
             .and_then(|values| values.as_float3())
@@ -2184,7 +2256,7 @@ mod tests {
     }
 
     /// A position on the ground, which most of these are.
-    fn at(lat: f32, lon: f32) -> Position {
+    fn at(lat: f64, lon: f64) -> Position {
         Position::new(lat, lon, 0.0)
     }
 
@@ -2196,8 +2268,9 @@ mod tests {
 
     #[test]
     fn a_long_segment_is_subdivided_onto_the_surface() {
+        let path = line_set(&[at(0.0, 0.0), at(0.0, 90.0)]);
         let densified = densify(
-            &[at(0.0, 0.0), at(0.0, 90.0)],
+            path.line(0).1,
             false,
             OverlayAltitude::default(),
             LINE_RADIUS,
@@ -2212,8 +2285,9 @@ mod tests {
     fn a_step_over_the_antimeridian_is_taken_the_short_way() {
         // Two degrees, at one step of at most two: the ends and nothing in
         // between, rather than the 179 steps a wrap the wrong way would need.
+        let path = line_set(&[at(0.0, 179.0), at(0.0, -179.0)]);
         let densified = densify(
-            &[at(0.0, 179.0), at(0.0, -179.0)],
+            path.line(0).1,
             false,
             OverlayAltitude::default(),
             LINE_RADIUS,
@@ -2224,8 +2298,9 @@ mod tests {
     #[test]
     fn a_ribbon_has_two_corners_per_point_and_two_triangles_per_segment() {
         let mut builder = MeshBuilder::new();
+        let line = line_set(&[at(0.0, 0.0), at(1.0, 0.0)]);
         let path = densify(
-            &[at(0.0, 0.0), at(1.0, 0.0)],
+            line.line(0).1,
             false,
             OverlayAltitude::default(),
             LINE_RADIUS,
@@ -2237,8 +2312,9 @@ mod tests {
 
     #[test]
     fn a_closed_ring_meshes_without_a_seam() {
+        let closed = line_set(&[at(0.0, 0.0), at(0.0, 1.0), at(1.0, 1.0)]);
         let ring = densify(
-            &[at(0.0, 0.0), at(0.0, 1.0), at(1.0, 1.0)],
+            closed.line(0).1,
             true,
             OverlayAltitude::default(),
             LINE_RADIUS,
@@ -2254,12 +2330,9 @@ mod tests {
 
     #[test]
     fn a_marker_is_drawn_at_the_height_it_was_given() {
-        let points = [Shape {
-            feature: 0,
-            geometry: Position::new(0.0, 0.0, 100_000.0),
-        }];
+        let points = point_set(Position::new(0.0, 0.0, 100_000.0));
         let radius = |altitude| {
-            let mesh = marker_mesh(&points, altitude).expect("a marker");
+            let mesh = marker_mesh(&points, None, altitude).expect("a marker");
             let positions = mesh
                 .attribute(Mesh::ATTRIBUTE_POSITION)
                 .and_then(|values| values.as_float3())
@@ -2278,13 +2351,11 @@ mod tests {
 
     #[test]
     fn a_scale_says_what_the_third_element_was_in() {
-        let points = [Shape {
-            feature: 0,
-            geometry: Position::new(0.0, 0.0, 10.0),
-        }];
+        let points = point_set(Position::new(0.0, 0.0, 10.0));
         let radius = |scale| {
             let mesh = marker_mesh(
                 &points,
+                None,
                 OverlayAltitude {
                     mode: AltitudeMode::RelativeToSurface,
                     scale,
@@ -2311,11 +2382,12 @@ mod tests {
 
     #[test]
     fn a_line_climbs_evenly_between_its_corners() {
+        let climbing = line_set(&[
+            Position::new(0.0, 0.0, 0.0),
+            Position::new(0.0, 10.0, 200_000.0),
+        ]);
         let path = densify(
-            &[
-                Position::new(0.0, 0.0, 0.0),
-                Position::new(0.0, 10.0, 200_000.0),
-            ],
+            climbing.line(0).1,
             false,
             OverlayAltitude::default(),
             LINE_RADIUS,
@@ -2337,7 +2409,7 @@ mod tests {
     #[test]
     fn a_fill_is_drawn_at_the_mean_height_of_its_ring() {
         let radius = |altitude| {
-            let mesh = fill_mesh(&[big_polygon_at(50_000.0)], altitude).expect("a fill");
+            let mesh = fill_mesh(&big_polygon_at(50_000.0), None, altitude).expect("a fill");
             let positions = mesh
                 .attribute(Mesh::ATTRIBUTE_POSITION)
                 .and_then(|values| values.as_float3())
@@ -2362,23 +2434,21 @@ mod tests {
         // volume — the outlines have to separate in space, and each fill has to
         // sit at its own ring's height rather than at some average of all of
         // them.
-        let shelf = |altitude_m: f32, span: f32| Shape {
-            feature: 0,
-            geometry: Polygon {
-                rings: vec![vec![
-                    Position::new(-span, -span, altitude_m),
-                    Position::new(-span, span, altitude_m),
-                    Position::new(span, span, altitude_m),
-                    Position::new(span, -span, altitude_m),
-                ]],
-            },
+        let shelf = |altitude_m: f64, span: f64| {
+            vec![
+                Position::new(-span, -span, altitude_m),
+                Position::new(-span, span, altitude_m),
+                Position::new(span, span, altitude_m),
+                Position::new(span, -span, altitude_m),
+            ]
         };
         let floors = [0.0, 2000.0, 3000.0, 4000.0];
-        let shelves: Vec<_> = floors
+        let rings: Vec<Vec<Position>> = floors
             .iter()
             .enumerate()
-            .map(|(step, floor)| shelf(*floor, 0.2 + step as f32 * 0.2))
+            .map(|(step, floor)| shelf(*floor, 0.2 + step as f64 * 0.2))
             .collect();
+        let shelves = polygon_set(&rings);
 
         let radii = |mesh: Mesh| {
             mesh.attribute(Mesh::ATTRIBUTE_POSITION)
@@ -2393,22 +2463,22 @@ mod tests {
 
         // The outlines span the whole stack, floor to ceiling.
         let (low, high) =
-            radii(line_mesh(&[], &shelves, OverlayAltitude::default()).expect("lines"));
-        let expected = (floors.last().unwrap() - floors[0]) * units_per_metre();
+            radii(line_mesh(&shelves, None, true, OverlayAltitude::default()).expect("lines"));
+        let expected = (floors.last().unwrap() - floors[0]) as f32 * units_per_metre();
         assert!((high - low - expected).abs() < 1.0e-5, "{low} to {high}");
 
         // And every fill lands on its own shelf: four of them, none sharing a
         // height with another.
         let mut levels = Vec::new();
-        for (floor, shelf) in floors.iter().zip(&shelves) {
-            let (low, high) = radii(
-                fill_mesh(std::slice::from_ref(shelf), OverlayAltitude::default()).expect("a fill"),
-            );
+        for (index, floor) in floors.iter().enumerate() {
+            let one = polygon_set(std::slice::from_ref(&rings[index]));
+            let (low, high) =
+                radii(fill_mesh(&one, None, OverlayAltitude::default()).expect("a fill"));
             // One height across the whole lid, to within the precision of a
             // direction that was built from a sine and a cosine.
             assert!(high - low < 1.0e-6, "{low} to {high}");
             assert!(
-                low > FILL_RADIUS + (floor - 1.0) * units_per_metre(),
+                low > FILL_RADIUS + (*floor as f32 - 1.0) * units_per_metre(),
                 "{low}"
             );
             levels.push(low);
@@ -2418,7 +2488,8 @@ mod tests {
         }
 
         // Clamped, the stack is one flat drawing again.
-        let (low, high) = radii(line_mesh(&[], &shelves, OverlayAltitude::CLAMPED).expect("lines"));
+        let (low, high) =
+            radii(line_mesh(&shelves, None, true, OverlayAltitude::CLAMPED).expect("lines"));
         assert!(high - low < 1.0e-6, "{low} to {high}");
     }
 
@@ -2427,20 +2498,15 @@ mod tests {
         // A square at a height: a lid on its own, a box once it is extruded.
         let side = 1.0;
         let top = 200_000.0;
-        let box_lid = [Shape {
-            feature: 0,
-            geometry: Polygon {
-                rings: vec![vec![
-                    Position::new(-side, -side, top),
-                    Position::new(-side, side, top),
-                    Position::new(side, side, top),
-                    Position::new(side, -side, top),
-                ]],
-            },
-        }];
+        let box_lid = polygon_set(&[vec![
+            Position::new(-side, -side, top),
+            Position::new(-side, side, top),
+            Position::new(side, side, top),
+            Position::new(side, -side, top),
+        ]]);
 
         let spread = |altitude| {
-            let mesh = fill_mesh(&box_lid, altitude).expect("a fill");
+            let mesh = fill_mesh(&box_lid, None, altitude).expect("a fill");
             let radii: Vec<f32> = mesh
                 .attribute(Mesh::ATTRIBUTE_POSITION)
                 .and_then(|values| values.as_float3())
@@ -2465,26 +2531,21 @@ mod tests {
         // The walls span from the ground to the lid, and add vertices to do it.
         assert!(walled_count > flat_count, "{walled_count} vs {flat_count}");
         assert!(
-            (high - low - top * units_per_metre()).abs() < 1.0e-5,
+            (high - low - top as f32 * units_per_metre()).abs() < 1.0e-5,
             "{low} to {high}"
         );
         assert!(low < FILL_RADIUS * 1.001, "{low} should be on the ground");
 
         // A ring already on the ground has nothing to wall: extruding it is the
         // same drawing as not.
-        let on_the_ground = [Shape {
-            feature: 0,
-            geometry: Polygon {
-                rings: vec![vec![
-                    at(-side, -side),
-                    at(-side, side),
-                    at(side, side),
-                    at(side, -side),
-                ]],
-            },
-        }];
+        let on_the_ground = polygon_set(&[vec![
+            at(-side, -side),
+            at(-side, side),
+            at(side, side),
+            at(side, -side),
+        ]]);
         let count = |altitude| {
-            fill_mesh(&on_the_ground, altitude)
+            fill_mesh(&on_the_ground, None, altitude)
                 .expect("a fill")
                 .count_vertices()
         };
@@ -2548,7 +2609,7 @@ mod tests {
         // The label falls back to the id, and the geometry is already waiting.
         assert_eq!(overlay.label, "local");
         assert_eq!(
-            overlay.pending.as_ref().map(|data| data.points.len()),
+            overlay.pending.as_ref().map(FeatureSet::point_count),
             Some(1)
         );
         // Nothing to fetch, and nowhere to fetch it from, so the period asked
@@ -2595,6 +2656,72 @@ mod tests {
         assert_ne!(settings.overlays[0].slot, first_slot);
         let urls = settings.urls.read().expect("lock");
         assert_eq!(urls.len(), 1);
+    }
+
+    /// One document holding a feature of every kind the globe draws, run end to
+    /// end: parsed into the store, and all three meshes built out of it.
+    ///
+    /// Written out here rather than read from the reference app's sample file,
+    /// because the globe knows nothing about the app around it and a test is
+    /// not the place to start.
+    #[test]
+    fn a_document_of_every_kind_parses_and_meshes() {
+        let document = crate::geojson::parse(
+            r#"{
+                "type": "FeatureCollection",
+                "features": [
+                    {"type": "Feature", "id": 1, "properties": {"name": "a point"},
+                     "geometry": {"type": "Point", "coordinates": [10, 20, 1500]}},
+                    {"type": "Feature", "properties": {"name": "a track"},
+                     "geometry": {"type": "LineString",
+                                  "coordinates": [[0, 0], [10, 5, 2000], [20, 10, 4000]]}},
+                    {"type": "Feature", "properties": {"name": "an island chain"},
+                     "geometry": {"type": "MultiPolygon", "coordinates": [
+                        [[[30, 30], [34, 30], [34, 34], [30, 34], [30, 30]],
+                         [[31, 31], [32, 31], [32, 32], [31, 32], [31, 31]]],
+                        [[[40, 30], [44, 30], [44, 34], [40, 34], [40, 30]]]
+                     ]}},
+                    {"type": "Feature", "properties": {"name": "an airspace shelf"},
+                     "geometry": {"type": "Polygon", "coordinates":
+                        [[[-5, -5, 3000], [-3, -5, 3000], [-3, -3, 3000], [-5, -5, 3000]]]}},
+                    {"type": "Feature", "properties": null,
+                     "geometry": {"type": "GeometryCollection", "geometries": [
+                        {"type": "MultiPoint", "coordinates": [[60, 10], [61, 11]]}
+                     ]}}
+                ]
+            }"#,
+        )
+        .expect("valid");
+
+        assert_eq!(document.feature_count(), 5);
+        assert_eq!(document.point_count(), 3);
+        assert_eq!(document.line_count(), 1);
+        // The `MultiPolygon` is two polygons of one feature, plus the shelf.
+        assert_eq!(document.polygon_count(), 3);
+
+        let altitude = OverlayAltitude::default();
+        assert!(marker_mesh(&document, None, altitude).is_some());
+        assert!(line_mesh(&document, None, true, altitude).is_some());
+        assert!(fill_mesh(&document, None, altitude).is_some());
+
+        // Every shape names a feature that exists, which is what the hit test
+        // and the highlight both depend on.
+        let features = document.feature_count() as u32;
+        for owners in [
+            document.point_owners(),
+            document.line_owners(),
+            document.polygon_owners(),
+        ] {
+            assert!(owners.iter().all(|owner| *owner < features));
+        }
+
+        // Both islands belong to the one feature, so highlighting either is
+        // highlighting the chain — and that is fewer vertices than the layer.
+        let chain = document.polygon_owners()[0];
+        assert_eq!(document.polygon_owners()[1], chain);
+        let whole = fill_mesh(&document, None, altitude).expect("a fill");
+        let one = fill_mesh(&document, Some(chain), altitude).expect("one feature's fill");
+        assert!(one.count_vertices() < whole.count_vertices());
     }
 
     fn test_settings() -> OverlaySettings {

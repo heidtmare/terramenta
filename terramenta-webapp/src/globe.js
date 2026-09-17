@@ -238,6 +238,37 @@ export const refreshOverlay = (id) => required().refreshOverlay(id);
 /** Whether overlays are drawn at all. Off, every layer stays loaded. */
 export const setOverlaysEnabled = (enabled) => required().setOverlaysEnabled(enabled);
 
+// --- Geometry --------------------------------------------------------------
+
+/**
+ * A layer's geometry as typed arrays viewing the module's own memory — the
+ * buffers the globe is drawing from, in [GeoArrow](https://geoarrow.org)
+ * layout, not a copy of them.
+ *
+ *     const g = globe.overlayGeometry("quakes");
+ *     // The first point of the layer, in full f64 precision.
+ *     const [lon, lat, height] = g.points.coords.subarray(0, 3);
+ *     // Which feature it belongs to — the index `pinFeature` takes.
+ *     const feature = g.points.features[0];
+ *
+ * `coords` is `longitude, latitude, height` repeated: degrees on WGS 84 and
+ * metres above the surface, exactly as the source wrote them. `offsets` say
+ * where each shape starts and ends *in coordinates*, so line `i` spans
+ * `offsets[i]` to `offsets[i + 1]`; a polygon's `offsets` index into
+ * `ringOffsets`, which index into `coords`, outer ring first. Rings are open —
+ * the repeated closing position is gone, so a ring's last edge is the one back
+ * to its first point.
+ *
+ * **The arrays are windows onto live memory.** Anything that allocates inside
+ * the module detaches them, and refreshing or removing the layer frees what
+ * they point at. So read them synchronously, and to keep the data — or to post
+ * it to a worker — copy it first with `.slice()`, which returns an ordinary
+ * array that owns its bytes.
+ *
+ * Returns `null` for a layer that is not up, or has not loaded yet.
+ */
+export const overlayGeometry = (id) => required().overlayGeometry(id);
+
 // --- Picking ---------------------------------------------------------------
 
 /**

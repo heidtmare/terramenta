@@ -2,10 +2,10 @@
 //!
 //! The cursor is already a latitude and longitude by the time it gets here —
 //! [`crate::api::Cursor`] has done the ray-sphere intersection — so picking is
-//! a two-dimensional problem: which shape of an overlay is within a tolerance
-//! of a coordinate, and which feature that shape belongs to.
+//! a two-dimensional problem: which shape of a [`FeatureSet`] is within a
+//! tolerance of a coordinate, and which feature that shape belongs to.
 //!
-//! Three things decide how it is done.
+//! Four things decide how it is done.
 //!
 //! **The tolerance is in pixels, because the geometry is.** A marker is nine
 //! pixels across whatever the altitude, so what counts as "on it" has to be
@@ -24,6 +24,12 @@
 //! in three dimensions instead would quietly disagree with the line on screen
 //! for any segment long enough to matter.
 //!
+//! **The arithmetic is `f64`, and it reads the store's coordinates directly.**
+//! Every vertex comes out of the GeoArrow buffers exactly as the document wrote
+//! it — see [`crate::features`] — so nothing is narrowed on the way in and no
+//! shape is copied to be measured. The tolerances and the distance handed back
+//! stay `f32`, because both are pixel counts that came from the camera.
+//!
 //! What this is not is a depth test. The topmost thing wins by *kind* — a
 //! marker over a line over a polygon — which is the order they are drawn in and
 //! the order that makes a marker on top of a country selectable at all.
@@ -35,10 +41,10 @@
 //! ray against it in three dimensions, which is a different piece of machinery
 //! from the one below.
 
-use bevy::math::Vec2;
+use bevy::math::DVec2;
 
+use crate::features::{Coords, FeatureSet, PolygonRef};
 use crate::geo::{LatLon, Position};
-use crate::geojson::{GeoJson, Polygon};
 
 /// What a hit landed on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,7 +85,7 @@ pub struct Tolerance {
 /// One feature found under the cursor.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Hit {
-    /// An index into [`GeoJson::features`].
+    /// An index into the set's features.
     pub feature: usize,
     pub kind: PickKind,
     /// How far the cursor was from it, in degrees. Zero inside a polygon.
@@ -100,18 +106,15 @@ impl Hit {
 
 /// Which kind of shape a feature is drawn as, for a feature named rather than
 /// picked — an embedder pinning one by index has no hit to read it off.
-pub fn kind_of(document: &GeoJson, feature: usize) -> Option<PickKind> {
-    if document.points.iter().any(|shape| shape.feature == feature) {
+pub fn kind_of(document: &FeatureSet, feature: usize) -> Option<PickKind> {
+    let owned = |owners: &[u32]| owners.iter().any(|owner| *owner as usize == feature);
+    if owned(document.point_owners()) {
         return Some(PickKind::Point);
     }
-    if document.lines.iter().any(|shape| shape.feature == feature) {
+    if owned(document.line_owners()) {
         return Some(PickKind::Line);
     }
-    if document
-        .polygons
-        .iter()
-        .any(|shape| shape.feature == feature)
-    {
+    if owned(document.polygon_owners()) {
         return Some(PickKind::Polygon);
     }
     None
@@ -131,17 +134,15 @@ pub struct PickIndex {
 }
 
 impl PickIndex {
-    pub fn build(document: &GeoJson) -> Self {
+    pub fn build(document: &FeatureSet) -> Self {
         Self {
             lines: document
-                .lines
-                .iter()
-                .map(|shape| Reach::of(ground(&shape.geometry)))
+                .lines()
+                .map(|(_, line)| Reach::of(line.iter().map(ground)))
                 .collect(),
             polygons: document
-                .polygons
-                .iter()
-                .map(|shape| Reach::of(shape.geometry.rings.iter().flatten().map(ground_of)))
+                .polygons()
+                .map(|(_, polygon)| Reach::of(polygon.vertices().map(ground)))
                 .collect(),
         }
     }
@@ -150,66 +151,66 @@ impl PickIndex {
     ///
     /// The index has to have been built from this document; a layer that has
     /// been refreshed since gets a new one along with its new geometry.
-    pub fn pick(&self, document: &GeoJson, cursor: LatLon, tolerance: Tolerance) -> Option<Hit> {
+    pub fn pick(&self, document: &FeatureSet, cursor: LatLon, tolerance: Tolerance) -> Option<Hit> {
         let mut best: Option<Hit> = None;
+        let cursor = DVec2::new(f64::from(cursor.lon), f64::from(cursor.lat));
+        let (point_reach, line_reach) = (f64::from(tolerance.point), f64::from(tolerance.line));
 
-        for shape in &document.points {
-            let distance = separation(cursor, ground_of(&shape.geometry));
-            if distance <= tolerance.point {
+        for (feature, point) in document.points() {
+            let distance = separation(cursor, ground(point));
+            if distance <= point_reach {
                 consider(
                     &mut best,
                     Hit {
-                        feature: shape.feature,
+                        feature: feature as usize,
                         kind: PickKind::Point,
-                        distance,
+                        distance: distance as f32,
                     },
                 );
             }
         }
 
-        for (shape, reach) in document.lines.iter().zip(&self.lines) {
-            if !reach.could_reach(cursor, tolerance.line) {
+        for ((feature, line), reach) in document.lines().zip(&self.lines) {
+            if !reach.could_reach(cursor, line_reach) {
                 continue;
             }
-            if let Some(distance) = path_distance(&shape.geometry, cursor, tolerance.line) {
+            if let Some(distance) = path_distance(line, cursor, line_reach) {
                 consider(
                     &mut best,
                     Hit {
-                        feature: shape.feature,
+                        feature: feature as usize,
                         kind: PickKind::Line,
-                        distance,
+                        distance: distance as f32,
                     },
                 );
             }
         }
 
-        for (shape, reach) in document.polygons.iter().zip(&self.polygons) {
-            if !reach.could_reach(cursor, tolerance.line) {
+        for ((feature, polygon), reach) in document.polygons().zip(&self.polygons) {
+            if !reach.could_reach(cursor, line_reach) {
                 continue;
             }
             // The outline counts as much as the fill: a ring with a transparent
             // fill is still a shape on screen, and has to be grabbable by the
             // only part of it that was drawn.
-            let outline = shape
-                .geometry
-                .rings
-                .iter()
-                .filter_map(|ring| ring_distance(ring, cursor, tolerance.line))
-                .fold(None, |best: Option<f32>, distance| {
+            let outline = polygon
+                .rings()
+                .filter_map(|ring| ring_distance(ring, cursor, line_reach))
+                .fold(None, |best: Option<f64>, distance| {
                     Some(best.map_or(distance, |best| best.min(distance)))
                 });
 
             let distance = match outline {
                 Some(distance) => distance,
-                None if inside(&shape.geometry, cursor) => 0.0,
+                None if inside(polygon, cursor) => 0.0,
                 None => continue,
             };
             consider(
                 &mut best,
                 Hit {
-                    feature: shape.feature,
+                    feature: feature as usize,
                     kind: PickKind::Polygon,
-                    distance,
+                    distance: distance as f32,
                 },
             );
         }
@@ -219,14 +220,9 @@ impl PickIndex {
 }
 
 /// Where a position stands on the ground, which is the only part of it picking
-/// reads.
-fn ground_of(position: &Position) -> LatLon {
-    position.coordinate
-}
-
-/// The same over a path, as an iterator that can be walked more than once.
-fn ground(path: &[Position]) -> impl Iterator<Item = LatLon> + Clone {
-    path.iter().map(ground_of)
+/// reads: longitude on `x`, latitude on `y`.
+fn ground(position: Position) -> DVec2 {
+    DVec2::new(position.lon, position.lat)
 }
 
 /// Keeps whichever of the two is more nearly under the cursor: the topmost kind
@@ -241,20 +237,20 @@ fn consider(best: &mut Option<Hit>, candidate: Hit) {
 /// gets, both in the degrees [`separation`] measures.
 #[derive(Debug)]
 struct Reach {
-    center: LatLon,
-    degrees: f32,
+    center: DVec2,
+    degrees: f64,
 }
 
 impl Reach {
     /// A shape with no vertices, which nothing can be near.
     fn nowhere() -> Self {
         Self {
-            center: LatLon::new(0.0, 0.0),
+            center: DVec2::ZERO,
             degrees: -1.0,
         }
     }
 
-    fn of(vertices: impl Iterator<Item = LatLon> + Clone) -> Self {
+    fn of(vertices: impl Iterator<Item = DVec2> + Clone) -> Self {
         // Longitudes are walked continuously before being averaged, so a shape
         // straddling the antimeridian gets its centre over itself rather than
         // on the far side of the world.
@@ -264,11 +260,11 @@ impl Reach {
         let mut running = None;
         for vertex in vertices.clone() {
             let unwrapped = match running {
-                Some(previous) => previous + shortest_turn(vertex.lon - previous),
-                None => vertex.lon,
+                Some(previous) => previous + shortest_turn(vertex.x - previous),
+                None => vertex.x,
             };
             running = Some(unwrapped);
-            latitude += vertex.lat;
+            latitude += vertex.y;
             longitude += unwrapped;
             count += 1.0;
         }
@@ -276,77 +272,67 @@ impl Reach {
             return Self::nowhere();
         }
 
-        let center = LatLon::new(
-            latitude / count,
+        let center = DVec2::new(
             shortest_turn(longitude / count).clamp(-180.0, 180.0),
+            latitude / count,
         );
         Self {
             center,
-            degrees: vertices.fold(0.0_f32, |most, vertex| most.max(separation(center, vertex))),
+            degrees: vertices.fold(0.0_f64, |most, vertex| most.max(separation(center, vertex))),
         }
     }
 
-    fn could_reach(&self, cursor: LatLon, tolerance: f32) -> bool {
+    fn could_reach(&self, cursor: DVec2, tolerance: f64) -> bool {
         separation(self.center, cursor) <= self.degrees + tolerance
     }
 }
 
 /// How far apart two coordinates are, in degrees, with longitude scaled so that
 /// the number means the same thing at any latitude.
-fn separation(from: LatLon, to: LatLon) -> f32 {
+fn separation(from: DVec2, to: DVec2) -> f64 {
     offset(from, to).length()
 }
 
 /// `to`, as an offset from `from` in the flat local degrees everything here is
 /// measured in: east on `x`, north on `y`.
-fn offset(from: LatLon, to: LatLon) -> Vec2 {
-    let scale = ((from.lat + to.lat) * 0.5).to_radians().cos();
-    Vec2::new(shortest_turn(to.lon - from.lon) * scale, to.lat - from.lat)
+fn offset(from: DVec2, to: DVec2) -> DVec2 {
+    let scale = ((from.y + to.y) * 0.5).to_radians().cos();
+    DVec2::new(shortest_turn(to.x - from.x) * scale, to.y - from.y)
 }
 
 /// How far the cursor is from a path, or `None` when it is further than the
 /// tolerance from every segment of it.
-fn path_distance(path: &[Position], cursor: LatLon, tolerance: f32) -> Option<f32> {
-    segment_distance(
-        path.windows(2)
-            .map(|pair| (ground_of(&pair[0]), ground_of(&pair[1]))),
-        cursor,
-    )
-    .filter(|distance| *distance <= tolerance)
-}
-
-/// The same, for a ring — which is a path that comes back to where it started.
-fn ring_distance(ring: &[Position], cursor: LatLon, tolerance: f32) -> Option<f32> {
-    if ring.len() < 2 {
-        return None;
-    }
-    let edges = (0..ring.len()).map(|index| {
-        (
-            ground_of(&ring[index]),
-            ground_of(&ring[(index + 1) % ring.len()]),
-        )
-    });
+fn path_distance(path: Coords<'_>, cursor: DVec2, tolerance: f64) -> Option<f64> {
+    let edges = (0..path.len().saturating_sub(1))
+        .map(|index| (ground(path.get(index)), ground(path.get(index + 1))));
     segment_distance(edges, cursor).filter(|distance| *distance <= tolerance)
 }
 
-fn segment_distance(
-    segments: impl Iterator<Item = (LatLon, LatLon)>,
-    cursor: LatLon,
-) -> Option<f32> {
+/// The same, for a ring — which is a path that comes back to where it started.
+fn ring_distance(ring: Coords<'_>, cursor: DVec2, tolerance: f64) -> Option<f64> {
+    if ring.len() < 2 {
+        return None;
+    }
+    let edges =
+        (0..ring.len()).map(|index| (ground(ring.get(index)), ground(ring.wrapping(index + 1))));
+    segment_distance(edges, cursor).filter(|distance| *distance <= tolerance)
+}
+
+fn segment_distance(segments: impl Iterator<Item = (DVec2, DVec2)>, cursor: DVec2) -> Option<f64> {
     segments
         .map(|(from, to)| {
             // Measured in a plane pinned to the cursor, so the projection is at
             // its most accurate exactly where the answer matters.
             let (from, to) = (offset(cursor, from), offset(cursor, to));
             let along = to - from;
-            let fraction = if along.length_squared() < 1.0e-12 {
+            let fraction = if along.length_squared() < 1.0e-24 {
                 0.0
             } else {
                 (-from.dot(along) / along.length_squared()).clamp(0.0, 1.0)
             };
             (from + along * fraction).length()
         })
-        .fold(None, |best: Option<f32>, distance| {
+        .fold(None, |best: Option<f64>, distance| {
             Some(best.map_or(distance, |best| best.min(distance)))
         })
 }
@@ -356,9 +342,9 @@ fn segment_distance(
 /// A ray cast east, counting how many ring edges it crosses: odd is inside.
 /// Counting over every ring at once is what takes the holes out — a point in a
 /// hole crosses the outer ring once and the hole once, and two is even.
-fn inside(polygon: &Polygon, cursor: LatLon) -> bool {
+fn inside(polygon: PolygonRef<'_>, cursor: DVec2) -> bool {
     let mut crossings = 0;
-    for ring in &polygon.rings {
+    for ring in polygon.rings() {
         if ring.len() < 3 {
             continue;
         }
@@ -366,19 +352,16 @@ fn inside(polygon: &Polygon, cursor: LatLon) -> bool {
         // straddles the antimeridian is still a ring from where we are
         // standing. A ring more than half the world wide is not, but neither is
         // it something the fill could have drawn.
-        let longitude = |corner: LatLon| cursor.lon + shortest_turn(corner.lon - cursor.lon);
+        let longitude = |corner: DVec2| cursor.x + shortest_turn(corner.x - cursor.x);
 
         for index in 0..ring.len() {
-            let (from, to) = (
-                ground_of(&ring[index]),
-                ground_of(&ring[(index + 1) % ring.len()]),
-            );
-            if (from.lat > cursor.lat) == (to.lat > cursor.lat) {
+            let (from, to) = (ground(ring.get(index)), ground(ring.wrapping(index + 1)));
+            if (from.y > cursor.y) == (to.y > cursor.y) {
                 continue;
             }
-            let fraction = (cursor.lat - from.lat) / (to.lat - from.lat);
+            let fraction = (cursor.y - from.y) / (to.y - from.y);
             let crossing = longitude(from) + fraction * (longitude(to) - longitude(from));
-            if crossing > cursor.lon {
+            if crossing > cursor.x {
                 crossings += 1;
             }
         }
@@ -387,7 +370,7 @@ fn inside(polygon: &Polygon, cursor: LatLon) -> bool {
 }
 
 /// Brings an angle in degrees into `[-180, 180)`.
-fn shortest_turn(degrees: f32) -> f32 {
+fn shortest_turn(degrees: f64) -> f64 {
     (degrees + 180.0).rem_euclid(360.0) - 180.0
 }
 
@@ -395,11 +378,11 @@ fn shortest_turn(degrees: f32) -> f32 {
 mod tests {
     use super::*;
 
-    fn document(json: &str) -> GeoJson {
-        GeoJson::parse(json).expect("valid")
+    fn document(json: &str) -> FeatureSet {
+        crate::geojson::parse(json).expect("valid")
     }
 
-    fn pick_at(document: &GeoJson, lat: f32, lon: f32) -> Option<Hit> {
+    fn pick_at(document: &FeatureSet, lat: f32, lon: f32) -> Option<Hit> {
         PickIndex::build(document).pick(
             document,
             LatLon::new(lat, lon),
@@ -508,8 +491,8 @@ mod tests {
     fn a_shape_the_cursor_is_nowhere_near_is_dismissed_without_walking_it() {
         let track = document(r#"{"type": "LineString", "coordinates": [[0, 0], [1, 0], [2, 0]]}"#);
         let index = PickIndex::build(&track);
-        assert!(!index.lines[0].could_reach(LatLon::new(0.0, 90.0), 0.5));
-        assert!(index.lines[0].could_reach(LatLon::new(0.0, 1.0), 0.5));
+        assert!(!index.lines[0].could_reach(DVec2::new(90.0, 0.0), 0.5));
+        assert!(index.lines[0].could_reach(DVec2::new(1.0, 0.0), 0.5));
     }
 
     #[test]
@@ -520,5 +503,17 @@ mod tests {
         );
         assert_eq!(pick_at(&islands, 0.0, 0.0).expect("a hit").feature, 0);
         assert_eq!(pick_at(&islands, 40.0, 40.0).expect("a hit").feature, 0);
+    }
+
+    #[test]
+    fn a_feature_with_no_geometry_is_of_no_kind() {
+        let sparse = document(
+            r#"{"type": "FeatureCollection", "features": [
+                {"type": "Feature", "geometry": null},
+                {"type": "Feature", "geometry": {"type": "Point", "coordinates": [0, 0]}}
+            ]}"#,
+        );
+        assert_eq!(kind_of(&sparse, 0), None);
+        assert_eq!(kind_of(&sparse, 1), Some(PickKind::Point));
     }
 }

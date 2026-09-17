@@ -72,6 +72,15 @@ interface, and the reference app is there to show what that takes.
   click keeps one selected.
 - **A live readout.** Latitude and longitude under the cursor, camera altitude in
   kilometres, the subsolar point, and what the tile streamer is doing.
+- **GeoArrow all the way down.** Every vector coordinate — from a GeoJSON feed
+  or from a vector tile — lives in [GeoArrow](https://geoarrow.org) arrays built
+  with the [`geoarrow`](https://github.com/geoarrow/geoarrow-rs) crates: flat,
+  contiguous `f64` buffers rather than a tree of `Vec`s. Nothing is narrowed
+  until a vertex reaches the GPU, so the full precision of the source survives
+  the hit test and the round trip back out — and because the buffers are
+  contiguous, `overlayGeometry(id)` hands JavaScript a `Float64Array` viewing
+  the module's own memory rather than a copy, which a web worker can be given
+  the same way.
 - **All of it under external control.** Layer, imagery, sun, clock, frame,
   camera and even the globe's own overlay and key bindings are reachable from
   JavaScript, and the globe streams its state back the other way.
