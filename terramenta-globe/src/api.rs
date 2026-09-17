@@ -201,7 +201,9 @@ pub enum GlobeCommand {
     /// stops being propagated, which is where the cost of one goes.
     SetEphemeridesEnabled(bool),
 
-    /// Whether the cursor picks features at all.
+    /// Whether the cursor picks anything at all — overlay features and
+    /// satellites both. One switch, because "the cursor picks things" is one
+    /// thing to whoever is using the globe.
     SetPickingEnabled(bool),
     /// Keeps a feature selected, whatever the cursor does afterwards.
     ///
@@ -213,6 +215,15 @@ pub enum GlobeCommand {
         index: usize,
     },
     ClearPinnedFeature,
+
+    /// Keeps a satellite selected, whatever the cursor does afterwards. The
+    /// same idea as [`GlobeCommand::PinFeature`], and by catalogue number
+    /// rather than by position, so it survives the layer being refetched.
+    PinSatellite {
+        layer: String,
+        norad_id: u64,
+    },
+    ClearPinnedSatellite,
 
     SetHudVisible(bool),
     SetHelpVisible(bool),
@@ -402,16 +413,29 @@ pub fn describe_layers(presets: &[ImageryLayer]) -> Vec<LayerInfo> {
 #[derive(Resource, Debug, Clone, Default)]
 pub struct LatestState(pub Option<GlobeState>);
 
-/// Where the pointer is on the globe, in Earth-fixed coordinates, or `None`
-/// when it is off the globe or off the window.
+/// Where the pointer is, in both of the terms the globe picks in.
 ///
 /// Worked out once a tick and left here, because more than one thing wants it:
 /// the readout shows it, and [`crate::overlays`] hit-tests against it. Two
 /// ray-sphere intersections a frame is not the cost — two of them disagreeing
 /// by a tick would be, because then the feature that highlights is not the one
 /// the coordinate readout says you are over.
+///
+/// Both terms, because the globe picks in both. Anything drawn on the ground is
+/// hit-tested where it stands, in degrees — see [`crate::picking`]. Anything
+/// drawn hundreds of kilometres above it cannot be: a satellite's marker is
+/// nowhere near its own sub-satellite point on screen, so [`crate::ephemeris`]
+/// measures in pixels instead, and it needs the pointer in pixels to do it.
 #[derive(Resource, Debug, Clone, Copy, Default)]
-pub struct Cursor(pub Option<LatLon>);
+pub struct Cursor {
+    /// The coordinate under the pointer, in Earth-fixed terms, or `None` when
+    /// it is off the globe or off the window.
+    pub ground: Option<LatLon>,
+    /// Where the pointer is in the window, in logical pixels, or `None` when it
+    /// is outside it. Set even when the pointer is off the globe — which is
+    /// exactly where a satellite over the limb is.
+    pub screen: Option<Vec2>,
+}
 
 /// Casts the pointer onto the globe.
 pub(crate) fn track_cursor(
@@ -423,9 +447,9 @@ pub(crate) fn track_cursor(
     let Some((camera, camera_transform)) = camera.iter().next() else {
         return;
     };
-    cursor.0 = windows
-        .iter()
-        .find_map(|window| window.cursor_position())
+    cursor.screen = windows.iter().find_map(|window| window.cursor_position());
+    cursor.ground = cursor
+        .screen
         .and_then(|position| camera.viewport_to_world(camera_transform, position).ok())
         .and_then(|ray| ray_sphere_intersection(ray.origin, *ray.direction, GLOBE_RADIUS))
         // The hit is in world space; the coordinate under it is Earth-fixed.
@@ -439,6 +463,14 @@ type FeatureKey = (u64, usize);
 
 /// The hovered and pinned features, in that order.
 pub(crate) type PickDigest = (Option<FeatureKey>, Option<FeatureKey>);
+
+/// One satellite, as the digest names it: the layer's slot and the catalogue
+/// number. Both stable — a slot is never reused, and a catalogue number names
+/// the object rather than its row.
+type SatelliteKey = (u64, u64);
+
+/// The hovered and pinned satellites, in that order.
+pub(crate) type SatelliteDigest = (Option<SatelliteKey>, Option<SatelliteKey>);
 
 /// The discrete part of the state — the fields a control flips rather than the
 /// ones that drift every frame. A change here publishes immediately.
@@ -467,6 +499,10 @@ struct Digest {
     /// changed would cost more than publishing does.
     hovered: Option<FeatureKey>,
     pinned: Option<FeatureKey>,
+    /// And the same for satellites, so that hovering one publishes on the next
+    /// frame rather than on the next tick of the throttle.
+    hovered_satellite: Option<SatelliteKey>,
+    pinned_satellite: Option<SatelliteKey>,
     /// Ephemerides keep a counter for the same reason overlays do, and it
     /// serves one purpose more: a change to it is what tells an interface that
     /// the object list it pulled through `ephemerisObjects` is stale.
@@ -484,8 +520,10 @@ fn digest(
     overlay_revision: u64,
     ephemeris_revision: u64,
     picks: PickDigest,
+    satellites: SatelliteDigest,
 ) -> Digest {
     let (hovered, pinned) = picks;
+    let (hovered_satellite, pinned_satellite) = satellites;
     Digest {
         frame: state.frame.mode,
         sun_paused: state.sun.paused,
@@ -507,6 +545,8 @@ fn digest(
         picking: state.overlays.picking,
         hovered,
         pinned,
+        hovered_satellite,
+        pinned_satellite,
         overlay_revision,
         ephemeris_revision,
         ephemerides_enabled: state.ephemerides.enabled,
@@ -744,11 +784,18 @@ fn apply_commands(
             }
             GlobeCommand::SetEphemeridesEnabled(enabled) => ephemerides.enabled = enabled,
 
-            GlobeCommand::SetPickingEnabled(enabled) => overlays.picking = enabled,
+            GlobeCommand::SetPickingEnabled(enabled) => {
+                overlays.picking = enabled;
+                ephemerides.picking = enabled;
+            }
             GlobeCommand::PinFeature { layer, index } => {
                 overlays.pin(&layer, index);
             }
             GlobeCommand::ClearPinnedFeature => overlays.clear_pin(),
+            GlobeCommand::PinSatellite { layer, norad_id } => {
+                ephemerides.pin(&layer, norad_id);
+            }
+            GlobeCommand::ClearPinnedSatellite => ephemerides.clear_pin(),
 
             GlobeCommand::SetHudVisible(visible) => hud.visible = visible,
             GlobeCommand::SetHelpVisible(visible) => hud.help_visible = visible,
@@ -842,7 +889,7 @@ pub(crate) fn publish_state(
             visible: hud.visible,
             help_visible: hud.help_visible,
         },
-        cursor: cursor.0,
+        cursor: cursor.ground,
         keyboard: input.keyboard,
     };
 
@@ -852,6 +899,7 @@ pub(crate) fn publish_state(
         overlays.revision(),
         ephemerides.revision(),
         overlays::pick_digest(&overlays),
+        ephemeris::pick_digest(&ephemerides),
     );
     let changed = stream.last_digest != Some(current);
     let due = stream.since_publish >= STATE_INTERVAL_SECONDS;

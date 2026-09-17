@@ -40,6 +40,15 @@
 //! tilted. Following the drawn geometry instead would mean casting the cursor
 //! ray against it in three dimensions, which is a different piece of machinery
 //! from the one below.
+//!
+//! Which is why the satellites are not picked here. Nothing an ephemeris draws
+//! is on the ground, and for something hundreds of kilometres up the two places
+//! are not near each other at all — so [`crate::ephemeris`] projects its
+//! markers into the viewport and measures the pointer against them in pixels
+//! instead. That is the other piece of machinery, and it is deliberately not
+//! this one: it works on points alone, it needs the camera every frame, and it
+//! cannot dismiss anything in advance, because everything it holds has moved
+//! since the last frame.
 
 use bevy::math::DVec2;
 

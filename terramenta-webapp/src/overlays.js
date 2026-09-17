@@ -235,7 +235,10 @@ export function mountOverlays(bind) {
   const overlaysToggle = toggle("Draw overlays", globe.setOverlaysEnabled);
   bind(overlaysToggle.node, (state) => overlaysToggle.set(state.overlays.enabled));
 
-  const pickingToggle = toggle("Pick features under the cursor", globe.setPickingEnabled);
+  // One switch for both kinds — see `setPickingEnabled`. It lives here because
+  // this is the section about what is under the pointer; the satellite section
+  // reads the same flag rather than keeping one of its own.
+  const pickingToggle = toggle("Pick under the cursor", globe.setPickingEnabled);
   bind(pickingToggle.node, (state) => pickingToggle.set(state.overlays.picking));
 
   return section(
@@ -246,7 +249,9 @@ export function mountOverlays(bind) {
       "p",
       { class: "detail" },
       "The globe hit-tests the geometry and reports what is under the pointer, " +
-        "with its properties; clicking keeps one selected. Both show top left.",
+        "with its properties; clicking keeps one selected. Satellites are picked " +
+        "by the same switch, where their markers are drawn rather than where " +
+        "they are overhead. Both show top left.",
     ),
     adding,
     list,

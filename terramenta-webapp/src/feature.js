@@ -1,27 +1,40 @@
 /**
- * The picked feature: what is under the cursor, and everything the document
- * said about it.
+ * The picked thing: what is under the cursor, and everything that is known
+ * about it.
  *
- * The globe does the hit test — it has the geometry and the camera — and
- * reports two things on every snapshot: `hovered`, whatever the pointer is
- * over, and `pinned`, whatever was last asked to stay. It highlights the pinned
- * one in preference to the hovered one, and this panel shows the same.
+ * The globe does the hit tests — it has the geometry and the camera — and
+ * reports two pairs on every snapshot: `overlays.hovered` and `overlays.pinned`
+ * for the features drawn on the ground, and `ephemerides.hovered` and
+ * `ephemerides.pinned` for the satellites drawn above them. It haloes the
+ * pinned one of each pair in preference to the hovered one, and this panel
+ * shows the same.
+ *
+ * Two kinds and one panel, so there is a precedence, and it is the one the eye
+ * already expects. Pinned beats hovered, because pinning is someone saying what
+ * they meant; and between two of the same rank the satellite wins, because it
+ * is the smaller target and the one drawn in front — getting the cursor onto a
+ * seven-pixel dot moving across a coastline is not something that happens by
+ * accident.
  *
  * Which leaves one job here, and it is the interesting one: deciding that a
  * click means "pin this". The globe does not know what a click is; it knows
  * what is under the pointer. So this file watches the canvas for a press and
  * release that did not move — an orbit drag ends in a release too, and pinning
- * a feature every time someone spun the globe would be unbearable — and turns
- * that into `pinFeature`, or into `clearPinnedFeature` over empty ocean.
+ * something every time someone spun the globe would be unbearable — and turns
+ * that into `pinSatellite` or `pinFeature`, or into clearing both over empty
+ * sky.
  *
- * Properties are rendered without being understood. The globe hands them back
- * exactly as the feed wrote them, and a feed is free to put an object inside an
- * object; so scalars are shown as they are, a URL becomes a link because that
- * is always useful, and anything else falls back to its JSON.
+ * Properties are rendered without being understood. The globe hands a feature's
+ * back exactly as the feed wrote them, and a feed is free to put an object
+ * inside an object; so scalars are shown as they are, a URL becomes a link
+ * because that is always useful, and anything else falls back to its JSON. A
+ * satellite has no properties — its catalogue record is elements, not
+ * annotations — so this file makes the list that a person would want instead.
  */
 
 import * as globe from "./globe.js";
 import { el } from "./dom.js";
+import { altitude, coordinate, duration } from "./format.js";
 
 /** How far the pointer may travel and still count as a click rather than a drag. */
 const CLICK_SLOP_PX = 5;
@@ -43,7 +56,10 @@ export function mountFeature(root, canvas) {
       class: "button feature-clear",
       type: "button",
       title: "Clear the selection",
-      onclick: () => globe.clearPinnedFeature(),
+      onclick: () => {
+        globe.clearPinnedFeature();
+        globe.clearPinnedSatellite();
+      },
     },
     "✕",
   );
@@ -71,32 +87,92 @@ export function mountFeature(root, canvas) {
     const travelled = Math.hypot(event.clientX - pressedX, event.clientY - pressedY);
     if (travelled > CLICK_SLOP_PX || event.timeStamp - pressedAt > CLICK_HOLD_MS) return;
 
-    const hovered = lastState?.overlays.hovered;
-    if (hovered) {
-      globe.pinFeature(hovered.layer, hovered.index);
+    const satellite = lastState?.ephemerides.hovered;
+    const feature = lastState?.overlays.hovered;
+
+    // Whichever was clicked becomes the selection, and the other is let go:
+    // both are haloed independently, and leaving a pin behind in the other kind
+    // would leave a halo on the globe that this panel is no longer explaining.
+    if (satellite) {
+      globe.pinSatellite(satellite.layer, satellite.noradId);
+      globe.clearPinnedFeature();
+    } else if (feature) {
+      globe.pinFeature(feature.layer, feature.index);
+      globe.clearPinnedSatellite();
     } else {
       // A click on nothing is how a selection is let go, which is what makes
       // the globe feel like it is the thing being clicked on.
       globe.clearPinnedFeature();
+      globe.clearPinnedSatellite();
     }
   });
 
   return {
     sync(state) {
       lastState = state;
-      const { pinned, hovered } = state.overlays;
-      const feature = pinned ?? hovered;
+      const picked = choose(state);
 
-      root.hidden = !feature;
-      if (!feature) return;
+      root.hidden = !picked;
+      if (!picked) return;
 
-      root.classList.toggle("pinned", Boolean(pinned));
-      title.textContent = feature.label;
-      subtitle.textContent = [feature.kind, feature.id ?? `feature ${feature.index}`].join(" · ");
-      hint.hidden = Boolean(pinned);
+      root.classList.toggle("pinned", picked.pinned);
+      title.textContent = picked.title;
+      subtitle.textContent = picked.subtitle;
+      hint.hidden = picked.pinned;
 
-      render(properties, feature.properties);
+      render(properties, picked.properties);
     },
+  };
+}
+
+/** The one of the four picks this panel is showing, already unpacked. */
+function choose(state) {
+  const { hovered: satellite, pinned: pinnedSatellite } = state.ephemerides;
+  const { hovered: feature, pinned: pinnedFeature } = state.overlays;
+
+  if (pinnedSatellite) return describeSatellite(pinnedSatellite, true);
+  if (pinnedFeature) return describeFeature(pinnedFeature, true);
+  if (satellite) return describeSatellite(satellite, false);
+  if (feature) return describeFeature(feature, false);
+  return null;
+}
+
+function describeFeature(feature, pinned) {
+  return {
+    pinned,
+    title: feature.label,
+    subtitle: [feature.kind, feature.id ?? `feature ${feature.index}`].join(" · "),
+    properties: feature.properties,
+  };
+}
+
+/**
+ * What to say about a satellite.
+ *
+ * Elements rather than properties, and in the order they answer the questions
+ * someone pointing at a moving dot is actually asking: what is it, where is it,
+ * and how much should the dot be trusted — which is what the age of the
+ * elements is. SGP4 is a fit around its epoch and drifts away from it.
+ */
+function describeSatellite(satellite, pinned) {
+  const properties = {
+    Layer: satellite.layerLabel,
+    Catalogue: `#${satellite.noradId}`,
+    Designator: satellite.internationalDesignator ?? "—",
+    Position: coordinate(satellite.position),
+    Altitude: satellite.position ? altitude(satellite.position.altitudeKm) : "—",
+    Period: duration(satellite.periodMinutes * 60),
+    Inclination: `${satellite.inclinationDeg.toFixed(2)}°`,
+    Eccentricity: satellite.eccentricity.toFixed(6),
+    Elements: `${duration(Math.abs(satellite.elementsAgeDays) * 86_400)} old`,
+    Trail: satellite.trail ? "drawn" : "off",
+  };
+
+  return {
+    pinned,
+    title: satellite.name,
+    subtitle: ["satellite", `#${satellite.noradId}`].join(" · "),
+    properties,
   };
 }
 

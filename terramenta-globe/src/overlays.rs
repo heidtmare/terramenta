@@ -94,16 +94,16 @@ pub const MIN_REFRESH_SECONDS: f32 = 1.0;
 
 /// How far off a shape the cursor may still be and count as on it, on top of
 /// the shape's own size. A two-pixel line is otherwise a two-pixel target.
-const PICK_SLACK_PX: f32 = 4.0;
+pub(crate) const PICK_SLACK_PX: f32 = 4.0;
 
 /// What a picked feature is drawn in, and how much bigger.
 ///
 /// Near-white, because it has to separate the picked feature from *any* layer
 /// colour, and drawn behind rather than over — so a marker keeps its own colour
 /// and gains a halo, rather than disappearing under the highlight.
-const HIGHLIGHT_COLOR: Srgba = Srgba::new(1.0, 1.0, 1.0, 0.9);
+pub(crate) const HIGHLIGHT_COLOR: Srgba = Srgba::new(1.0, 1.0, 1.0, 0.9);
 const HIGHLIGHT_FILL: Srgba = Srgba::new(1.0, 1.0, 1.0, 0.3);
-const HIGHLIGHT_GROW_PX: f32 = 7.0;
+pub(crate) const HIGHLIGHT_GROW_PX: f32 = 7.0;
 
 /// Every overlay is drawn on the same sphere, so the transparent pass — which
 /// sorts by distance — has almost nothing to sort by, and would otherwise
@@ -766,7 +766,7 @@ impl VectorMaterial {
     /// Puts this draw behind the ordinary overlay geometry, so a highlight
     /// drawn larger reads as a halo around what it is highlighting rather than
     /// as a blob over it.
-    fn behind(mut self) -> Self {
+    pub(crate) fn behind(mut self) -> Self {
         self.depth_bias -= HIGHLIGHT_BEHIND;
         self
     }
@@ -1203,7 +1203,7 @@ fn pick_features(
     mut settings: ResMut<OverlaySettings>,
 ) {
     let hovered = (settings.enabled && settings.picking)
-        .then(|| cursor.0)
+        .then(|| cursor.ground)
         .flatten()
         .and_then(|cursor| {
             let (camera, camera_transform, projection) = *camera;
@@ -1460,6 +1460,26 @@ fn radius_of(position: Position, altitude: OverlayAltitude, base: f32, lift: f32
     (base + altitude.lift(position)) * lift
 }
 
+/// How far out a marker is drawn, in scene units.
+///
+/// A marker is a flat quad on one anchor, so there is no span across it to sag:
+/// no chord correction of its own.
+fn marker_radius(position: Position, altitude: OverlayAltitude) -> f32 {
+    radius_of(position, altitude, MARKER_RADIUS, 1.0)
+}
+
+/// Where a marker's anchor is in world space — the point the shader spreads its
+/// quad around.
+///
+/// Public to the crate because [`crate::ephemeris`] hit-tests against it: a
+/// satellite is picked where its marker was drawn rather than where its
+/// coordinate stands on the ground, and this is the one place that says where
+/// that is. Two answers to that would be two answers, and the halo would sit
+/// beside the thing it is meant to be around.
+pub(crate) fn marker_anchor(position: Position, altitude: OverlayAltitude) -> Vec3 {
+    position.to_direction() * marker_radius(position, altitude)
+}
+
 /// One quad per point, all four corners on the same anchor. The shader spreads
 /// them into a disc facing the camera, and the UV says which corner is which —
 /// which is also what the disc is rounded off with.
@@ -1474,9 +1494,7 @@ pub(crate) fn marker_mesh(
             continue;
         }
         let direction = point.to_direction();
-        // A marker is a flat quad on one anchor, so there is no span across it
-        // to sag: no chord correction of its own.
-        let radius = radius_of(point, altitude, MARKER_RADIUS, 1.0);
+        let radius = marker_radius(point, altitude);
         let base = builder.next_index();
         for corner in [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]] {
             builder.push(direction, radius, corner, NO_TANGENT);

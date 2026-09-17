@@ -384,10 +384,16 @@ export const overlayGeometry = (id) => required().overlayGeometry(id);
 // --- Picking ---------------------------------------------------------------
 
 /**
- * Whether the cursor picks features.
+ * Whether the cursor picks anything.
  *
  * On, every snapshot carries `overlays.hovered` — the feature under the
- * pointer, with its properties — and the globe draws a halo around it.
+ * pointer, with its properties — and `ephemerides.hovered`, the satellite under
+ * it, with its elements and where it is now. The globe haloes each.
+ *
+ * One switch for both, because they are one thing to whoever is pointing at the
+ * globe. Two hit tests, though: a feature is picked where it stands on the
+ * ground, and a satellite where its marker was drawn, hundreds of kilometres
+ * above it.
  */
 export const setPickingEnabled = (enabled) => required().setPickingEnabled(enabled);
 
@@ -401,6 +407,18 @@ export const setPickingEnabled = (enabled) => required().setPickingEnabled(enabl
 export const pinFeature = (layer, index) => required().pinFeature(layer, index);
 
 export const clearPinnedFeature = () => required().clearPinnedFeature();
+
+/**
+ * The same, for a satellite: `layer` is an ephemeris layer's id and `noradId` a
+ * catalogue number, both as `ephemerides.hovered` reports them.
+ *
+ * By catalogue number rather than by position, like every other satellite
+ * control, so a pin holds when the layer refetches and the document is
+ * renumbered under it.
+ */
+export const pinSatellite = (layer, noradId) => required().pinSatellite(layer, noradId);
+
+export const clearPinnedSatellite = () => required().clearPinnedSatellite();
 
 // --- The globe's own chrome ------------------------------------------------
 

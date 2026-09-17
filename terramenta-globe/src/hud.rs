@@ -207,6 +207,28 @@ fn format_readout(state: &GlobeState) -> String {
         None => String::new(),
     };
 
+    // The satellite gets a line of its own rather than sharing the one above:
+    // both can be picked at once — a marker in orbit and a country under it are
+    // different things in different places — and a readout that showed one of
+    // the two would be showing the wrong one half the time.
+    let satellite = match state
+        .ephemerides
+        .pinned
+        .as_ref()
+        .or(state.ephemerides.hovered.as_ref())
+    {
+        Some(object) => format!(
+            "\nsatellite {} · #{}{}",
+            object.name,
+            object.norad_id,
+            match object.position {
+                Some(point) => format!("  {:.0} km", point.altitude_km),
+                None => String::new(),
+            },
+        ),
+        None => String::new(),
+    };
+
     format!(
         "TERRAMENTA\n\
          cursor    {cursor}\n\
@@ -215,7 +237,7 @@ fn format_readout(state: &GlobeState) -> String {
          sun over  {}{}\n\
          clock     {}{}\n\
          imagery   {imagery}\n\
-         vectors   {vectors}{overlays}{picked}",
+         vectors   {vectors}{overlays}{picked}{satellite}",
         state.camera.altitude_km,
         state.frame.label,
         state.sun.subsolar.format(),

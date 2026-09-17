@@ -50,6 +50,19 @@
 //! it is really over, which a geodetic latitude would not do on a mesh that has
 //! no flattening in it. The two differ by up to about a fifth of a degree of
 //! latitude, and by some twenty kilometres of height at the poles.
+//!
+//! **And they are picked in pixels, not in degrees.** [`crate::picking`]
+//! hit-tests what is on the ground where it stands, which for a layer draped on
+//! the surface is where it is drawn. Nothing here is on the ground: a marker
+//! and the point it is over are the same place only while the camera looks
+//! straight down, and hundreds of kilometres apart otherwise. So a satellite is
+//! picked where it was *drawn* — its anchor is projected into the viewport and
+//! measured against the pointer in pixels, which is the unit the marker's size
+//! was already stated in. The Earth is allowed to get in the way: an object on
+//! the far side is behind an opaque globe, and what cannot be seen cannot be
+//! grabbed. Only the markers are picked and not the arcs, because an arc is
+//! where a satellite *has been* rather than the satellite — and a sky full of
+//! grabbable orbits would leave nothing else on the globe reachable.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, LazyLock, RwLock};
@@ -60,16 +73,18 @@ use bevy::camera::visibility::NoFrustumCulling;
 use bevy::prelude::*;
 use serde::Serialize;
 
+use crate::api::Cursor;
 use crate::features::{FeatureSet, FeatureSetBuilder};
 use crate::fetch::{self, SharedUrls};
 use crate::frame::{FrameMode, FrameSet, ReferenceFrame};
 use crate::geo::{EARTH_RADIUS_KM, Position};
 use crate::omm::{self, Catalogue};
 use crate::overlays::{
-    AltitudeMode, OverlayAltitude, OverlaySource, OverlayStyle, OverlayStyleInfo, VectorMaterial,
-    VectorMode,
+    AltitudeMode, HIGHLIGHT_COLOR, HIGHLIGHT_GROW_PX, OverlayAltitude, OverlaySource, OverlayStyle,
+    OverlayStyleInfo, PICK_SLACK_PX, VectorMaterial, VectorMode,
 };
 use crate::sun::Sun;
+use crate::tiles::MAX_TILE_RADIUS;
 
 /// The asset source OMM catalogues are fetched over.
 pub const EPHEMERIS_SOURCE: &str = "omm";
@@ -316,7 +331,24 @@ impl EphemerisStatus {
     }
 }
 
-/// One drawn piece of a layer: its markers, or its trails.
+/// One object of one layer, named the way the globe can still find it after a
+/// refresh and after a layer has been taken down.
+///
+/// By slot rather than by layer id, because a slot is never reused: a pin held
+/// across a layer being replaced under the same name cannot come to mean the
+/// new one. And by catalogue number rather than by position in the document,
+/// because a refetched catalogue is renumbered — the same satellite is a
+/// different row, and every other control here names objects the same way. A
+/// pin therefore survives a refresh, and is quietly nothing while the object is
+/// missing from whatever the layer holds now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SatellitePick {
+    slot: u64,
+    norad_id: u64,
+}
+
+/// One drawn piece of a layer: its markers, its trails, or the halo around
+/// whatever is picked.
 #[derive(Default)]
 struct Drawn {
     entity: Option<Entity>,
@@ -368,6 +400,22 @@ struct Ephemeris {
     trail_mode: FrameMode,
     markers: Drawn,
     arcs: Drawn,
+    highlight: Drawn,
+    /// Where every drawn object was this frame, as one point per object — the
+    /// very set the markers were built from.
+    ///
+    /// Kept because three things want it and propagating it three times would
+    /// be three answers: the markers are built from it, the hit test measures
+    /// against it, and the halo is drawn on it. Behind an `Arc` so the pull-side
+    /// binding shares these buffers rather than a copy of them.
+    positions: Arc<FeatureSet>,
+    /// Which object of the catalogue each of those points is, in the same
+    /// order. A point is not a satellite until something says which one, and
+    /// the set holds only the ones that could be propagated.
+    drawn: Vec<usize>,
+    /// The reference angle those positions were placed with, so a coordinate
+    /// drawn in an inertial frame can still be reported as a place on Earth.
+    drawn_angle: f64,
     /// Bumped by anything an interface has a control for, so the state stream
     /// publishes the moment one changes — and so an interface knows when the
     /// object list it pulled has gone stale.
@@ -444,6 +492,61 @@ impl Ephemeris {
     fn counts(&self) -> (usize, usize) {
         (self.tracked().count(), self.trailing().count())
     }
+
+    /// Forgets where everything was, for a layer that has stopped being
+    /// propagated. What a pick says then is what is true: the object is in the
+    /// catalogue and nowhere on screen.
+    fn clear_drawn(&mut self) {
+        self.positions = Arc::default();
+        self.drawn.clear();
+    }
+
+    /// Where one object was drawn this frame, by catalogue number, or `None`
+    /// when it is not drawn at all — unselected, hidden, or past a
+    /// divergence.
+    fn drawn_position(&self, norad_id: u64) -> Option<Position> {
+        let catalogue = self.catalogue.as_ref()?;
+        let point = self
+            .drawn
+            .iter()
+            .position(|index| catalogue.satellites[*index].norad_id == norad_id)?;
+        Some(self.positions.point(point).1)
+    }
+
+    /// The three materials a layer draws with. Built in one place because they
+    /// are made twice — once when a part is first spawned, and again whenever
+    /// the style changes — and two spellings of the same material would drift.
+    fn marker_material(&self) -> VectorMaterial {
+        VectorMaterial::new(
+            VectorMode::Marker,
+            self.style.point_color,
+            self.style.point_size_px,
+        )
+        .above()
+    }
+
+    fn arc_material(&self) -> VectorMaterial {
+        VectorMaterial::new(
+            VectorMode::Line,
+            self.style.line_color,
+            self.style.line_width_px,
+        )
+        .above()
+    }
+
+    /// Larger than the marker and drawn behind it, so what is picked keeps its
+    /// own colour and gains a halo — the same treatment an overlay's pick gets,
+    /// in the same near-white, so that one globe has one way of saying "this
+    /// one".
+    fn highlight_material(&self) -> VectorMaterial {
+        VectorMaterial::new(
+            VectorMode::Marker,
+            HIGHLIGHT_COLOR,
+            self.style.point_size_px + HIGHLIGHT_GROW_PX,
+        )
+        .above()
+        .behind()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -479,8 +582,8 @@ pub struct PublishedLayer {
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 #[derive(Default)]
 pub struct EphemerisGeometry {
-    pub positions: FeatureSet,
-    pub trails: FeatureSet,
+    pub positions: Arc<FeatureSet>,
+    pub trails: Arc<FeatureSet>,
 }
 
 static CATALOGUES: LazyLock<RwLock<HashMap<String, Arc<PublishedLayer>>>> =
@@ -507,6 +610,17 @@ pub struct EphemerisSettings {
     /// Whether ephemerides are drawn at all. Off, every layer stays loaded and
     /// simply stops being propagated, which is also where the cost goes.
     pub enabled: bool,
+    /// Whether the cursor picks satellites at all. Off, nothing is hovered and
+    /// no halo is drawn; a pin already set stays set. The same switch the
+    /// overlays have, and set by the same command — "the cursor picks things"
+    /// is one thing to a person using the globe, not two.
+    pub picking: bool,
+    /// What the cursor is over now.
+    hovered: Option<SatellitePick>,
+    /// What an embedder asked to keep, whatever the cursor does afterwards.
+    /// This is what a click becomes: the globe reports what is under the
+    /// pointer, and the interface decides that one of those is the selection.
+    pinned: Option<SatellitePick>,
     layers: Vec<Ephemeris>,
     urls: SharedUrls,
     next_slot: u64,
@@ -529,6 +643,51 @@ impl EphemerisSettings {
             .iter()
             .filter(|layer| layer.visible && layer.status == EphemerisStatus::Ready)
             .count()
+    }
+
+    /// What the halo should be drawing: the pin if there is one, and otherwise
+    /// whatever the cursor is over.
+    fn highlight_target(&self) -> Option<SatellitePick> {
+        self.pinned.or(self.hovered)
+    }
+
+    /// Keeps one object selected until told otherwise. Returns whether the
+    /// layer is up and holds it.
+    pub fn pin(&mut self, id: &str, norad_id: u64) -> bool {
+        let Some(layer) = self.layers.iter().find(|layer| layer.id == id) else {
+            return false;
+        };
+        let Some(catalogue) = layer.catalogue.as_ref() else {
+            return false;
+        };
+        if catalogue.index_of(norad_id).is_none() {
+            return false;
+        }
+        self.pinned = Some(SatellitePick {
+            slot: layer.slot,
+            norad_id,
+        });
+        self.revision += 1;
+        true
+    }
+
+    pub fn clear_pin(&mut self) {
+        if self.pinned.take().is_some() {
+            self.revision += 1;
+        }
+    }
+
+    /// Forgets any pick that named this layer — after a removal, because there
+    /// is no layer left to have picked anything in. A refresh deliberately does
+    /// not: a pin names a catalogue number, and that is the same satellite in
+    /// the new document as in the old.
+    fn forget_picks(&mut self, slot: u64) {
+        for pick in [&mut self.hovered, &mut self.pinned] {
+            if pick.is_some_and(|pick| pick.slot == slot) {
+                *pick = None;
+                self.revision += 1;
+            }
+        }
     }
 
     /// Puts a layer up, replacing any already under the same id.
@@ -577,6 +736,10 @@ impl EphemerisSettings {
             trail_mode: FrameMode::default(),
             markers: Drawn::default(),
             arcs: Drawn::default(),
+            highlight: Drawn::default(),
+            positions: Arc::default(),
+            drawn: Vec::new(),
+            drawn_angle: 0.0,
             revision: 0,
             source: request.source,
         };
@@ -608,10 +771,15 @@ impl EphemerisSettings {
             urls.remove(&layer.slot);
         }
         self.retired.extend(
-            [layer.markers.entity, layer.arcs.entity]
-                .into_iter()
-                .flatten(),
+            [
+                layer.markers.entity,
+                layer.arcs.entity,
+                layer.highlight.entity,
+            ]
+            .into_iter()
+            .flatten(),
         );
+        self.forget_picks(layer.slot);
         self.revision += 1;
         true
     }
@@ -855,6 +1023,9 @@ impl Plugin for EphemerisSourcePlugin {
 
         let mut settings = EphemerisSettings {
             enabled: true,
+            picking: true,
+            hovered: None,
+            pinned: None,
             layers: Vec::new(),
             urls,
             next_slot: 0,
@@ -885,6 +1056,8 @@ impl Plugin for EphemerisPlugin {
                     poll_ephemerides,
                     adopt_catalogues,
                     draw_ephemerides,
+                    pick_satellites,
+                    highlight_satellites,
                     restyle_ephemerides,
                     show_ephemerides,
                 )
@@ -893,7 +1066,11 @@ impl Plugin for EphemerisPlugin {
                     // The clock and the Earth's rotation are settled first —
                     // every coordinate here is a function of both — and the
                     // snapshot goes out after, so what it reports is what was
-                    // drawn on the same frame.
+                    // drawn on the same frame. The cursor is cast before all of
+                    // it, and the hit test runs on the positions this frame
+                    // built, so what is picked is what is on screen rather than
+                    // where everything was a frame ago.
+                    .after(crate::api::track_cursor)
                     .before(crate::api::publish_state),
             );
     }
@@ -1033,6 +1210,9 @@ fn draw_ephemerides(
         commands.entity(entity).despawn();
     }
     if !settings.enabled {
+        for layer in &mut settings.layers {
+            layer.clear_drawn();
+        }
         return;
     }
 
@@ -1046,20 +1226,30 @@ fn draw_ephemerides(
         if !layer.visible {
             // Hidden is not merely undrawn: propagating a constellation nobody
             // is looking at is the whole cost of this module.
+            layer.clear_drawn();
             continue;
         }
 
-        let positions = positions_of(layer, &catalogue, now, mode);
+        let (positions, drawn) = positions_of(layer, &catalogue, now, mode);
+        let markers = crate::overlays::marker_mesh(&positions, None, ALTITUDE);
+        // The material is taken before the layer is borrowed to be drawn into.
+        let material = layer.marker_material();
+        let positions = Arc::new(positions);
+        // Kept before it is drawn: the hit test and the halo run off these, and
+        // they are the same positions the mesh below was built from.
+        layer.positions = positions.clone();
+        layer.drawn = drawn;
+        layer.drawn_angle = reference_angle(mode, now);
+
         put(
             &mut commands,
             &mut meshes,
             &mut materials,
             &layer.id,
             &mut layer.markers,
-            VectorMode::Marker,
-            layer.style.point_color,
-            layer.style.point_size_px,
-            crate::overlays::marker_mesh(&positions, None, ALTITUDE),
+            "markers",
+            material,
+            markers,
         );
 
         let trails = trails_due(layer, now, mode).then(|| {
@@ -1069,19 +1259,20 @@ fn draw_ephemerides(
             layer.trail_mode = mode;
             arcs_of(layer, &catalogue, now, mode)
         });
-        if let Some(trails) = trails.as_ref() {
+        let trails = trails.map(|trails| {
+            let material = layer.arc_material();
             put(
                 &mut commands,
                 &mut meshes,
                 &mut materials,
                 &layer.id,
                 &mut layer.arcs,
-                VectorMode::Line,
-                layer.style.line_color,
-                layer.style.line_width_px,
-                crate::overlays::line_mesh(trails, None, false, ALTITUDE),
+                "trails",
+                material,
+                crate::overlays::line_mesh(&trails, None, false, ALTITUDE),
             );
-        }
+            Arc::new(trails)
+        });
 
         if let Ok(mut published) = GEOMETRY.write() {
             let previous = published.get(&layer.id);
@@ -1133,15 +1324,27 @@ fn shortest_period(layer: &Ephemeris) -> f64 {
         .min(f64::MAX)
 }
 
-/// Where every tracked object is now, as one point per object.
-fn positions_of(layer: &Ephemeris, catalogue: &Catalogue, now: f64, mode: FrameMode) -> FeatureSet {
+/// Where every tracked object is now, as one point per object — and which
+/// object each of those points is.
+///
+/// The second half is what makes a pick a satellite rather than a dot: an
+/// object that cannot be propagated is left out, so the nth point is not the
+/// nth tracked object, and only the builder knows which is which.
+fn positions_of(
+    layer: &Ephemeris,
+    catalogue: &Catalogue,
+    now: f64,
+    mode: FrameMode,
+) -> (FeatureSet, Vec<usize>) {
     let angle = reference_angle(mode, now);
     let mut builder = FeatureSetBuilder::new();
+    let mut drawn = Vec::new();
     for index in layer.tracked() {
         let satellite = &catalogue.satellites[index];
         let Some(teme) = satellite.position_teme_km(now) else {
             continue;
         };
+        drawn.push(index);
         // The catalogue number as the feature id, and no properties at all:
         // this is rebuilt every frame, and serializing a name and an epoch per
         // object per frame would cost more than the propagation does. What an
@@ -1149,7 +1352,7 @@ fn positions_of(layer: &Ephemeris, catalogue: &Catalogue, now: f64, mode: FrameM
         let feature = builder.feature(Some(satellite.norad_id.to_string()), None);
         builder.push_point(feature, place(teme, angle));
     }
-    builder.finish()
+    (builder.finish(), drawn)
 }
 
 /// The arc through every trailed object, as one line per object.
@@ -1262,7 +1465,7 @@ fn place(teme_km: [f64; 3], reference_angle: f64) -> Position {
 /// Replacing the whole asset never looks inside.
 #[expect(
     clippy::too_many_arguments,
-    reason = "spawning into the world needs its commands, both asset stores and the material the layer is drawn in"
+    reason = "spawning into the world needs its commands, both asset stores and the material the part is drawn in"
 )]
 fn put(
     commands: &mut Commands,
@@ -1270,9 +1473,8 @@ fn put(
     materials: &mut Assets<VectorMaterial>,
     id: &str,
     drawn: &mut Drawn,
-    mode: VectorMode,
-    color: bevy::color::Srgba,
-    size_px: f32,
+    part: &str,
+    material: VectorMaterial,
     mesh: Option<Mesh>,
 ) {
     let Some(mesh) = mesh else {
@@ -1289,10 +1491,10 @@ fn put(
     }
 
     let handle = meshes.add(mesh);
-    let material = materials.add(VectorMaterial::new(mode, color, size_px).above());
+    let material = materials.add(material);
     let entity = commands
         .spawn((
-            Name::new(format!("Ephemeris {id} ({mode:?})")),
+            Name::new(format!("Ephemeris {id} ({part})")),
             EphemerisEntity(id.to_string()),
             Mesh3d(handle.clone()),
             MeshMaterial3d(material.clone()),
@@ -1309,6 +1511,146 @@ fn put(
     drawn.entity = Some(entity);
 }
 
+/// Works out which satellite the cursor is over.
+///
+/// Measured in pixels against the marker anchors this frame drew, which is the
+/// only way that agrees with what is on screen — see the module docs. Every
+/// visible layer is asked and the nearest answer across all of them wins, so a
+/// satellite in one layer is not lost under one in another.
+///
+/// The cost is a projection per drawn object per frame, which is a matrix
+/// multiply beside the SGP4 evaluation that put the object there in the first
+/// place. No spatial index, for the same reason: [`MAX_TRACKED`] already bounds
+/// the work at six hundred, and an index would have to be rebuilt every frame
+/// because every object moves every frame.
+fn pick_satellites(
+    cursor: Res<Cursor>,
+    camera: Query<(&Camera, &GlobalTransform)>,
+    mut settings: ResMut<EphemerisSettings>,
+) {
+    let Some((camera, camera_transform)) = camera.iter().next() else {
+        return;
+    };
+
+    let hovered = (settings.enabled && settings.picking)
+        .then_some(cursor.screen)
+        .flatten()
+        .and_then(|pointer| {
+            let eye = camera_transform.translation();
+            let mut best: Option<(SatellitePick, f32)> = None;
+
+            for layer in &settings.layers {
+                if !layer.visible || layer.status != EphemerisStatus::Ready {
+                    continue;
+                }
+                let Some(catalogue) = layer.catalogue.as_ref() else {
+                    continue;
+                };
+                // Half the marker, because it is drawn either side of its
+                // anchor; plus a little, because a seven-pixel dot on a moving
+                // target is otherwise a seven-pixel target.
+                let reach = layer.style.point_size_px * 0.5 + PICK_SLACK_PX;
+
+                for (point, index) in layer.drawn.iter().copied().enumerate() {
+                    let anchor =
+                        crate::overlays::marker_anchor(layer.positions.point(point).1, ALTITUDE);
+                    if occluded(eye, anchor) {
+                        continue;
+                    }
+                    let Ok(screen) = camera.world_to_viewport(camera_transform, anchor) else {
+                        // Behind the camera, or off a viewport it has no size
+                        // for. Neither is somewhere a marker was drawn.
+                        continue;
+                    };
+                    let distance = screen.distance(pointer);
+                    if distance > reach || best.is_some_and(|(_, held)| distance >= held) {
+                        continue;
+                    }
+                    best = Some((
+                        SatellitePick {
+                            slot: layer.slot,
+                            norad_id: catalogue.satellites[index].norad_id,
+                        },
+                        distance,
+                    ));
+                }
+            }
+
+            best.map(|(pick, _)| pick)
+        });
+
+    if settings.hovered != hovered {
+        settings.hovered = hovered;
+        // The layer's own revision deliberately stays put: it is what tells an
+        // interface that the object list it pulled has gone stale, and hovering
+        // a dot has not changed a catalogue.
+        settings.revision += 1;
+    }
+}
+
+/// Whether the Earth is between the camera and a point.
+///
+/// A satellite on the far side is drawn behind an opaque globe, so it is not
+/// something the pointer can be over — and picking one would mean a halo
+/// appearing around nothing, on the wrong side of the world. Measured against
+/// the radius the imagery reaches rather than the sphere underneath it, because
+/// the imagery is what is actually in the way.
+///
+/// The camera is always outside the globe, so the segment passes through it
+/// exactly when its closest approach to the centre falls between the two ends
+/// and is nearer than the surface.
+fn occluded(eye: Vec3, target: Vec3) -> bool {
+    let along = target - eye;
+    let length_squared = along.length_squared();
+    if length_squared <= 0.0 {
+        return false;
+    }
+    let fraction = (-eye.dot(along) / length_squared).clamp(0.0, 1.0);
+    (eye + along * fraction).length() < MAX_TILE_RADIUS
+}
+
+/// Draws the halo around whatever is picked.
+///
+/// Rebuilt every frame rather than when the pick changes, which is the opposite
+/// of what [`crate::overlays`] does and for the opposite reason: an overlay's
+/// feature stays where it is, and a satellite does not. It is one point, so
+/// rebuilding it costs the same as deciding not to.
+fn highlight_satellites(
+    mut commands: Commands,
+    settings: ResMut<EphemerisSettings>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<VectorMaterial>>,
+) {
+    let settings = settings.into_inner();
+    let target = settings.highlight_target().filter(|_| settings.enabled);
+
+    for layer in &mut settings.layers {
+        let mesh = target
+            .filter(|pick| pick.slot == layer.slot && layer.visible)
+            .and_then(|pick| layer.drawn_position(pick.norad_id))
+            .and_then(|position| {
+                let mut builder = FeatureSetBuilder::new();
+                let feature = builder.feature(None, None);
+                builder.push_point(feature, position);
+                // The same builder the markers are drawn with, so the halo is
+                // spread around the same anchor by the same shader.
+                crate::overlays::marker_mesh(&builder.finish(), None, ALTITUDE)
+            });
+
+        let material = layer.highlight_material();
+        put(
+            &mut commands,
+            &mut meshes,
+            &mut materials,
+            &layer.id,
+            &mut layer.highlight,
+            "highlight",
+            material,
+            mesh,
+        );
+    }
+}
+
 /// Applies a colour or size change without rebuilding any geometry.
 fn restyle_ephemerides(
     mut settings: ResMut<EphemerisSettings>,
@@ -1319,31 +1661,25 @@ fn restyle_ephemerides(
             continue;
         }
         let parts = [
-            (
-                &layer.markers,
-                VectorMode::Marker,
-                layer.style.point_color,
-                layer.style.point_size_px,
-            ),
-            (
-                &layer.arcs,
-                VectorMode::Line,
-                layer.style.line_color,
-                layer.style.line_width_px,
-            ),
+            (&layer.markers, layer.marker_material()),
+            (&layer.arcs, layer.arc_material()),
+            // The halo is sized from the marker it goes around, so it restyles
+            // with it rather than staying the size the old style was.
+            (&layer.highlight, layer.highlight_material()),
         ];
-        for (drawn, mode, color, size_px) in parts {
+        for (drawn, restyled) in parts {
             if let Some(handle) = drawn.material.as_ref()
                 && let Some(mut material) = materials.get_mut(handle)
             {
-                *material = VectorMaterial::new(mode, color, size_px).above();
+                *material = restyled;
             }
         }
     }
 }
 
-/// Draws only what should be drawn. Markers and trails are hidden separately,
-/// because trails have a switch of their own.
+/// Draws only what should be drawn. Each part is hidden on its own terms: the
+/// trails have a switch of their own, and the halo is there only while
+/// something is picked.
 fn show_ephemerides(
     settings: Res<EphemerisSettings>,
     mut parts: Query<(Entity, &EphemerisEntity, &mut Visibility)>,
@@ -1358,6 +1694,8 @@ fn show_ephemerides(
                     layer.visible
                         && if layer.arcs.entity == Some(entity) {
                             layer.trails && layer.arcs.drawing
+                        } else if layer.highlight.entity == Some(entity) {
+                            layer.highlight.drawing
                         } else {
                             layer.markers.drawing
                         }
@@ -1383,10 +1721,66 @@ pub struct EphemerisState {
     /// How many are on screen: loaded, visible, and the switch on.
     pub drawn: usize,
     pub layers: Vec<EphemerisLayerInfo>,
+    /// Whether the cursor is picking satellites.
+    pub picking: bool,
+    /// The object under the cursor, if there is one.
+    pub hovered: Option<PickedSatellite>,
+    /// The object that was pinned, if one was. The globe haloes this in
+    /// preference to whatever is hovered, so an interface showing one set of
+    /// details should prefer it too.
+    pub pinned: Option<PickedSatellite>,
     /// The budgets, so an interface can say why a selection stopped growing
     /// rather than leaving it to be discovered.
     pub max_tracked: usize,
     pub max_trailed: usize,
+}
+
+/// A satellite the cursor found, with everything the catalogue said about it
+/// and where it is at this moment.
+///
+/// This is `SatelliteInfo` with the layer it belongs to and a position added —
+/// separate rather than shared because the two travel in opposite directions
+/// and at opposite rates. An object list is pulled, once, for thousands of
+/// rows; a pick is pushed with every snapshot, for one.
+#[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PickedSatellite {
+    /// The id of the layer it belongs to, which is what a command naming it
+    /// again — pinning it, for instance — has to be given.
+    pub layer: String,
+    /// That layer's label, for an interface that has only this to draw from.
+    pub layer_label: String,
+    pub norad_id: u64,
+    pub name: String,
+    pub international_designator: Option<String>,
+    pub epoch_unix_seconds: f64,
+    /// How stale its elements are against the simulated clock, in days. SGP4 is
+    /// a fit around its epoch and drifts away from it, so this is how much to
+    /// trust the dot.
+    pub elements_age_days: f64,
+    pub period_minutes: f64,
+    pub inclination_deg: f64,
+    pub eccentricity: f64,
+    /// Whether it is trailed, so an interface can offer the toggle against the
+    /// thing it just picked.
+    pub trail: bool,
+    /// Where it is now, or `None` for an object that is in the catalogue but
+    /// not on screen — which is what a pin outliving a selection change looks
+    /// like.
+    pub position: Option<SubPoint>,
+}
+
+/// Where a satellite is, as an interface reads it.
+///
+/// Earth-fixed whatever frame the globe is drawing in: a longitude here is a
+/// place on the ground, not a right ascension, so it means the same thing as
+/// the one under the cursor.
+#[derive(Serialize, Debug, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+pub struct SubPoint {
+    pub lat: f64,
+    pub lon: f64,
+    pub altitude_km: f64,
 }
 
 /// One layer, as an interface sees it.
@@ -1487,11 +1881,88 @@ pub fn describe_objects(published: &PublishedLayer) -> Vec<SatelliteInfo> {
         .collect()
 }
 
+/// Fills in a pick, or `None` when the layer or the object has since gone.
+fn describe_pick(
+    settings: &EphemerisSettings,
+    pick: SatellitePick,
+    unix_seconds: f64,
+) -> Option<PickedSatellite> {
+    let layer = settings
+        .layers
+        .iter()
+        .find(|layer| layer.slot == pick.slot)?;
+    let catalogue = layer.catalogue.as_ref()?;
+    let index = catalogue.index_of(pick.norad_id)?;
+    let satellite = &catalogue.satellites[index];
+
+    Some(PickedSatellite {
+        layer: layer.id.clone(),
+        layer_label: layer.label.clone(),
+        norad_id: satellite.norad_id,
+        name: satellite.name.clone(),
+        international_designator: satellite.international_designator.clone(),
+        epoch_unix_seconds: satellite.epoch_unix_seconds,
+        elements_age_days: satellite.age_days(unix_seconds),
+        period_minutes: satellite.period_minutes,
+        inclination_deg: satellite.inclination_deg,
+        eccentricity: satellite.eccentricity,
+        trail: layer.trailed.get(index).copied().unwrap_or(false),
+        position: layer
+            .drawn_position(pick.norad_id)
+            .map(|position| earth_fixed(position, layer.drawn_angle, unix_seconds))
+            .map(|position| SubPoint {
+                lat: position.lat,
+                lon: position.lon,
+                altitude_km: position.altitude_m / 1000.0,
+            }),
+    })
+}
+
+/// What the cursor is over, if anything.
+fn hovered(settings: &EphemerisSettings, unix_seconds: f64) -> Option<PickedSatellite> {
+    settings
+        .hovered
+        .and_then(|pick| describe_pick(settings, pick, unix_seconds))
+}
+
+/// What has been kept selected, if anything.
+fn pinned(settings: &EphemerisSettings, unix_seconds: f64) -> Option<PickedSatellite> {
+    settings
+        .pinned
+        .and_then(|pick| describe_pick(settings, pick, unix_seconds))
+}
+
+/// The two picks as the state digest compares them: cheap, `Copy`, and without
+/// the names and the elements, none of which change while a pick holds.
+pub fn pick_digest(settings: &EphemerisSettings) -> crate::api::SatelliteDigest {
+    let key = |pick: Option<SatellitePick>| pick.map(|pick| (pick.slot, pick.norad_id));
+    (key(settings.hovered), key(settings.pinned))
+}
+
+/// One drawn position in Earth-fixed terms, whatever frame it was drawn in.
+///
+/// A drawn longitude is a right ascension less whatever the frame turned it by
+/// — nothing at all in ECI, Greenwich's sidereal angle in ECEF. Putting that
+/// back and taking the sidereal angle off instead gives the point on the ground
+/// the satellite is over, which is what a longitude means everywhere else the
+/// globe reports one.
+fn earth_fixed(position: Position, drawn_angle: f64, unix_seconds: f64) -> Position {
+    let turn = (drawn_angle - crate::frame::sidereal_radians(unix_seconds)).to_degrees();
+    Position::new(
+        position.lat,
+        (position.lon + turn + 180.0).rem_euclid(360.0) - 180.0,
+        position.altitude_m,
+    )
+}
+
 /// Describes every layer, in the order they were added.
 pub fn describe(settings: &EphemerisSettings, unix_seconds: f64) -> EphemerisState {
     EphemerisState {
         enabled: settings.enabled,
         drawn: settings.drawn(),
+        picking: settings.picking,
+        hovered: hovered(settings, unix_seconds),
+        pinned: pinned(settings, unix_seconds),
         max_tracked: MAX_TRACKED,
         max_trailed: MAX_TRAILED,
         layers: settings
@@ -1563,9 +2034,14 @@ mod tests {
         "MEAN_MOTION_DDOT": 0
     }]"#;
 
-    fn layer() -> Ephemeris {
+    /// A settings resource holding one layer, with its catalogue adopted — the
+    /// state everything but a fetch runs against.
+    fn settings() -> EphemerisSettings {
         let mut settings = EphemerisSettings {
             enabled: true,
+            picking: true,
+            hovered: None,
+            pinned: None,
             layers: Vec::new(),
             urls: Arc::new(RwLock::new(HashMap::new())),
             next_slot: 0,
@@ -1576,10 +2052,14 @@ mod tests {
             source: OverlaySource::Text(ISS.to_string()),
             ..EphemerisRequest::from_url("stations", "")
         });
-        let mut layer = settings.layers.pop().expect("a layer");
+        let layer = settings.layers.last_mut().expect("a layer");
         layer.catalogue = Some(Arc::new(layer.pending.take().expect("a catalogue")));
         layer.resolve_selection();
-        layer
+        settings
+    }
+
+    fn layer() -> Ephemeris {
+        settings().layers.pop().expect("a layer")
     }
 
     #[test]
@@ -1596,8 +2076,11 @@ mod tests {
         let catalogue = layer.catalogue.clone().expect("a catalogue");
         let now = catalogue.satellites[0].epoch_unix_seconds;
 
-        let set = positions_of(&layer, &catalogue, now, FrameMode::Eci);
+        let (set, drawn) = positions_of(&layer, &catalogue, now, FrameMode::Eci);
         assert_eq!(set.point_count(), 1);
+        // And the point knows which object of the catalogue it is, which is
+        // what makes it pickable rather than a dot.
+        assert_eq!(drawn, vec![0]);
         let (_, position) = set.point(0);
         // The station is inclined 51.6°, so it is never further from the
         // equator than that, and it orbits around 420 km up.
@@ -1616,9 +2099,11 @@ mod tests {
         let now = catalogue.satellites[0].epoch_unix_seconds;
 
         let inertial = positions_of(&layer, &catalogue, now, FrameMode::Eci)
+            .0
             .point(0)
             .1;
         let fixed = positions_of(&layer, &catalogue, now, FrameMode::Ecef)
+            .0
             .point(0)
             .1;
 
@@ -1709,6 +2194,168 @@ mod tests {
         assert!(
             (position.altitude_m - 100_000.0).abs() < 1.0e-3,
             "{position:?}"
+        );
+    }
+    #[test]
+    fn a_pin_names_an_object_rather_than_a_row() {
+        let mut settings = settings();
+        assert!(settings.pin("stations", 25544));
+        assert_eq!(
+            settings.highlight_target().map(|pick| pick.norad_id),
+            Some(25544)
+        );
+
+        // Nothing else in the document, and no layer by that name.
+        assert!(!settings.pin("stations", 99999));
+        assert!(!settings.pin("elsewhere", 25544));
+        // A refused pin leaves the one that was held.
+        assert_eq!(
+            settings.highlight_target().map(|pick| pick.norad_id),
+            Some(25544)
+        );
+
+        settings.clear_pin();
+        assert_eq!(settings.highlight_target(), None);
+    }
+
+    #[test]
+    fn a_pin_outlives_a_refresh_and_not_a_removal() {
+        let mut settings = settings();
+        assert!(settings.pin("stations", 25544));
+
+        // A refetch replaces the catalogue under the same slot. The pin names a
+        // catalogue number, so it still means the same satellite.
+        let catalogue = omm::parse(ISS).expect("a catalogue");
+        let layer = settings.layers.last_mut().expect("a layer");
+        layer.catalogue = Some(Arc::new(catalogue));
+        layer.resolve_selection();
+        assert!(settings.pinned.is_some());
+
+        settings.remove("stations");
+        assert_eq!(settings.pinned, None);
+    }
+
+    #[test]
+    fn the_halo_follows_the_pin_and_the_cursor_follows_nothing() {
+        let mut settings = settings();
+        settings.hovered = Some(SatellitePick {
+            slot: 0,
+            norad_id: 25544,
+        });
+        // Hovered is what there is, until something is pinned over it.
+        assert_eq!(settings.highlight_target(), settings.hovered);
+
+        settings.pinned = Some(SatellitePick {
+            slot: 0,
+            norad_id: 99999,
+        });
+        assert_eq!(settings.highlight_target(), settings.pinned);
+    }
+
+    #[test]
+    fn a_pick_reports_the_object_and_where_it_is_now() {
+        let mut settings = settings();
+        let catalogue = settings.layers[0].catalogue.clone().expect("a catalogue");
+        let now = catalogue.satellites[0].epoch_unix_seconds;
+
+        // What `draw_ephemerides` leaves behind, which is what a pick reads.
+        let (positions, drawn) =
+            positions_of(&settings.layers[0], &catalogue, now, FrameMode::Ecef);
+        let layer = &mut settings.layers[0];
+        layer.positions = Arc::new(positions);
+        layer.drawn = drawn;
+        layer.drawn_angle = reference_angle(FrameMode::Ecef, now);
+
+        assert!(settings.pin("stations", 25544));
+        let state = describe(&settings, now);
+        let picked = state.pinned.expect("a pick");
+        assert_eq!(picked.layer, "stations");
+        assert_eq!(picked.norad_id, 25544);
+        assert_eq!(picked.name, "ISS (ZARYA)");
+        assert!(picked.trail);
+        assert!(picked.elements_age_days.abs() < 1.0e-6);
+
+        let point = picked.position.expect("a position");
+        assert!(point.lat.abs() <= 51.7, "{point:?}");
+        assert!((350.0..500.0).contains(&point.altitude_km), "{point:?}");
+    }
+
+    #[test]
+    fn a_position_is_reported_on_the_ground_whichever_frame_it_was_drawn_in() {
+        let mut settings = settings();
+        let catalogue = settings.layers[0].catalogue.clone().expect("a catalogue");
+        let now = catalogue.satellites[0].epoch_unix_seconds;
+        assert!(settings.pin("stations", 25544));
+
+        let mut reported = |mode| {
+            let (positions, drawn) = positions_of(&settings.layers[0], &catalogue, now, mode);
+            let layer = &mut settings.layers[0];
+            layer.positions = Arc::new(positions);
+            layer.drawn = drawn;
+            layer.drawn_angle = reference_angle(mode, now);
+            describe(&settings, now)
+                .pinned
+                .expect("a pick")
+                .position
+                .expect("a position")
+        };
+
+        // Drawn in an inertial frame, the longitude is a right ascension; drawn
+        // Earth-fixed it is a place. Reported, they are the same place.
+        let inertial = reported(FrameMode::Eci);
+        let fixed = reported(FrameMode::Ecef);
+        assert!((inertial.lat - fixed.lat).abs() < 1.0e-9);
+        let apart = (inertial.lon - fixed.lon).abs();
+        assert!(apart < 1.0e-6 || (360.0 - apart) < 1.0e-6, "{apart}");
+    }
+
+    #[test]
+    fn a_pick_is_nothing_while_the_object_is_not_drawn() {
+        let mut settings = settings();
+        let now = settings.layers[0]
+            .catalogue
+            .as_ref()
+            .expect("a catalogue")
+            .satellites[0]
+            .epoch_unix_seconds;
+        assert!(settings.pin("stations", 25544));
+
+        // Pinned, in the catalogue, and nowhere on screen: the layer knows what
+        // it is without knowing where it is.
+        let picked = describe(&settings, now).pinned.expect("a pick");
+        assert_eq!(picked.norad_id, 25544);
+        assert_eq!(picked.position.map(|point| point.lat), None);
+    }
+
+    #[test]
+    fn the_far_side_of_the_globe_is_not_pickable() {
+        // A camera out along +Z, and a satellite just above the surface.
+        let eye = Vec3::new(0.0, 0.0, 4.0);
+        assert!(!occluded(eye, Vec3::new(0.0, 0.0, 1.1)));
+        // The same height, on the far side: the Earth is in the way.
+        assert!(occluded(eye, Vec3::new(0.0, 0.0, -1.1)));
+        // Out past the limb, which is drawn against the sky and is grabbable.
+        assert!(!occluded(eye, Vec3::new(1.5, 0.0, 0.0)));
+        // And a satellite between the camera and the globe never is.
+        assert!(!occluded(eye, Vec3::new(0.0, 0.0, 2.0)));
+    }
+
+    #[test]
+    fn a_marker_is_anchored_where_the_satellite_is_drawn() {
+        // A satellite four hundred kilometres up is anchored four hundred
+        // kilometres up, on the same scale the globe is a unit sphere at — not
+        // on the ground under it, which is where picking in degrees would put
+        // it.
+        let anchor = crate::overlays::marker_anchor(Position::new(0.0, 0.0, 400_000.0), ALTITUDE);
+        let height = f64::from(anchor.length()) - 1.0;
+        let expected = 400.0 / f64::from(EARTH_RADIUS_KM);
+        // A shade over, and only a shade: every marker is drawn off the drape
+        // the imagery sits on rather than off the sphere, which is a dozen
+        // kilometres against four hundred of orbit.
+        assert!(height > expected, "{anchor:?}");
+        assert!(
+            height - expected < 20.0 / f64::from(EARTH_RADIUS_KM),
+            "{anchor:?}"
         );
     }
 }

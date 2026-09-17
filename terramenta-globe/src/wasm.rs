@@ -858,11 +858,17 @@ unsafe fn view_u32(slice: &[u32]) -> JsValue {
 // Picking
 // ---------------------------------------------------------------------------
 
-/// Whether the cursor picks features.
+/// Whether the cursor picks anything.
 ///
 /// On, every state snapshot carries `overlays.hovered` — the feature under the
-/// pointer, with its properties — and the globe draws a halo around it. Off,
-/// neither happens, and a pin already set stays set.
+/// pointer, with its properties — and `ephemerides.hovered`, the satellite
+/// under it, with its elements and where it is now; the globe draws a halo
+/// around each. Off, none of that happens, and a pin already set stays set.
+///
+/// One switch for both, because they are one thing to whoever is pointing at
+/// the globe. What they are not is one hit test: a feature is picked where it
+/// stands on the ground, and a satellite where its marker was drawn, hundreds
+/// of kilometres above it.
 #[wasm_bindgen(js_name = setPickingEnabled)]
 pub fn set_picking_enabled(enabled: bool) {
     api::send(GlobeCommand::SetPickingEnabled(enabled));
@@ -882,6 +888,23 @@ pub fn pin_feature(layer: String, index: usize) {
 #[wasm_bindgen(js_name = clearPinnedFeature)]
 pub fn clear_pinned_feature() {
     api::send(GlobeCommand::ClearPinnedFeature);
+}
+
+/// Keeps a satellite selected, whatever the cursor does afterwards.
+///
+/// The same idea as `pinFeature`, named the way every other satellite control
+/// names an object: `layer` is an ephemeris layer's id and `noradId` a
+/// catalogue number, both as `ephemerides.hovered` reports them. By catalogue
+/// number rather than by position, so the pin holds when the layer refetches
+/// and the document is renumbered.
+#[wasm_bindgen(js_name = pinSatellite)]
+pub fn pin_satellite(layer: String, norad_id: u64) {
+    api::send(GlobeCommand::PinSatellite { layer, norad_id });
+}
+
+#[wasm_bindgen(js_name = clearPinnedSatellite)]
+pub fn clear_pinned_satellite() {
+    api::send(GlobeCommand::ClearPinnedSatellite);
 }
 
 // ---------------------------------------------------------------------------

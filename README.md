@@ -79,9 +79,14 @@ interface, and the reference app is there to show what that takes.
   and the reference app wires up Celestrak's keyless catalogue: the crewed
   stations, GPS, the geostationary ring, the Molniya ellipses and a full
   Starlink shell.
-- **Pickable features.** The cursor hit-tests the overlay geometry: what it is
-  over is haloed on the globe and its properties are listed in the app, and a
-  click keeps one selected.
+- **Pickable features and satellites.** The cursor hit-tests the overlay
+  geometry: what it is over is haloed on the globe and its properties are listed
+  in the app, and a click keeps one selected. Satellites are picked by the same
+  switch and in a different unit — a marker four hundred kilometres up is
+  nowhere near the ground under it once the camera is tilted, so an orbiting
+  object is grabbed where it was drawn, in pixels, with the Earth allowed to get
+  in the way. A pick reports the object's elements, how stale they are and where
+  it is at that moment.
 - **A live readout.** Latitude and longitude under the cursor, camera altitude in
   kilometres, the subsolar point, and what the tile streamer is doing.
 - **GeoArrow all the way down.** Every vector coordinate — from a GeoJSON feed,
@@ -147,18 +152,17 @@ no build step at all. The only thing it builds is the globe.
   `Content-Encoding: gzip` regardless is reported as such rather than drawn.
 - Pick vector tile features the way overlay features are picked, which needs an
   index that can be built per tile rather than per document.
-- Pick satellites. The ephemeris geometry is in the same store the hit test
-  already reads, but its index would have to be rebuilt every frame rather than
-  once per document, which is a different shape of problem — a broad-phase over
-  moving points rather than a static tree.
 - Propagate the ephemeris off the schedule. It is the one layer whose geometry
   is computed rather than fetched, and the budgets in `ephemeris.rs` exist
   because it is computed on the main thread; a worker, or Bevy's task pool, would
   turn those budgets from a ceiling into a preference.
 - Add a bathymetry/elevation map for a normal-mapped surface and real terrain
   relief.
-- Pick against the drawn geometry rather than the ground under it, so a marker
-  at altitude is grabbable where it appears once the camera is tilted.
+- Pick an *overlay* against the drawn geometry rather than the ground under it,
+  so a flight path at altitude is grabbable where it appears once the camera is
+  tilted. Satellites already are; a line and a fill are the harder half, because
+  a screen-space test against a densified ribbon is not the same problem as one
+  against a point.
 - Style a GeoJSON overlay per feature rather than per layer — colour the
   earthquake markers by magnitude, which is the obvious next thing to want from
   the feed the reference app ships with. The properties are already carried

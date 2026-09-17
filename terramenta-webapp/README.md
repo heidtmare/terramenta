@@ -136,6 +136,13 @@ turns that into `pinFeature`, or into `clearPinnedFeature` over empty ocean. The
 globe then highlights the pinned feature in preference to the hovered one, and
 the panel shows the same, so the two cannot disagree about which is selected.
 
+Satellites are picked the same way and reported separately — `pinSatellite` by
+catalogue number rather than by row, so a pin holds when the layer refetches —
+which leaves this file with a precedence to settle, because there is one panel
+and there are two kinds of pick. Pinned beats hovered, and between two of the
+same rank the satellite wins: it is the smaller target and the one drawn in
+front, so getting the cursor onto it was not an accident.
+
 `overlays.js` keeps a little state of its own on top of that, which no other
 control does. The globe refreshes a URL by refetching it; a local file it was
 handed once, it cannot fetch again. So for a file the app holds the `File`,
