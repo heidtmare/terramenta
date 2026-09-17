@@ -27,23 +27,29 @@ from the filesystem will not work.
 
 ## What it controls
 
-Everything, which is the point.
+Everything, which is the point. The panel is in three tabs: **Imagery** for the
+basemap under everything, **Data layers** for what is drawn over it, and
+**Other** for how the scene is viewed rather than what is in it. Only the open
+pane is shown — every control in the panel stays bound and keeps taking its
+value from each snapshot, so nothing has to catch up when a tab is opened.
 
-| Section | |
-| --- | --- |
-| **Imagery** | All eight presets, grouped by protocol, with the tile size, format and pyramid depth of the active one; previous/next; streaming on or off |
-| **Vector tiles** | Both keyless MVT sources, the source layers and pyramid depth of the active one, its colour, whether rings are filled, and streaming on or off |
-| **GeoJSON overlays** | A layer from a URL or a local file, two bundled samples and three live feeds to try, auto-refresh with a period, picking on or off, and per layer: visibility, colour, clamp to surface, extrude to ground, refresh now, remove — plus what each one holds and how stale it is. A document that styles its own features the simplestyle way is drawn that way, and a toggle appears to take the layer back |
-| **Satellites** | An OMM catalogue from a URL or a local file, five Celestrak groups to try, and per layer: visibility, colour, orbit trails on or off, how far ahead and behind they run, refetching, remove — plus a filterable list of every object in it, each with its own switch for being drawn and for being trailed |
-| **Sun & clock** | Run or pause, the rate from real time to a day a second, jump to now or forward by hours or days, and whether the night side is shaded at all |
-| **Reference frame** | ECEF or ECI |
-| **Camera** | Altitude, latitude and longitude to fly to, nine places to try, and reading the current view back into the boxes |
-| **Globe chrome** | The globe's own readout, its key list, and its key bindings — each switchable |
+| Tab | Section | |
+| --- | --- | --- |
+| **Imagery** | **Imagery** | All eight presets, grouped by protocol, with the tile size, format and pyramid depth of the active one; previous/next; streaming on or off |
+| **Data layers** | **Vector tiles** | Both keyless MVT sources, the source layers and pyramid depth of the active one, its colour, whether rings are filled, and streaming on or off |
+|  | **GeoJSON overlays** | A layer from a URL or a local file, two bundled samples and three live feeds to try, auto-refresh with a period, picking on or off, and per layer: visibility, colour, clamp to surface, extrude to ground, refresh now, remove — plus what each one holds and how stale it is. A document that styles its own features the simplestyle way is drawn that way, and a toggle appears to take the layer back |
+|  | **Satellites** | An OMM catalogue from a URL or a local file, five Celestrak groups to try, and per layer: visibility, colour, orbit trails on or off, how far ahead and behind they run, refetching, remove — plus a filterable list of every object in it, each with its own switch for being drawn and for being trailed |
+| **Other** | **Sun & clock** | Run or pause, the rate from real time to a day a second, jump to now or forward by hours or days, and whether the night side is shaded at all |
+|  | **Reference frame** | ECEF or ECI |
+|  | **Camera** | Altitude, latitude and longitude to fly to, nine places to try, and reading the current view back into the boxes |
+|  | **Globe chrome** | The globe's own readout, its key list, and its key bindings — each switchable |
 
 Alongside them is a telemetry panel showing every field the globe reports:
 cursor and camera coordinates, altitude, frame, subsolar point, clock, rate,
 layer, overlays, satellites, and what both tile streamers are doing — and under
-it, whatever feature the cursor is over, with its properties.
+it, whatever the cursor is over: a feature with its properties, a satellite with
+its elements, or the sun's or moon's placemark with where that body is in the
+sky from the middle of the view.
 
 The app starts with three overlays already up, because a layer control with
 nothing in it is a poor way to introduce the feature, and because no one
@@ -163,10 +169,24 @@ the panel shows the same, so the two cannot disagree about which is selected.
 
 Satellites are picked the same way and reported separately — `pinSatellite` by
 catalogue number rather than by row, so a pin holds when the layer refetches —
-which leaves this file with a precedence to settle, because there is one panel
-and there are two kinds of pick. Pinned beats hovered, and between two of the
-same rank the satellite wins: it is the smaller target and the one drawn in
-front, so getting the cursor onto it was not an accident.
+and so are the two placemarks, by `pinPlacemark("sun")` or `"moon"`, since there
+are only ever those two and the name is the whole of the address. Which leaves
+this file with a precedence to settle, because there is one panel and three
+kinds of pick. Pinned beats hovered, and between three of the same rank they
+rank by how hard they are to hit: the satellite first, since it is the smallest
+target and the one drawn in front, then the placemark, then the feature under
+both.
+
+A placemark has no record behind it — it is one coordinate, recomputed every
+frame from the globe's own clock — so what the panel shows for one is worked out
+here, from that coordinate and the snapshot around it. How high the body is
+above the horizon at the view centre is ninety degrees less the angle to its
+sub-point; for the sun, what a sundial at the view centre would read is the
+difference from the subsolar meridian, fifteen degrees to the hour; and for the
+moon, how far its point is from the sun's is the elongation, which *is* the
+phase — together is new, opposite is full, and `(1 - cos elongation) / 2` is how
+much of it is lit. The globe draws both icons and says none of that, because it
+has nothing to say it in.
 
 `overlays.js` keeps a little state of its own on top of that, which no other
 control does. The globe refreshes a URL by refetching it; a local file it was
@@ -198,14 +218,15 @@ src/
   panel.js          The controls, and the one-way sync rule
   overlays.js       The GeoJSON layer controls, and the local-file timer
   ephemeris.js      The satellite controls, and the pulled object list
-  feature.js        The picked feature's properties, and what a click means
+  feature.js        The picked feature, satellite or placemark, and what a click means
   readout.js        The telemetry overlay
   widgets.js        Buttons, toggles, choices and sliders
   format.js         Coordinates, altitudes, clock rates, durations, log sliders
   places.js         Somewhere to fly to
   feeds.js          Something to overlay
   orbits.js         Something to propagate
-  dom.js            The little bit of element building the rest does over and over
+  dom.js            The little bit of element building the rest does over and over,
+                    and the panel's tab strip
 globe/              Build output: the module and its assets (git-ignored)
 scripts/
   build.sh          Builds the globe module into globe/
@@ -231,7 +252,8 @@ globe starts, the state stream begins, and the interface comes to life.
 3. Re-export it from [`globe.js`](src/globe.js) with a line saying what it does.
 4. Add the control in [`panel.js`](src/panel.js) — building it out of
    [`widgets.js`](src/widgets.js) — and `bind` it to the field of the snapshot it
-   reads back.
+   reads back. A new section goes into one of the three tabs at the foot of the
+   file; `bind` is what keeps it in step, not which pane it lands in.
 
 If it is something to display rather than to set, only the state struct and
 [`readout.js`](src/readout.js) are involved.

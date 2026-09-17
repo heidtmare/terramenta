@@ -244,15 +244,20 @@ canvas {
   border-color: var(--accent);
 }
 
+/*
+ * A column: the tab strip keeps its height at the top and the open pane takes
+ * what is left and scrolls, so the tabs stay put however long a pane is.
+ */
 #panel {
   position: absolute;
   top: 0;
   right: 0;
   bottom: 0;
   width: var(--panel-width);
-  padding: calc(var(--gutter) * 3.2) var(--gutter) var(--gutter);
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  padding-top: calc(var(--gutter) * 3.2);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: var(--surface);
   border-left: 1px solid var(--line);
   backdrop-filter: blur(12px);
@@ -261,6 +266,61 @@ canvas {
 
 body.panel-collapsed #panel {
   transform: translateX(100%);
+}
+
+.panel-tabs {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 0.35rem;
+  padding: 0 var(--gutter);
+  border-bottom: 1px solid var(--line);
+}
+
+.panel-tab {
+  /* Equal thirds: the strip reads as a whole rather than as three loose
+     buttons of whatever width their words happen to need. */
+  flex: 1 1 0;
+  padding: 0.45rem 0.2rem;
+  font: inherit;
+  font-size: 0.72rem;
+  /* Tracked less than a section heading is: three labels have to sit across a
+     column this narrow on one line each. */
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--ink-faint);
+  background: none;
+  border: none;
+  /* Sits on the strip's own rule rather than under it, so the open tab's
+     underline replaces that line instead of doubling it. */
+  border-bottom: 1px solid transparent;
+  margin-bottom: -1px;
+  cursor: pointer;
+}
+
+.panel-tab:hover {
+  color: var(--ink);
+}
+
+.panel-tab.selected {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.panel-tab:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.panel-body {
+  flex: 1 1 auto;
+  padding: var(--gutter);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.panel-pane[hidden] {
+  display: none;
 }
 
 .section {

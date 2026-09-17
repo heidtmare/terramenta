@@ -403,13 +403,14 @@ export const overlayGeometry = (id) => required().overlayGeometry(id);
  * Whether the cursor picks anything.
  *
  * On, every snapshot carries `overlays.hovered` — the feature under the
- * pointer, with its properties — and `ephemerides.hovered`, the satellite under
- * it, with its elements and where it is now. The globe haloes each.
+ * pointer, with its properties — `ephemerides.hovered`, the satellite under it,
+ * with its elements and where it is now — and `placemarks.hovered`, the
+ * subsolar or sublunar icon under it. The globe haloes each.
  *
- * One switch for both, because they are one thing to whoever is pointing at the
- * globe. Two hit tests, though: a feature is picked where it stands on the
- * ground, and a satellite where its marker was drawn, hundreds of kilometres
- * above it.
+ * One switch for all three, because they are one thing to whoever is pointing
+ * at the globe. Three hit tests, though: a feature is picked where it stands on
+ * the ground, a satellite where its marker was drawn hundreds of kilometres
+ * above it, and a placemark over the rectangle its icon covers on screen.
  */
 export const setPickingEnabled = (enabled) => required().setPickingEnabled(enabled);
 
@@ -435,6 +436,17 @@ export const clearPinnedFeature = () => required().clearPinnedFeature();
 export const pinSatellite = (layer, noradId) => required().pinSatellite(layer, noradId);
 
 export const clearPinnedSatellite = () => required().clearPinnedSatellite();
+
+/**
+ * And for a placemark: `body` is `"sun"` or `"moon"`, as `placemarks.hovered`
+ * reports it.
+ *
+ * There are only ever these two, and they are not in a layer, so the name is
+ * the whole of the address — `placemarks.hovered.body` goes straight back in.
+ */
+export const pinPlacemark = (body) => required().pinPlacemark(body);
+
+export const clearPinnedPlacemark = () => required().clearPinnedPlacemark();
 
 // --- The globe's own chrome ------------------------------------------------
 

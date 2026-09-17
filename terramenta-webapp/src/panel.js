@@ -11,10 +11,15 @@
  * The one exception is a slider being dragged. A value overwritten mid-drag
  * fights the pointer, so a slider says so while it is being held and `sync`
  * leaves it alone until it is let go.
+ *
+ * The sections are dealt out into three tabs — the imagery under everything,
+ * the data drawn over it, and the view it is all seen from. Switching tabs
+ * only hides panes; nothing is torn down or rebuilt, so a control in a closed
+ * tab is still bound and still current when you come back to it.
  */
 
 import * as globe from "./globe.js";
-import { el, row, section } from "./dom.js";
+import { el, row, section, tabs } from "./dom.js";
 import { mountEphemeris } from "./ephemeris.js";
 import { altitude, timeScale } from "./format.js";
 import { mountOverlays } from "./overlays.js";
@@ -289,7 +294,21 @@ export function mountPanel(root) {
     ),
   );
 
-  root.append(imagery, vectorTiles, overlays, ephemerides, sun, frame, camera, chrome);
+  // --- Tabs ----------------------------------------------------------------
+
+  // Imagery is the basemap under everything; the data layers are what is drawn
+  // over it, vector tiles included — they are decoded features, not pixels,
+  // and belong with the other two feature layers rather than with the raster
+  // imagery. What is left is how the scene is viewed rather than what is in it.
+  const { strip, panes } = tabs([
+    { id: "imagery", label: "Imagery", panes: [imagery] },
+    { id: "data", label: "Data layers", panes: [vectorTiles, overlays, ephemerides] },
+    { id: "other", label: "Other", panes: [sun, frame, camera, chrome] },
+  ]);
+
+  // The strip keeps its place while the pane below it scrolls, so the tabs are
+  // still reachable from the bottom of a long one.
+  root.append(strip, el("div", { class: "panel-body" }, ...panes));
 
   return {
     sync(state) {
