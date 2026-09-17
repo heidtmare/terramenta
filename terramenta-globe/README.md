@@ -64,13 +64,17 @@ globe.limits();        // {minAltitudeKm, maxAltitudeKm, minTimeScale, maxTimeSc
 
 globe.onState((state) => {
   // {camera: {center, altitudeKm}, frame: {mode, label}, sun, imagery,
-  //  vectorTiles, overlays, hud, cursor, keyboard} — see `GlobeState` in
-  // src/api.rs
+  //  vectorTiles, overlays, ephemerides, hud, cursor, keyboard} — see
+  // `GlobeState` in src/api.rs
 });
 
 globe.addOverlay("quakes", {
   url: "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_hour.geojson",
   refreshSeconds: 60,
+});
+
+globe.addEphemeris("stations", {
+  url: "https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=json",
 });
 
 globe.setHudVisible(false);        // queued; applied when the globe starts
@@ -106,6 +110,12 @@ to tell that apart from a real failure.
 | `setOverlayRefresh(id, seconds)` `refreshOverlay(id)` | When it refetches |
 | `setPickingEnabled(bool)` `pinFeature(layer, index)` `clearPinnedFeature()` | Picking features out of an overlay |
 | `overlayGeometry(id)` | A layer's coordinates as typed arrays, without a copy |
+| `addEphemeris(id, options)` `removeEphemeris(id)` | Satellite layers, from an OMM catalogue |
+| `setEphemerisVisible(id, bool)` `setEphemerisStyle(id, style)` `setEphemeridesEnabled(bool)` | How one is drawn |
+| `setEphemerisSelection(id, noradIds)` `selectSatellite(id, noradId, bool)` | Which objects are drawn |
+| `setEphemerisTrails(id, bool)` `setSatelliteTrail(id, noradId, bool)` `setEphemerisTrail(id, window)` | How much orbit is drawn through each |
+| `setEphemerisRefresh(id, seconds)` `refreshEphemeris(id)` | When the catalogue refetches |
+| `ephemerisObjects(id)` `ephemerisGeometry(id)` | What a layer holds, and where it currently is |
 | `setHudVisible(bool)` `setHelpVisible(bool)` `setKeyboardEnabled(bool)` | The globe's own overlay and keys |
 | `onState(callback)` | The state stream. One listener; registering again replaces it |
 
@@ -459,6 +469,116 @@ different earthquake.
   back when a feature is picked, but nothing reads them to decide a colour:
   styling is per layer, so two feeds are told apart by being two colours.
 
+## Satellites
+
+An ephemeris layer is a catalogue of orbits rather than a document of places.
+The source is [OMM] JSON — the Orbit Mean-Elements Message, the CCSDS standard
+that replaced the two-line element set and the format every current catalogue
+publishes. [`omm.rs`](src/omm.rs) reads the records and turns each into an SGP4
+propagator; [`ephemeris.rs`](src/ephemeris.rs) evaluates them and draws the
+result. Several layers can be up at once, each with its own colours, its own
+selection and its own trail window, exactly as the overlays are — the two share
+[`fetch.rs`](src/fetch.rs), the GeoArrow store and the mesh builders.
+
+```js
+addEphemeris("stations", {
+  url: "https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=json",
+  label: "Crewed stations",
+});
+ephemerisObjects("stations");
+// [{noradId: 25544, name: "ISS (ZARYA)", periodMinutes: 92.9, selected: true, ...}, ...]
+selectSatellite("stations", 25544, true);
+setSatelliteTrail("stations", 25544, true);
+```
+
+Four things about it are not like the other layers.
+
+### It is computed, not loaded
+
+Every other layer parses a document once and draws it until it is refetched.
+This one propagates every drawn object **every frame**, against
+`sun.unixSeconds` — the globe's *simulated* clock, not the wall one. So the
+constellation obeys the clock controls like everything else: pause it and the
+satellites stop, run a day every four minutes and they sweep, jump the clock a
+week and they are where they will be.
+
+That is also where the whole cost of the feature goes, and why there are
+budgets. `MAX_TRACKED` bounds the markers at six hundred objects a layer, which
+is a millisecond or two a frame. Trails are bounded differently, by a *sample*
+budget shared out among whatever is trailed: one satellite gets the smoothest
+orbit it asked for and sixty get a coarse one, and both cost the same. Holding
+a per-satellite sample count fixed instead would make a layer slower as it was
+switched on, where this makes it coarser — which is the right way round. The
+arcs are also rebuilt on their own clock rather than per frame: when the
+simulated time has moved a worthwhile fraction of the window an arc spans, at
+most ten times a second and at least twice.
+
+A layer reports `objects`, `tracked` and `trailed` separately, so an interface
+can say that it drew six hundred of eight thousand rather than leaving the
+difference to be discovered.
+
+### The reference frame is in the geometry
+
+SGP4 works in TEME, which is inertial; the globe draws in whichever frame world
+space currently *is*. A marker could be carried across that by a transform, the
+way an overlay is — but an arc could not, because each of its points belongs to
+a **different moment**, and in ECEF the Earth turned underneath between them.
+
+That is the whole difference between the two pictures. In ECI an orbit is the
+closed ellipse it really is; in ECEF the same arc is the corkscrew a ground
+track is. It cannot be a rigid rotation of one mesh, so every sample is turned
+into the active frame at the moment it belongs to, the mesh comes out already in
+world space, and the ephemeris entities carry no rotation at all. Switching
+frames rebuilds them.
+
+Press `Space` with a layer up and it is the clearest thing on the globe.
+
+### Coordinates are geocentric
+
+A propagated position is reduced to a declination, a right ascension and a
+radius; the radius becomes a height above a sphere of mean Earth radius. That is
+not the WGS 84 ellipsoid, and deliberately not: it is the sphere the globe
+actually draws, so a satellite sits over the imagery it is really over. A
+geodetic latitude would be right about the Earth and wrong about the mesh. The
+two differ by up to about a fifth of a degree of latitude.
+
+### The object list is pulled, not streamed
+
+A catalogue can be eight thousand rows and the state snapshot goes out ten times
+a second, so the list is not in it. `ephemerisObjects(id)` returns it on demand,
+and the snapshot carries a `revision` per layer that changes whenever the list
+would — a catalogue landing, a selection moving. An interface pulls when that
+number moves and not otherwise; [`ephemeris.js`][ephemerisjs] is the worked
+example.
+
+`ephemerisGeometry(id)` is the other half, and is `overlayGeometry` for
+satellites: the drawn points and arcs as typed arrays viewing the module's own
+memory. The same rule applies and applies harder, because these buffers are
+rebuilt every frame — read them synchronously and `.slice()` anything worth
+keeping.
+
+### Things to get right
+
+- **Elements go stale.** SGP4 is a fit around its epoch, not a model of the
+  solar system: it reproduces the catalogue's own state vector to a kilometre or
+  so near the epoch and drifts from there, roughly a kilometre a day in low
+  Earth orbit. A layer reports `oldestElementsDays` so an interface can say how
+  much to trust the dots.
+- **A propagator can diverge.** A decayed object, or elements months old, will
+  run away rather than fail politely. A satellite that cannot be placed is left
+  out of the drawing; an arc with a divergence anywhere along it is dropped
+  whole, because the samples either side of one are not on any orbit.
+- **A catalogue is a bulk product.** A record that will not parse is dropped and
+  counted (`rejected`), not a reason to draw nothing.
+- **Polite refresh.** The period is floored at five minutes. A catalogue is
+  regenerated a few times a day from observations that are themselves hours old,
+  and the public endpoints that serve it ask that you do not poll harder.
+- **CORS**, as ever. Celestrak answers `Access-Control-Allow-Origin: *`; a
+  Space-Track session does not, and needs a proxy.
+
+[OMM]: https://public.ccsds.org/Pubs/502x0b3e1.pdf
+[ephemerisjs]: ../terramenta-webapp/src/ephemeris.js
+
 ## Geometry in memory
 
 Everything that arrives as vector data — a GeoJSON document, a Mapbox Vector
@@ -557,6 +677,7 @@ for an embedder that would rather bind its own.
 | `T` | Toggle streamed imagery |
 | `L` / `Shift`+`L` | Next / previous imagery layer |
 | `V` / `Shift`+`V` | Toggle streamed vector tiles / next vector tile source |
+| `O` / `Shift`+`O` | Toggle satellites / their orbit trails |
 | `H` | Hide the control legend |
 
 ## Layout
@@ -579,10 +700,13 @@ src/
   mvt.rs       Mapbox Vector Tiles: the protobuf, the Web Mercator grid, clipping
   vector_tiles.rs  Vector tile layers: the `mvt://` source, streaming and meshing
   features.rs  The GeoArrow store every vector coordinate lives in
+  fetch.rs     The slot-addressed asset source a layer's document is fetched over
   geojson.rs   The GeoJSON document format, flattened to drawable geometry
+  omm.rs       OMM catalogues, read into SGP4 propagators
   tessellate.rs  Rings to triangles: ear clipping, holes and the antimeridian
   picking.rs   Which feature is under the cursor
   overlays.rs  Overlay layers: sources, refresh, meshes and the `geojson://` source
+  ephemeris.rs Satellite layers: the `omm://` source, propagation, markers and arcs
   hud.rs       The built-in readout, formatted from the state snapshot
 assets/shaders/
   globe.wgsl        Day/night, city lights, ocean specular, clouds, limb haze

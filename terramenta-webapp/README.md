@@ -34,6 +34,7 @@ Everything, which is the point.
 | **Imagery** | All eight presets, grouped by protocol, with the tile size, format and pyramid depth of the active one; previous/next; streaming on or off |
 | **Vector tiles** | Both keyless MVT sources, the source layers and pyramid depth of the active one, its colour, whether rings are filled, and streaming on or off |
 | **GeoJSON overlays** | A layer from a URL or a local file, two bundled samples and three live feeds to try, auto-refresh with a period, picking on or off, and per layer: visibility, colour, clamp to surface, extrude to ground, refresh now, remove — plus what each one holds and how stale it is |
+| **Satellites** | An OMM catalogue from a URL or a local file, five Celestrak groups to try, and per layer: visibility, colour, orbit trails on or off, how far ahead and behind they run, refetching, remove — plus a filterable list of every object in it, each with its own switch for being drawn and for being trailed |
 | **Sun & clock** | Run or pause, the rate from real time to a day a second, jump to now or forward by hours or days, and whether the night side is shaded at all |
 | **Reference frame** | ECEF or ECI |
 | **Camera** | Altitude, latitude and longitude to fly to, nine places to try, and reading the current view back into the boxes |
@@ -41,8 +42,8 @@ Everything, which is the point.
 
 Alongside them is a telemetry panel showing every field the globe reports:
 cursor and camera coordinates, altitude, frame, subsolar point, clock, rate,
-layer, overlays, and what both tile streamers are doing — and under it, whatever
-feature the cursor is over, with its properties.
+layer, overlays, satellites, and what both tile streamers are doing — and under
+it, whatever feature the cursor is over, with its properties.
 
 The app starts with three overlays already up, because a layer control with
 nothing in it is a poor way to introduce the feature, and because no one
@@ -88,6 +89,26 @@ surface** switch is for: it ignores heights and drapes the layer flat.
 
 [usgs]: https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_hour.geojson
 
+It also starts with one satellite layer up: Celestrak's `stations` group, which
+is twenty-odd objects including the two places anyone is currently living. It is
+the one layer that moves while you watch it without anything being refetched at
+all, because its geometry is computed from the globe's own clock rather than
+fetched — so pausing the sun stops the satellites, and running a day every four
+minutes sweeps them round.
+
+Press `Space` with it up. In ECEF each orbit is a corkscrew, because the Earth
+turns underneath the satellite while it goes round; in ECI the same arc is the
+closed ellipse it really is. That difference is the clearest thing on the globe,
+and it is why the frame toggle and the satellites arrived together.
+
+The other groups in [`orbits.js`](src/orbits.js) are chosen for their orbits
+rather than for their contents: GPS in six planes at half a sidereal day, the
+geostationary ring — which in ECEF does not appear to move at all, that being
+the meaning of the word — the Molniya ellipses that loiter over the north for
+most of a half-day, and a full Starlink shell, which is thousands of objects and
+so is the one that shows what the globe's budgets do when a catalogue is larger
+than it will draw.
+
 ## How it is wired
 
 **The data flow only goes one way.** A control sends a command and then forgets
@@ -122,6 +143,16 @@ re-reads it on the period the user asked for, and sends the text again under the
 same layer id — which the globe treats as a replacement rather than a second
 layer.
 
+[`ephemeris.js`](src/ephemeris.js) is the one place the app *asks* the globe for
+something instead of waiting to be told. A satellite catalogue can be eight
+thousand objects, and putting that list into a snapshot that goes out ten times
+a second would cost more than drawing the satellites does — so the snapshot
+carries a `revision` per layer instead, and the app calls `ephemerisObjects(id)`
+only when that number moves. Even then the list is windowed to two hundred rows
+with a filter box over it, because eight thousand checkboxes is eight thousand
+DOM nodes built so that a dozen can be looked at. The rule still holds: nothing
+here is the source of truth, the pull is just how the truth gets across.
+
 ```
 index.html          Canvas, overlay, loading state
 data/               Documents served beside the page
@@ -133,12 +164,14 @@ src/
   globe.js          The only file that talks to the wasm module
   panel.js          The controls, and the one-way sync rule
   overlays.js       The GeoJSON layer controls, and the local-file timer
+  ephemeris.js      The satellite controls, and the pulled object list
   feature.js        The picked feature's properties, and what a click means
   readout.js        The telemetry overlay
   widgets.js        Buttons, toggles, choices and sliders
   format.js         Coordinates, altitudes, clock rates, durations, log sliders
   places.js         Somewhere to fly to
   feeds.js          Something to overlay
+  orbits.js         Something to propagate
   dom.js            The little bit of element building the rest does over and over
 globe/              Build output: the module and its assets (git-ignored)
 scripts/

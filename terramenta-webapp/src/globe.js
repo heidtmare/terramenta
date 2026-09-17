@@ -238,6 +238,118 @@ export const refreshOverlay = (id) => required().refreshOverlay(id);
 /** Whether overlays are drawn at all. Off, every layer stays loaded. */
 export const setOverlaysEnabled = (enabled) => required().setOverlaysEnabled(enabled);
 
+// --- Ephemerides -----------------------------------------------------------
+
+/**
+ * Puts a satellite layer up, or replaces the one already under this id.
+ *
+ * The document is [OMM](https://public.ccsds.org/Pubs/502x0b3e1.pdf) JSON — an
+ * array of orbit mean-element records, which is what every current catalogue
+ * publishes and the successor to the two-line element set. The globe turns each
+ * into an SGP4 propagator and evaluates them against its own simulated clock,
+ * so the satellites obey `setTimeScale`, `setSunPaused` and `setClock` like
+ * everything else on the globe.
+ *
+ * ```js
+ * addEphemeris("stations", {
+ *   url: "https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=json",
+ *   label: "Crewed stations",
+ * });
+ * addEphemeris("iss", { url, select: [25544], leadingOrbits: 1, trailingOrbits: 1 });
+ * ```
+ *
+ * Options: `label`, `refreshSeconds` (floored at five minutes), `visible`,
+ * `select` (catalogue numbers, or omit for everything the document holds),
+ * `trails`, the trail window `leadingOrbits`, `trailingOrbits` and
+ * `trailSamples`, and the same style fields an overlay takes — `fillColor`
+ * excepted, because an ephemeris has no rings in it.
+ *
+ * Switch to the ECI frame to see an orbit as the closed ellipse it is; in ECEF
+ * the same arc is the corkscrew a ground track is, because the Earth turns
+ * underneath it.
+ */
+export const addEphemeris = (id, options) => required().addEphemeris(id, options);
+
+export const removeEphemeris = (id) => required().removeEphemeris(id);
+
+export const setEphemerisVisible = (id, visible) => required().setEphemerisVisible(id, visible);
+
+/** Recolours a layer without repropagating it. Anything left out returns to its default. */
+export const setEphemerisStyle = (id, style) => required().setEphemerisStyle(id, style);
+
+/**
+ * Replaces which objects the layer draws, by catalogue number. `null` is
+ * everything the document holds, down to the budget the state stream reports as
+ * `ephemerides.maxTracked`.
+ */
+export const setEphemerisSelection = (id, noradIds) =>
+  required().setEphemerisSelection(id, noradIds ?? undefined);
+
+/** Draws one object, or stops drawing it. */
+export const selectSatellite = (id, noradId, selected) =>
+  required().selectSatellite(id, noradId, selected);
+
+/** Draws one object's orbit arc, or stops drawing it. */
+export const setSatelliteTrail = (id, noradId, trail) =>
+  required().setSatelliteTrail(id, noradId, trail);
+
+/** Whether the layer draws arcs at all. Off, the arcs it has are hidden, not discarded. */
+export const setEphemerisTrails = (id, trails) => required().setEphemerisTrails(id, trails);
+
+/**
+ * How far the arcs run either side of now, and how finely:
+ * `{leadingOrbits, trailingOrbits, trailSamples}`. In orbits rather than
+ * minutes, so half an orbit is half an orbit for the station at ninety minutes
+ * and for a navigation satellite at twelve hours alike.
+ */
+export const setEphemerisTrail = (id, trail) => required().setEphemerisTrail(id, trail);
+
+/** Seconds between refetches, or `null` to stop. Floored at five minutes. */
+export const setEphemerisRefresh = (id, seconds) => required().setEphemerisRefresh(id, seconds);
+
+export const refreshEphemeris = (id) => required().refreshEphemeris(id);
+
+/**
+ * Whether ephemerides are drawn at all.
+ *
+ * Off, every layer stays loaded and stops being propagated — which, unlike an
+ * overlay, is where the whole cost of one goes: an ephemeris is recomputed
+ * every frame rather than parsed once.
+ */
+export const setEphemeridesEnabled = (enabled) => required().setEphemeridesEnabled(enabled);
+
+/**
+ * What one layer holds: `[{noradId, name, internationalDesignator,
+ * epochUnixSeconds, periodMinutes, inclinationDeg, eccentricity, selected,
+ * trail}, ...]`, or `null` for a layer that is not up or has not loaded.
+ *
+ * Pulled rather than streamed, because a catalogue can be twelve thousand rows
+ * and the snapshot goes out ten times a second. The snapshot carries the
+ * layer's `revision` instead, which changes whenever this list would — so an
+ * interface pulls again when it does, and not otherwise. `ephemeris.js` is
+ * where this app does that.
+ *
+ * `epochUnixSeconds` is on the same clock as `sun.unixSeconds`: subtract the
+ * two for how stale the elements are, which is how much to trust the dot.
+ */
+export const ephemerisObjects = (id) => required().ephemerisObjects(id);
+
+/**
+ * A satellite layer's drawn geometry as typed arrays viewing the module's own
+ * memory, exactly as `overlayGeometry` hands out an overlay's:
+ * `{points: {coords, features}, lines: {coords, offsets, features}}`.
+ *
+ * The coordinates are in whichever frame the scene is drawn in — in ECI the
+ * second component is a right ascension rather than a longitude — and the
+ * height is metres above a sphere of mean Earth radius. Each feature's id is
+ * the object's catalogue number, so `ephemerisObjects` is what gives a
+ * coordinate here a name.
+ *
+ * The same rule as `overlayGeometry`, and harder: these buffers are rebuilt
+ * every frame, so read them synchronously and `.slice()` anything worth keeping.
+ */
+export const ephemerisGeometry = (id) => required().ephemerisGeometry(id);
+
 // --- Geometry --------------------------------------------------------------
 
 /**
@@ -312,8 +424,8 @@ export const setKeyboardEnabled = (enabled) => required().setKeyboardEnabled(ena
 /**
  * Registers the callback the globe reports its state to.
  *
- * The snapshot is `{camera, frame, sun, imagery, vectorTiles, overlays, hud,
- * cursor, keyboard}`; see
+ * The snapshot is `{camera, frame, sun, imagery, vectorTiles, overlays,
+ * ephemerides, hud, cursor, keyboard}`; see
  * `readout.js` and `panel.js` for what is in each. Only one listener is kept,
  * so this app fans it out itself rather than registering twice.
  */

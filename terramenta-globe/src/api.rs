@@ -26,7 +26,8 @@ use bevy::prelude::*;
 use serde::Serialize;
 
 use crate::camera::OrbitCamera;
-use crate::frame::{FrameMode, FrameRealigned, FrameSet, ReferenceFrame};
+use crate::ephemeris::{self, EphemerisSettings};
+use crate::frame::{FrameRealigned, FrameSet, ReferenceFrame};
 use crate::geo::ray_sphere_intersection;
 use crate::globe::GLOBE_RADIUS;
 use crate::hud::HudSettings;
@@ -41,6 +42,13 @@ use crate::vector_tiles::{self, VectorTileCache, VectorTileSettings};
 /// [`GlobeCommand::LookAt`] or an [`GlobeCommand::AddOverlay`] has to be able
 /// to name what it is sending, and which module the type lives in is the
 /// globe's own business.
+pub use crate::ephemeris::{
+    EphemerisLayerInfo, EphemerisRequest, EphemerisState, MAX_TRACKED, MAX_TRAILED, SatelliteInfo,
+    Selection, TrailWindow, default_style as ephemeris_style,
+};
+// `SetFrame` takes one of these, so a native embedder has to be able to name
+// it; the module it lives in is the globe's own business.
+pub use crate::frame::FrameMode;
 pub use crate::geo::LatLon;
 pub use crate::overlays::{
     AltitudeMode, MIN_REFRESH_SECONDS, OverlayAltitude, OverlayInfo, OverlayRequest, OverlaySource,
@@ -144,6 +152,55 @@ pub enum GlobeCommand {
     /// Whether overlays are drawn at all. Off, every layer stays loaded.
     SetOverlaysEnabled(bool),
 
+    /// Puts an ephemeris layer up from an OMM catalogue, replacing any already
+    /// under the same id.
+    AddEphemeris(EphemerisRequest),
+    RemoveEphemeris(String),
+    SetEphemerisVisible {
+        id: String,
+        visible: bool,
+    },
+    SetEphemerisStyle {
+        id: String,
+        style: OverlayStyle,
+    },
+    /// Which objects of the catalogue are drawn. Replaces the whole selection;
+    /// `Selection::All` is everything the document held, down to the budget.
+    SetEphemerisSelection {
+        id: String,
+        selection: Selection,
+    },
+    /// Draws one object, or stops drawing it, by catalogue number.
+    SelectSatellite {
+        id: String,
+        norad_id: u64,
+        selected: bool,
+    },
+    /// Draws one object's orbit arc, or stops drawing it.
+    SetSatelliteTrail {
+        id: String,
+        norad_id: u64,
+        trail: bool,
+    },
+    /// Whether the layer draws arcs at all.
+    SetEphemerisTrails {
+        id: String,
+        trails: bool,
+    },
+    /// How far the arcs run either side of now, and how finely they are drawn.
+    SetEphemerisTrail {
+        id: String,
+        trail: TrailWindow,
+    },
+    SetEphemerisRefresh {
+        id: String,
+        seconds: Option<f32>,
+    },
+    RefreshEphemeris(String),
+    /// Whether ephemerides are drawn at all. Off, every layer stays loaded and
+    /// stops being propagated, which is where the cost of one goes.
+    SetEphemeridesEnabled(bool),
+
     /// Whether the cursor picks features at all.
     SetPickingEnabled(bool),
     /// Keeps a feature selected, whatever the cursor does afterwards.
@@ -201,6 +258,8 @@ pub struct GlobeState {
     pub vector_tiles: VectorTilesState,
     /// Every GeoJSON overlay, in the order they were added.
     pub overlays: OverlaysState,
+    /// Every ephemeris layer, in the order they were added.
+    pub ephemerides: EphemerisState,
     pub hud: HudState,
     /// The coordinate under the pointer, or `None` when it is off the globe.
     pub cursor: Option<LatLon>,
@@ -408,6 +467,11 @@ struct Digest {
     /// changed would cost more than publishing does.
     hovered: Option<FeatureKey>,
     pinned: Option<FeatureKey>,
+    /// Ephemerides keep a counter for the same reason overlays do, and it
+    /// serves one purpose more: a change to it is what tells an interface that
+    /// the object list it pulled through `ephemerisObjects` is stale.
+    ephemeris_revision: u64,
+    ephemerides_enabled: bool,
     /// Overlays are a list rather than a handful of fields, so they keep a
     /// counter of their own: anything an interface has a control for bumps it,
     /// and the countdown to the next refresh — which changes every tick and has
@@ -415,7 +479,12 @@ struct Digest {
     overlay_revision: u64,
 }
 
-fn digest(state: &GlobeState, overlay_revision: u64, picks: PickDigest) -> Digest {
+fn digest(
+    state: &GlobeState,
+    overlay_revision: u64,
+    ephemeris_revision: u64,
+    picks: PickDigest,
+) -> Digest {
     let (hovered, pinned) = picks;
     Digest {
         frame: state.frame.mode,
@@ -439,6 +508,8 @@ fn digest(state: &GlobeState, overlay_revision: u64, picks: PickDigest) -> Diges
         hovered,
         pinned,
         overlay_revision,
+        ephemeris_revision,
+        ephemerides_enabled: state.ephemerides.enabled,
     }
 }
 
@@ -532,6 +603,7 @@ fn apply_commands(
     mut vector_tiles: ResMut<VectorTileSettings>,
     mut hud: ResMut<HudSettings>,
     mut overlays: ResMut<OverlaySettings>,
+    mut ephemerides: ResMut<EphemerisSettings>,
     mut input: ResMut<GlobeInput>,
 ) {
     let commands = take_queued();
@@ -631,6 +703,47 @@ fn apply_commands(
             }
             GlobeCommand::SetOverlaysEnabled(enabled) => overlays.enabled = enabled,
 
+            GlobeCommand::AddEphemeris(request) => ephemerides.add(request),
+            GlobeCommand::RemoveEphemeris(id) => {
+                ephemerides.remove(&id);
+            }
+            GlobeCommand::SetEphemerisVisible { id, visible } => {
+                ephemerides.set_visible(&id, visible);
+            }
+            GlobeCommand::SetEphemerisStyle { id, style } => {
+                ephemerides.set_style(&id, style);
+            }
+            GlobeCommand::SetEphemerisSelection { id, selection } => {
+                ephemerides.set_selection(&id, selection);
+            }
+            GlobeCommand::SelectSatellite {
+                id,
+                norad_id,
+                selected,
+            } => {
+                ephemerides.select(&id, norad_id, selected);
+            }
+            GlobeCommand::SetSatelliteTrail {
+                id,
+                norad_id,
+                trail,
+            } => {
+                ephemerides.set_object_trail(&id, norad_id, trail);
+            }
+            GlobeCommand::SetEphemerisTrails { id, trails } => {
+                ephemerides.set_trails(&id, trails);
+            }
+            GlobeCommand::SetEphemerisTrail { id, trail } => {
+                ephemerides.set_trail(&id, trail);
+            }
+            GlobeCommand::SetEphemerisRefresh { id, seconds } => {
+                ephemerides.set_refresh(&id, seconds);
+            }
+            GlobeCommand::RefreshEphemeris(id) => {
+                ephemerides.refresh(&id);
+            }
+            GlobeCommand::SetEphemeridesEnabled(enabled) => ephemerides.enabled = enabled,
+
             GlobeCommand::SetPickingEnabled(enabled) => overlays.picking = enabled,
             GlobeCommand::PinFeature { layer, index } => {
                 overlays.pin(&layer, index);
@@ -676,6 +789,7 @@ pub(crate) fn publish_state(
     vector_settings: Res<VectorTileSettings>,
     vector_cache: Res<VectorTileCache>,
     overlays: Res<OverlaySettings>,
+    ephemerides: Res<EphemerisSettings>,
     hud: Res<HudSettings>,
     input: Res<GlobeInput>,
     mut stream: ResMut<StateStream>,
@@ -723,6 +837,7 @@ pub(crate) fn publish_state(
             hovered: overlays::hovered(&overlays),
             pinned: overlays::pinned(&overlays),
         },
+        ephemerides: ephemeris::describe(&ephemerides, sun.unix_seconds),
         hud: HudState {
             visible: hud.visible,
             help_visible: hud.help_visible,
@@ -735,6 +850,7 @@ pub(crate) fn publish_state(
     let current = digest(
         &state,
         overlays.revision(),
+        ephemerides.revision(),
         overlays::pick_digest(&overlays),
     );
     let changed = stream.last_digest != Some(current);

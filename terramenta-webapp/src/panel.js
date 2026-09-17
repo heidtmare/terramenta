@@ -15,6 +15,7 @@
 
 import * as globe from "./globe.js";
 import { el, row, section } from "./dom.js";
+import { mountEphemeris } from "./ephemeris.js";
 import { altitude, timeScale } from "./format.js";
 import { mountOverlays } from "./overlays.js";
 import { PLACES } from "./places.js";
@@ -157,6 +158,12 @@ export function mountPanel(root) {
   // controls follow the same one-way rule as everything here.
   const overlays = mountOverlays(bind);
 
+  // --- Satellites ----------------------------------------------------------
+
+  // The other layer built on the same GeoArrow store and the same shader, and
+  // the only one whose geometry is computed rather than fetched.
+  const ephemerides = mountEphemeris(bind);
+
   // --- Sun and clock -------------------------------------------------------
 
   const pauseToggle = toggle("Run the clock", (running) => globe.setSunPaused(!running));
@@ -282,7 +289,7 @@ export function mountPanel(root) {
     ),
   );
 
-  root.append(imagery, vectorTiles, overlays, sun, frame, camera, chrome);
+  root.append(imagery, vectorTiles, overlays, ephemerides, sun, frame, camera, chrome);
 
   return {
     sync(state) {

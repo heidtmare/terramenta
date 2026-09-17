@@ -9,8 +9,10 @@
  */
 
 import * as globe from "./globe.js";
+import { addCatalogue } from "./ephemeris.js";
 import { CUBE, DEFAULT_FEED, SAMPLE } from "./feeds.js";
 import { mountFeature } from "./feature.js";
+import { DEFAULT_CATALOGUE } from "./orbits.js";
 import { addFeed } from "./overlays.js";
 import { mountPanel } from "./panel.js";
 import { mountReadout } from "./readout.js";
@@ -98,6 +100,12 @@ async function boot() {
   addFeed(SAMPLE);
   addFeed(CUBE);
   addFeed(DEFAULT_FEED);
+
+  // And one satellite catalogue, which is the same idea a step further on: the
+  // elements are fetched once and the geometry is computed every frame from the
+  // globe's own clock, so this layer is the one that moves while you watch it
+  // even with nothing being refetched at all.
+  addCatalogue(DEFAULT_CATALOGUE);
 
   try {
     await globe.start(CANVAS_SELECTOR);

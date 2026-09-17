@@ -16,13 +16,10 @@
 //! embedder refreshing a local file re-sends the text under the same id, which
 //! replaces the layer in place.
 //!
-//! **Refreshing has to defeat two caches.** Bevy keys its asset cache by path
-//! and the browser keys its own by URL, so simply asking again is answered
-//! twice over from something already in hand. Both are sidestepped the same
-//! way: the path carries a generation, which the asset cache sees, and from the
-//! second fetch onward so does the request, which the HTTP cache sees. A layer
-//! that never refreshes never gets the extra parameter, so a signed or
-//! otherwise parameter-sensitive URL still works.
+//! **Refreshing has to defeat two caches**, which is what the generation in
+//! every asset path is for. That, and the `geojson://` source itself, is
+//! [`crate::fetch`] — shared with [`crate::ephemeris`], which is the same
+//! shape of layer over a different document.
 //!
 //! **Size is in pixels, not in kilometres.** A marker and a line are sized on
 //! screen, so they stay legible from orbit and from a low pass without the
@@ -38,11 +35,9 @@
 //! and one on a clamped layer all draw in the same place.
 
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, RwLock};
 
-use bevy::asset::io::web::WebAssetReader;
-use bevy::asset::io::{AssetReader, AssetReaderError, AssetSourceBuilder, PathStream, Reader};
+use bevy::asset::io::Reader;
 use bevy::asset::{AssetApp, AssetLoader, LoadContext, LoadState, RenderAssetUsages};
 use bevy::camera::visibility::NoFrustumCulling;
 use bevy::color::Srgba;
@@ -58,6 +53,7 @@ use serde::Serialize;
 
 use crate::api::Cursor;
 use crate::features::{Coords, FeatureSet};
+use crate::fetch::{self, SharedUrls};
 use crate::frame::{FrameSet, ReferenceFrame};
 use crate::geo::{EARTH_RADIUS_KM, Position};
 use crate::globe::GLOBE_RADIUS;
@@ -67,10 +63,6 @@ use crate::tiles::MAX_TILE_RADIUS;
 
 /// The asset source scheme overlay documents are fetched over.
 pub const OVERLAY_SOURCE: &str = "geojson";
-
-/// The query parameter a refresh adds to get past the HTTP cache. Named rather
-/// than a bare `t` so a server log says where it came from.
-const CACHE_BUSTER: &str = "_terramenta";
 
 /// Overlays sit above the highest an imagery tile is ever drawn, and in this
 /// order, so a marker is never lost in the fill under it.
@@ -119,6 +111,17 @@ const HIGHLIGHT_GROW_PX: f32 = 7.0;
 /// reach it. These are added to that distance to settle it: larger is nearer,
 /// and nearer is drawn last.
 const HIGHLIGHT_BEHIND: f32 = 1.0;
+
+/// How far over the overlays an ephemeris is drawn.
+///
+/// A satellite is the one thing here that is genuinely somewhere else: it is
+/// hundreds of kilometres above everything drawn on the surface, so on the rare
+/// frame where the transparent pass cannot tell them apart by distance — a
+/// grazing view along the limb, where a marker overhead and a coastline beyond
+/// it are the same distance from the camera — the one in orbit is the one in
+/// front. Clear of the highlight as well, so a picked feature's halo does not
+/// come out over a satellite.
+pub(crate) const EPHEMERIS_ABOVE: f32 = 8.0;
 
 /// How far under the overlays a vector tile's geometry is drawn.
 ///
@@ -423,10 +426,7 @@ struct Overlay {
 impl Overlay {
     /// The asset path this overlay's document is fetched over.
     fn asset_path(&self) -> String {
-        format!(
-            "{OVERLAY_SOURCE}://{}/{}.geojson",
-            self.slot, self.generation
-        )
+        fetch::asset_path(OVERLAY_SOURCE, self.slot, self.generation, "geojson")
     }
 
     fn set_refresh(&mut self, seconds: Option<f32>) {
@@ -451,10 +451,6 @@ impl Overlay {
 // ---------------------------------------------------------------------------
 // The resource an embedder drives
 // ---------------------------------------------------------------------------
-
-/// The URL behind each overlay slot, shared with the asset reader outside the
-/// `World`.
-type SharedOverlayUrls = Arc<RwLock<HashMap<u64, String>>>;
 
 /// Every drawn layer's geometry, by layer id, reachable from outside the
 /// `World`.
@@ -500,7 +496,7 @@ pub struct OverlaySettings {
     /// changes rather than on every frame the cursor moves within a feature.
     highlighted: Option<Pick>,
     highlight: Vec<Entity>,
-    urls: SharedOverlayUrls,
+    urls: SharedUrls,
     next_slot: u64,
     /// Bumped by anything an interface has a control for, so the state stream
     /// can publish the moment one changes rather than on the next throttle tick.
@@ -781,6 +777,13 @@ impl VectorMaterial {
         self.depth_bias -= VECTOR_TILE_BENEATH;
         self
     }
+
+    /// Puts this draw over every overlay — what an ephemeris is drawn with.
+    /// See [`EPHEMERIS_ABOVE`].
+    pub(crate) fn above(mut self) -> Self {
+        self.depth_bias += EPHEMERIS_ABOVE;
+        self
+    }
 }
 
 impl Material for VectorMaterial {
@@ -884,70 +887,6 @@ impl AssetLoader for GeoJsonLoader {
     }
 }
 
-/// Serves `{slot}/{generation}.geojson` by fetching whatever URL that slot
-/// holds, exactly as the imagery source serves a tile path.
-struct OverlayAssetReader {
-    urls: SharedOverlayUrls,
-    http: WebAssetReader,
-    https: WebAssetReader,
-}
-
-/// Recovers the slot and generation a path refers to.
-fn parse_overlay_path(path: &Path) -> Option<(u64, u32)> {
-    let mut segments = path.to_str()?.split('/');
-    let slot: u64 = segments.next()?.parse().ok()?;
-    let generation: u32 = segments.next()?.split('.').next()?.parse().ok()?;
-    Some((slot, generation))
-}
-
-/// Adds the cache-busting parameter a refetch needs — and nothing at all to a
-/// first fetch, so a URL that cannot take an extra parameter still works for
-/// every layer that is not being refreshed.
-fn request_url(url: &str, generation: u32) -> String {
-    if generation == 0 {
-        return url.to_string();
-    }
-    let separator = if url.contains('?') { '&' } else { '?' };
-    format!("{url}{separator}{CACHE_BUSTER}={generation}")
-}
-
-impl AssetReader for OverlayAssetReader {
-    async fn read<'a>(&'a self, path: &'a Path) -> Result<impl Reader + 'a, AssetReaderError> {
-        let not_found = || AssetReaderError::NotFound(path.to_path_buf());
-        let (slot, generation) = parse_overlay_path(path).ok_or_else(not_found)?;
-
-        // Built and the lock released before awaiting, so the guard is never
-        // held across a suspension point.
-        let url = {
-            let urls = self.urls.read().map_err(|_| not_found())?;
-            request_url(urls.get(&slot).ok_or_else(not_found)?, generation)
-        };
-
-        // Bevy's reader prepends the scheme itself, so hand it the remainder.
-        let (reader, remainder) = match url.split_once("://") {
-            Some(("https", rest)) => (&self.https, rest),
-            Some(("http", rest)) => (&self.http, rest),
-            _ => return Err(AssetReaderError::NotFound(PathBuf::from(url))),
-        };
-        reader.read(Path::new(remainder)).await
-    }
-
-    async fn read_meta<'a>(&'a self, path: &'a Path) -> Result<impl Reader + 'a, AssetReaderError> {
-        Err::<Box<dyn Reader>, _>(AssetReaderError::NotFound(path.to_path_buf()))
-    }
-
-    async fn is_directory<'a>(&'a self, _path: &'a Path) -> Result<bool, AssetReaderError> {
-        Ok(false)
-    }
-
-    async fn read_directory<'a>(
-        &'a self,
-        path: &'a Path,
-    ) -> Result<Box<PathStream>, AssetReaderError> {
-        Err(AssetReaderError::NotFound(path.to_path_buf()))
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Plugins
 // ---------------------------------------------------------------------------
@@ -970,21 +909,11 @@ pub struct OverlaySourcePlugin {
 
 impl Plugin for OverlaySourcePlugin {
     fn build(&self, app: &mut App) {
-        let urls: SharedOverlayUrls = Arc::new(RwLock::new(HashMap::new()));
+        let urls: SharedUrls = Arc::new(RwLock::new(HashMap::new()));
 
         // The reader outlives any one `World`, so it shares the URL table
         // through the same handle the resource writes to.
-        let reader_urls = urls.clone();
-        app.register_asset_source(
-            OVERLAY_SOURCE,
-            AssetSourceBuilder::new(move || {
-                Box::new(OverlayAssetReader {
-                    urls: reader_urls.clone(),
-                    http: WebAssetReader::Http,
-                    https: WebAssetReader::Https,
-                })
-            }),
-        );
+        app.register_asset_source(OVERLAY_SOURCE, fetch::source(urls.clone()));
 
         let mut settings = OverlaySettings {
             enabled: true,
@@ -2307,23 +2236,6 @@ mod tests {
         let short = degrees_per_pixel(1.0, fov, 540.0);
         let tall = degrees_per_pixel(1.0, fov, 1080.0);
         assert!((short - tall * 2.0).abs() < 1.0e-6, "{short} vs {tall}");
-    }
-
-    #[test]
-    fn overlay_paths_round_trip() {
-        assert_eq!(parse_overlay_path(Path::new("3/7.geojson")), Some((3, 7)));
-        assert_eq!(parse_overlay_path(Path::new("nonsense")), None);
-    }
-
-    #[test]
-    fn only_a_refetch_carries_the_cache_buster() {
-        let url = "https://example.org/all_hour.geojson";
-        assert_eq!(request_url(url, 0), url);
-        assert_eq!(request_url(url, 2), format!("{url}?{CACHE_BUSTER}=2"));
-        assert_eq!(
-            request_url("https://example.org/feed?format=geojson", 1),
-            format!("https://example.org/feed?format=geojson&{CACHE_BUSTER}=1")
-        );
     }
 
     /// A position on the ground, which most of these are.

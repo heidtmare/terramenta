@@ -29,6 +29,16 @@ const FIELDS = [
           (state.overlays.enabled ? "" : "  (off)"),
   ],
   [
+    "satellites",
+    (state) => {
+      const { layers, enabled } = state.ephemerides;
+      if (layers.length === 0) return "none";
+      const drawn = layers.reduce((total, layer) => total + layer.tracked, 0);
+      const trailed = layers.reduce((total, layer) => total + (layer.trails ? layer.trailed : 0), 0);
+      return `${drawn} drawn · ${trailed} trailed` + (enabled ? "" : "  (off)");
+    },
+  ],
+  [
     "tiles",
     (state) =>
       state.imagery.enabled

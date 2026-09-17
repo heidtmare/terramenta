@@ -16,7 +16,9 @@
 
 pub mod api;
 mod camera;
+mod ephemeris;
 mod features;
+mod fetch;
 mod frame;
 mod geo;
 mod geojson;
@@ -24,6 +26,7 @@ mod globe;
 mod hud;
 mod imagery;
 mod mvt;
+mod omm;
 mod overlays;
 mod picking;
 mod sun;
@@ -41,6 +44,7 @@ use bevy::prelude::*;
 
 use api::ApiPlugin;
 use camera::OrbitCameraPlugin;
+use ephemeris::{EphemerisPlugin, EphemerisRequest, EphemerisSourcePlugin};
 use frame::FramePlugin;
 use globe::GlobePlugin;
 use hud::HudPlugin;
@@ -74,6 +78,10 @@ pub struct GlobeConfig {
     /// also the only route a web embedder has. This is here for a native host
     /// building the `App` itself.
     pub overlays: Vec<OverlayRequest>,
+    /// Ephemeris layers to put up at startup, on the same terms: a catalogue of
+    /// satellites is the embedder's data, and a web one adds its own through
+    /// [`api::GlobeCommand::AddEphemeris`].
+    pub ephemerides: Vec<EphemerisRequest>,
 }
 
 impl Default for GlobeConfig {
@@ -82,6 +90,7 @@ impl Default for GlobeConfig {
             canvas_selector: "#terramenta".into(),
             asset_path: "assets".into(),
             overlays: Vec::new(),
+            ephemerides: Vec::new(),
         }
     }
 }
@@ -107,6 +116,9 @@ pub fn app(config: GlobeConfig) -> App {
         })
         .add_plugins(OverlaySourcePlugin {
             initial: config.overlays.clone(),
+        })
+        .add_plugins(EphemerisSourcePlugin {
+            initial: config.ephemerides.clone(),
         })
         .add_plugins(VectorTileSourcePlugin {
             presets: vector_tile_layers(),
@@ -158,6 +170,7 @@ pub fn app(config: GlobeConfig) -> App {
             TilePlugin,
             VectorTilePlugin,
             OverlayPlugin,
+            EphemerisPlugin,
             HudPlugin,
         ));
 

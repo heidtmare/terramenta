@@ -15,8 +15,8 @@ use wasm_bindgen::prelude::*;
 
 use crate::GlobeConfig;
 use crate::api::{
-    self, AltitudeMode, GlobeCommand, GlobeState, Limits, OverlayAltitude, OverlayRequest,
-    OverlaySource, OverlayStyle,
+    self, AltitudeMode, EphemerisRequest, GlobeCommand, GlobeState, Limits, OverlayAltitude,
+    OverlayRequest, OverlaySource, OverlayStyle, Selection, TrailWindow,
 };
 use crate::frame::FrameMode;
 use crate::geo::LatLon;
@@ -35,9 +35,11 @@ pub fn start(canvas_selector: Option<String>, asset_path: Option<String>) {
     crate::app(GlobeConfig {
         canvas_selector: canvas_selector.unwrap_or(defaults.canvas_selector),
         asset_path: asset_path.unwrap_or(defaults.asset_path),
-        // A web embedder adds its overlays through `addOverlay` once the module
-        // has loaded; the queue holds them until the globe is there to take them.
+        // A web embedder adds its layers through `addOverlay` and `addEphemeris`
+        // once the module has loaded; the queue holds them until the globe is
+        // there to take them.
         overlays: defaults.overlays,
+        ephemerides: defaults.ephemerides,
     })
     .run();
 }
@@ -310,7 +312,13 @@ impl StyleOptions {
     /// its default rather than failing the call: a layer in the wrong colour is
     /// recoverable, and a layer that never appeared is a puzzle.
     fn resolve(&self) -> OverlayStyle {
-        let defaults = OverlayStyle::default();
+        self.resolve_or(OverlayStyle::default())
+    }
+
+    /// The same, against a different set of defaults — an ephemeris is drawn in
+    /// a palette of its own, because it is the one layer that is never on the
+    /// ground and has to read against the sky as well as against imagery.
+    fn resolve_or(&self, defaults: OverlayStyle) -> OverlayStyle {
         let color = |hex: &Option<String>, fallback| {
             hex.as_deref()
                 .and_then(|hex| bevy::color::Srgba::hex(hex).ok())
@@ -435,6 +443,305 @@ pub fn refresh_overlay(id: String) {
 #[wasm_bindgen(js_name = setOverlaysEnabled)]
 pub fn set_overlays_enabled(enabled: bool) {
     api::send(GlobeCommand::SetOverlaysEnabled(enabled));
+}
+
+// ---------------------------------------------------------------------------
+// Ephemerides
+// ---------------------------------------------------------------------------
+
+/// The options an ephemeris layer is added with, as a plain JavaScript object.
+///
+/// Exactly one of `url` and `text` says where the OMM JSON comes from, on the
+/// same terms an overlay has: a URL is the globe's to fetch and refetch, and
+/// `text` is a catalogue the embedder already has.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct EphemerisOptions {
+    url: Option<String>,
+    text: Option<String>,
+    label: Option<String>,
+    /// Seconds between refetches. Omit or `null` to fetch once. Floored at five
+    /// minutes — a catalogue is regenerated a few times a day.
+    refresh_seconds: Option<f32>,
+    visible: Option<bool>,
+    /// Catalogue numbers to draw, or omit for everything the document holds,
+    /// down to the budget the state stream reports as `maxTracked`.
+    select: Option<Vec<u64>>,
+    /// Whether orbit arcs are drawn at all.
+    trails: Option<bool>,
+    #[serde(flatten)]
+    trail: TrailOptions,
+    #[serde(flatten)]
+    style: StyleOptions,
+}
+
+/// How far an orbit arc runs either side of now, and how finely it is drawn.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct TrailOptions {
+    /// How far ahead the arc runs, in orbits. `0.5` is half a revolution.
+    leading_orbits: Option<f32>,
+    /// How far behind it runs, in orbits.
+    trailing_orbits: Option<f32>,
+    /// Samples per whole orbit. A ceiling: a layer with many trails divides one
+    /// budget among them, so this is what a lightly loaded layer gets.
+    trail_samples: Option<u32>,
+}
+
+impl TrailOptions {
+    fn resolve(&self) -> TrailWindow {
+        let defaults = TrailWindow::default();
+        TrailWindow {
+            leading_orbits: self.leading_orbits.unwrap_or(defaults.leading_orbits),
+            trailing_orbits: self.trailing_orbits.unwrap_or(defaults.trailing_orbits),
+            samples: self.trail_samples.unwrap_or(defaults.samples),
+        }
+    }
+}
+
+/// Puts an ephemeris layer up, or replaces the one already under this id.
+///
+/// The document is [OMM] JSON — an array of orbit mean-element records, which
+/// is what every current catalogue publishes and the successor to the two-line
+/// element set. Each record becomes an SGP4 propagator; the globe evaluates
+/// them against its own simulated clock, so the constellation obeys
+/// `setTimeScale`, `setSunPaused` and `setClock` like everything else.
+///
+/// ```js
+/// addEphemeris("stations", {
+///   url: "https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=json",
+///   label: "Crewed stations",
+/// });
+/// // One satellite, a whole orbit of arc either side of it, drawn finely:
+/// addEphemeris("iss", { url, select: [25544], leadingOrbits: 1, trailingOrbits: 1,
+///                       trailSamples: 512 });
+/// // A catalogue the app already has, markers only:
+/// addEphemeris("mine", { text: await file.text(), trails: false });
+/// ```
+///
+/// Switch to the ECI frame to see an orbit as the closed ellipse it is; in
+/// ECEF the same arc is the corkscrew a ground track is, because the Earth
+/// turns underneath it.
+///
+/// Returns whether the options could be read. A layer that fails to *load*
+/// still returns `true` — the failure arrives on the state stream, with the
+/// reason.
+///
+/// [OMM]: https://public.ccsds.org/Pubs/502x0b3e1.pdf
+#[wasm_bindgen(js_name = addEphemeris)]
+pub fn add_ephemeris(id: String, options: JsValue) -> bool {
+    let Some(options) = from_js::<EphemerisOptions>(&options) else {
+        return false;
+    };
+    let source = match (options.url, options.text) {
+        (Some(url), _) => OverlaySource::Url(url),
+        (None, Some(text)) => OverlaySource::Text(text),
+        (None, None) => return false,
+    };
+
+    api::send(GlobeCommand::AddEphemeris(EphemerisRequest {
+        id,
+        label: options.label.unwrap_or_default(),
+        source,
+        style: options.style.resolve_or(crate::api::ephemeris_style()),
+        trail: options.trail.resolve(),
+        trails: options.trails.unwrap_or(true),
+        selection: options.select.map_or(Selection::All, Selection::only),
+        refresh_seconds: options.refresh_seconds,
+        visible: options.visible.unwrap_or(true),
+    }));
+    true
+}
+
+#[wasm_bindgen(js_name = removeEphemeris)]
+pub fn remove_ephemeris(id: String) {
+    api::send(GlobeCommand::RemoveEphemeris(id));
+}
+
+#[wasm_bindgen(js_name = setEphemerisVisible)]
+pub fn set_ephemeris_visible(id: String, visible: bool) {
+    api::send(GlobeCommand::SetEphemerisVisible { id, visible });
+}
+
+/// Recolours a layer without repropagating it. Takes the same colour and size
+/// fields an overlay does; `fillColor` is ignored, because an ephemeris has no
+/// rings in it.
+#[wasm_bindgen(js_name = setEphemerisStyle)]
+pub fn set_ephemeris_style(id: String, style: JsValue) -> bool {
+    let Some(style) = from_js::<StyleOptions>(&style) else {
+        return false;
+    };
+    api::send(GlobeCommand::SetEphemerisStyle {
+        id,
+        style: style.resolve_or(crate::api::ephemeris_style()),
+    });
+    true
+}
+
+/// Replaces which objects the layer draws, by catalogue number.
+///
+/// Pass `null` for everything the document holds, down to the budget. A
+/// selection larger than that budget is drawn down to it in catalogue order,
+/// and the layer reports `tracked` alongside `objects` so an interface can say
+/// so.
+#[wasm_bindgen(js_name = setEphemerisSelection)]
+pub fn set_ephemeris_selection(id: String, norad_ids: Option<Vec<u32>>) {
+    api::send(GlobeCommand::SetEphemerisSelection {
+        id,
+        // `u32` at the boundary, `u64` behind it: a catalogue number is nine
+        // digits at most, and taking it as a `u64` would make every one of them
+        // a `BigInt` in JavaScript for no reason.
+        selection: norad_ids.map_or(Selection::All, |ids| {
+            Selection::only(ids.into_iter().map(u64::from))
+        }),
+    });
+}
+
+/// Draws one object, or stops drawing it. `noradId` is what
+/// `ephemerisObjects(id)` lists.
+#[wasm_bindgen(js_name = selectSatellite)]
+pub fn select_satellite(id: String, norad_id: u32, selected: bool) {
+    api::send(GlobeCommand::SelectSatellite {
+        id,
+        norad_id: u64::from(norad_id),
+        selected,
+    });
+}
+
+/// Draws one object's orbit arc, or stops drawing it.
+#[wasm_bindgen(js_name = setSatelliteTrail)]
+pub fn set_satellite_trail(id: String, norad_id: u32, trail: bool) {
+    api::send(GlobeCommand::SetSatelliteTrail {
+        id,
+        norad_id: u64::from(norad_id),
+        trail,
+    });
+}
+
+/// Whether the layer draws orbit arcs at all. Off, the arcs it has are hidden
+/// rather than discarded, so switching back is instant.
+#[wasm_bindgen(js_name = setEphemerisTrails)]
+pub fn set_ephemeris_trails(id: String, trails: bool) {
+    api::send(GlobeCommand::SetEphemerisTrails { id, trails });
+}
+
+/// How far the arcs run either side of now, and how finely. Takes
+/// `leadingOrbits`, `trailingOrbits` and `trailSamples`; anything left out goes
+/// back to its default.
+#[wasm_bindgen(js_name = setEphemerisTrail)]
+pub fn set_ephemeris_trail(id: String, trail: JsValue) -> bool {
+    let Some(trail) = from_js::<TrailOptions>(&trail) else {
+        return false;
+    };
+    api::send(GlobeCommand::SetEphemerisTrail {
+        id,
+        trail: trail.resolve(),
+    });
+    true
+}
+
+#[wasm_bindgen(js_name = setEphemerisRefresh)]
+pub fn set_ephemeris_refresh(id: String, seconds: Option<f32>) {
+    api::send(GlobeCommand::SetEphemerisRefresh { id, seconds });
+}
+
+/// Refetches the catalogue now, whatever the period says.
+#[wasm_bindgen(js_name = refreshEphemeris)]
+pub fn refresh_ephemeris(id: String) {
+    api::send(GlobeCommand::RefreshEphemeris(id));
+}
+
+/// Whether ephemerides are drawn at all. Off, every layer stays loaded and
+/// stops being propagated — which is where the cost of one goes.
+#[wasm_bindgen(js_name = setEphemeridesEnabled)]
+pub fn set_ephemerides_enabled(enabled: bool) {
+    api::send(GlobeCommand::SetEphemeridesEnabled(enabled));
+}
+
+/// Lists what one ephemeris layer holds, with what is drawn and what is
+/// trailed.
+///
+/// ```js
+/// ephemerisObjects("stations");
+/// // [{noradId, name, internationalDesignator, epochUnixSeconds,
+/// //   periodMinutes, inclinationDeg, eccentricity, selected, trail}, ...]
+/// ```
+///
+/// Pulled rather than streamed: a catalogue can be twelve thousand rows and the
+/// state snapshot goes out ten times a second. What the stream carries is the
+/// layer's `revision`, which changes whenever this list would — a catalogue
+/// landing, a selection moving — so an interface pulls again when it does.
+///
+/// `epochUnixSeconds` is on the same clock as `sun.unixSeconds`, so subtracting
+/// the two says how stale the elements are; SGP4 is a fit around its epoch and
+/// drifts roughly a kilometre a day away from it in low Earth orbit.
+///
+/// Returns `null` for a layer that is not up, or has not loaded yet.
+#[wasm_bindgen(js_name = ephemerisObjects)]
+pub fn ephemeris_objects(id: &str) -> JsValue {
+    let Some(published) = crate::ephemeris::catalogue_of(id) else {
+        return JsValue::NULL;
+    };
+    to_js(&crate::ephemeris::describe_objects(&published))
+}
+
+/// An ephemeris layer's drawn geometry as typed arrays viewing the module's own
+/// memory, exactly as [`overlay_geometry`] hands out an overlay's.
+///
+/// ```js
+/// { points: {coords, features}, lines: {coords, offsets, features} }
+/// ```
+///
+/// `points` is where every drawn object is at the moment on the globe's clock;
+/// `lines` is the orbit arcs. A shape's `features` entry indexes the layer's own
+/// feature list, and each feature's id is the object's catalogue number as a
+/// string — so `ephemerisObjects` is how a coordinate here is given a name.
+///
+/// **The coordinates are in whichever frame the scene is drawn in.** In ECEF
+/// they are the ordinary latitude and longitude under the satellite; in ECI the
+/// second component is a right ascension rather than a longitude. Height is
+/// metres above a sphere of mean Earth radius — geocentric, not geodetic.
+///
+/// The same rule as `overlayGeometry` applies and applies harder: these buffers
+/// are rebuilt *every frame*, so read them synchronously and `slice()` anything
+/// worth keeping.
+///
+/// Returns `null` for a layer that is not up, or has not drawn yet.
+#[wasm_bindgen(js_name = ephemerisGeometry)]
+pub fn ephemeris_geometry(id: &str) -> JsValue {
+    let Some(geometry) = crate::ephemeris::geometry_of(id) else {
+        return JsValue::NULL;
+    };
+
+    // SAFETY: as `overlay_geometry` — every view is built from a slice of
+    // `geometry`, which the `Arc` holds alive for the whole of this function,
+    // and nothing allocates between building the views and returning them.
+    let points = object(&[
+        ("coords", unsafe {
+            view_f64(geometry.positions.point_coords())
+        }),
+        ("features", unsafe {
+            view_u32(geometry.positions.point_owners())
+        }),
+    ]);
+    let lines = object(&[
+        ("coords", unsafe { view_f64(geometry.trails.line_coords()) }),
+        ("offsets", unsafe {
+            view_i32(geometry.trails.line_offsets())
+        }),
+        ("features", unsafe {
+            view_u32(geometry.trails.line_owners())
+        }),
+    ]);
+
+    object(&[
+        (
+            "features",
+            JsValue::from(geometry.positions.feature_count() as u32),
+        ),
+        ("points", points),
+        ("lines", lines),
+    ])
 }
 
 // ---------------------------------------------------------------------------

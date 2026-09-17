@@ -33,7 +33,10 @@ interface, and the reference app is there to show what that takes.
   every four minutes; the sun position comes from a low-precision solar model
   (declination plus hour angle), accurate to about a degree.
 - **Two reference frames.** ECEF, where the ground stands still, and ECI, where
-  the stars do and the Earth turns underneath at the sidereal rate.
+  the stars do and the Earth turns underneath at the sidereal rate. Satellite
+  tracks are drawn in whichever is active — a closed ellipse in ECI, and the
+  corkscrew a ground track is in ECEF, because the Earth turned underneath it
+  while the satellite went round.
 - **Altitude-aware navigation.** Drag sensitivity scales with height, so a drag
   sweeps continents from far out and nudges streets from low orbit. Ctrl + drag
   swings the camera around whatever it is looking at — compass heading and a
@@ -67,13 +70,23 @@ interface, and the reference app is there to show what that takes.
 - **Extrusion.** A layer can wall its rings down to the ground, so a footprint
   at a height is drawn as a solid standing on the surface rather than a lid
   hanging over it.
+- **Satellites.** An ephemeris layer from an [OMM](https://public.ccsds.org/Pubs/502x0b3e1.pdf)
+  catalogue — orbit mean elements, the successor to the two-line element set —
+  propagated with SGP4 against the globe's own simulated clock and drawn as a
+  marker per object with a leading and trailing arc of orbit through it. Pause
+  the clock and the constellation stops; run a day every four minutes and it
+  sweeps. Which objects are drawn and which are trailed is chosen per object,
+  and the reference app wires up Celestrak's keyless catalogue: the crewed
+  stations, GPS, the geostationary ring, the Molniya ellipses and a full
+  Starlink shell.
 - **Pickable features.** The cursor hit-tests the overlay geometry: what it is
   over is haloed on the globe and its properties are listed in the app, and a
   click keeps one selected.
 - **A live readout.** Latitude and longitude under the cursor, camera altitude in
   kilometres, the subsolar point, and what the tile streamer is doing.
-- **GeoArrow all the way down.** Every vector coordinate — from a GeoJSON feed
-  or from a vector tile — lives in [GeoArrow](https://geoarrow.org) arrays built
+- **GeoArrow all the way down.** Every vector coordinate — from a GeoJSON feed,
+  from a vector tile, or computed a frame at a time out of an orbit — lives in
+  [GeoArrow](https://geoarrow.org) arrays built
   with the [`geoarrow`](https://github.com/geoarrow/geoarrow-rs) crates: flat,
   contiguous `f64` buffers rather than a tree of `Vec`s. Nothing is narrowed
   until a vertex reaches the GPU, so the full precision of the source survives
@@ -134,6 +147,14 @@ no build step at all. The only thing it builds is the globe.
   `Content-Encoding: gzip` regardless is reported as such rather than drawn.
 - Pick vector tile features the way overlay features are picked, which needs an
   index that can be built per tile rather than per document.
+- Pick satellites. The ephemeris geometry is in the same store the hit test
+  already reads, but its index would have to be rebuilt every frame rather than
+  once per document, which is a different shape of problem — a broad-phase over
+  moving points rather than a static tree.
+- Propagate the ephemeris off the schedule. It is the one layer whose geometry
+  is computed rather than fetched, and the budgets in `ephemeris.rs` exist
+  because it is computed on the main thread; a worker, or Bevy's task pool, would
+  turn those budgets from a ceiling into a preference.
 - Add a bathymetry/elevation map for a normal-mapped surface and real terrain
   relief.
 - Pick against the drawn geometry rather than the ground under it, so a marker
@@ -153,5 +174,7 @@ Base Earth imagery: [NASA Visible Earth](https://visibleearth.nasa.gov) Blue
 Marble (public domain). Streamed layers: [NASA
 GIBS](https://nasa-gibs.github.io/gibs-api-docs/). Vector tiles:
 [MapLibre demo tiles](https://demotiles.maplibre.org) and
-[OpenStreetMap](https://www.openstreetmap.org/copyright) (ODbL). Everything else
-is MIT OR Apache-2.0.
+[OpenStreetMap](https://www.openstreetmap.org/copyright) (ODbL). Orbital
+elements: [Celestrak](https://celestrak.org), from USSPACECOM's public
+catalogue. Propagation: the [`sgp4`](https://github.com/neuromorphicsystems/sgp4)
+crate (MIT). Everything else is MIT OR Apache-2.0.

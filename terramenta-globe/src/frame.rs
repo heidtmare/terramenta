@@ -210,10 +210,23 @@ pub(crate) fn sync_earth_rotation(sun: Res<Sun>, mut frame: ResMut<ReferenceFram
 
 /// Greenwich mean sidereal time as an angle in radians.
 fn sidereal_angle(unix_seconds: f64) -> f32 {
+    sidereal_radians(unix_seconds) as f32
+}
+
+/// The same angle, unnarrowed.
+///
+/// This is the one number that relates an Earth-fixed coordinate to an inertial
+/// one, so anything that *computes* in the inertial frame and has to land on the
+/// ground needs it at the precision it was worked out at — see
+/// [`crate::ephemeris`], which propagates orbits in TEME and turns the result
+/// into the latitude and longitude the globe draws. Narrowing it here would put
+/// about a metre of jitter under every satellite for no reason: the drawn
+/// vertex is `f32` either way, but the arithmetic in between does not have to be.
+pub(crate) fn sidereal_radians(unix_seconds: f64) -> f64 {
     let days_since_j2000 = (unix_seconds - J2000_UNIX_SECONDS) / SECONDS_PER_DAY;
     let degrees =
         (SIDEREAL_EPOCH_DEGREES + SIDEREAL_DEGREES_PER_DAY * days_since_j2000).rem_euclid(360.0);
-    (degrees as f32).to_radians()
+    degrees.to_radians()
 }
 
 #[cfg(test)]
