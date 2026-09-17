@@ -77,6 +77,31 @@ make.
 Both switches are on every layer row, so the tour can be extruded and the cube
 flattened to see what each one is doing.
 
+[`data/simplestyle-examples.geojson`](data/simplestyle-examples.geojson) is the third
+sample, and the only one that has an opinion about how it looks. A GeoJSON
+document may style its own features in the members of
+[simplestyle-spec 1.1.0][simplestyle] — `marker-size`, `marker-color`, `stroke`,
+`stroke-width`, `fill`, `fill-opacity` and the rest — and this one is a board of
+examples laid out over empty ocean in the South Atlantic, each labelled with
+the member it is demonstrating: three marker sizes, a line given a colour and a
+width, a line given nothing but an opacity, three rings filled three different
+ways, and a line whose styling is deliberately misspelt to show that a member
+that cannot be read is dropped on its own rather than taken as an error.
+
+Scattered through it are controls that say nothing about themselves. **Change
+the layer's colour from the panel** and only those move: a member overrides
+exactly the thing it names, so what the document did not ask about is still the
+interface's to choose. The row's **use the file's own colours** switch — which
+only appears for a document that styles something — takes the whole layer back.
+
+Two of the members the globe reads it cannot draw. `title` and `description`
+need a label engine, and `marker-symbol` needs an icon atlas; there is neither
+here. They go out with the feature instead, which is why clicking anything on
+this layer titles the readout with the name the *document* chose rather than the
+layer's.
+
+[simplestyle]: https://github.com/mapbox/simplestyle-spec/tree/master/1.1.0
+
 The second is live: the USGS feed of [earthquakes in the past hour][usgs],
 refetched every minute, which is the half a static document cannot show. The
 feeds in [`feeds.js`](src/feeds.js) are all USGS, chosen as much because they
@@ -165,6 +190,7 @@ index.html          Canvas, overlay, loading state
 data/               Documents served beside the page
   geometry-tour.geojson   One feature per GeoJSON geometry, up at boot
   extruded-cube.geojson   A ring at a height, walled to the ground
+  simplestyle-examples.geojson  A document that styles itself, member by member
 styles/app.css      The whole look
 src/
   main.js           Boot: build the interface, start the globe, join the two

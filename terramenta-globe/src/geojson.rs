@@ -635,6 +635,31 @@ mod tests {
     }
 
     #[test]
+    fn a_document_of_titles_alone_is_not_a_document_that_paints() {
+        // The USGS feeds are exactly this: every feature has a `title`, and
+        // none of them says a word about colour. The titles are read and go out
+        // with a pick; the layer is still drawn entirely in its own colours,
+        // and nothing about it counts as styled.
+        let parsed = parse(
+            r#"{"type": "FeatureCollection", "features": [
+                {"type": "Feature", "properties": {"title": "M 4.2 - 10 km SE of Ridgecrest"},
+                 "geometry": {"type": "Point", "coordinates": [0, 0]}}
+            ]}"#,
+        )
+        .expect("valid");
+
+        assert!(parsed.has_styles());
+        assert_eq!(
+            parsed.feature_style(0).expect("a style").title.as_deref(),
+            Some("M 4.2 - 10 km SE of Ridgecrest")
+        );
+        // Nothing to draw differently, so no per-vertex paint and no switch
+        // worth offering an interface.
+        assert!(!parsed.styles_paint());
+        assert_eq!(parsed.styled_features(), 0);
+    }
+
+    #[test]
     fn a_document_that_styles_nothing_carries_no_styles_at_all() {
         let parsed = parse(
             r#"{"type": "Feature", "properties": {"mag": 4.2},

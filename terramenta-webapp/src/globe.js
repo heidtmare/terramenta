@@ -216,6 +216,15 @@ export const setOverlayVisible = (id, visible) => required().setOverlayVisible(i
 export const setOverlayStyle = (id, style) => required().setOverlayStyle(id, style);
 
 /**
+ * Whether a layer honours the simplestyle members its own document carries —
+ * `stroke`, `fill`, `marker-size` and the rest. On by default; off draws the
+ * layer in the colours above whatever the document says. The layer is rebuilt
+ * where it stands, without refetching.
+ */
+export const setOverlaySimpleStyle = (id, simpleStyle) =>
+  required().setOverlaySimpleStyle(id, simpleStyle);
+
+/**
  * How a layer reads the third element of its positions: `altitudeMode` of
  * `"relativeToSurface"` or `"clampToSurface"`, `altitudeScale` as metres per
  * unit, and `extrude` to wall its polygons down to the ground. The layer is

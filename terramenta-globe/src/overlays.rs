@@ -403,8 +403,10 @@ impl OverlayStatus {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct OverlayCounts {
     pub features: usize,
-    /// How many of those carried simplestyle members of their own, which is
-    /// what tells an interface why recolouring the layer left some of it alone.
+    /// How many of those paint themselves, which is what tells an interface why
+    /// recolouring the layer left some of it alone. See
+    /// [`FeatureSet::styled_features`] for why it is not every feature that
+    /// carries a simplestyle member.
     pub styled: usize,
     pub points: usize,
     pub lines: usize,
@@ -2213,10 +2215,14 @@ pub struct OverlayInfo {
     /// How long ago the document on screen was asked for.
     pub age_seconds: f32,
     pub features: usize,
-    /// How many of those styled themselves, in the members of
+    /// How many of those paint themselves, in the members of
     /// simplestyle-spec 1.1.0. Reported so an interface can say why a colour it
     /// chose did not reach the whole layer — and offer `simpleStyle: false`,
     /// which is what makes it.
+    ///
+    /// Features that *paint*, not features that carry a member: a feed that
+    /// gives every feature a `title` and nothing else is drawn entirely in the
+    /// layer's colours, and counts none of them.
     pub styled_features: usize,
     pub points: usize,
     pub lines: usize,

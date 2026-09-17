@@ -1,8 +1,9 @@
 /**
  * Something to overlay.
  *
- * Two kinds. One is the sample shipped beside this app, which exists to show
- * every geometry a GeoJSON document can hold; the others are live USGS
+ * Two kinds. Three are samples shipped beside this app — every geometry a
+ * GeoJSON document can hold, a ring extruded into a box, and a document that
+ * styles its own features the simplestyle way; the others are live USGS
  * earthquake feeds, which are as good a demonstration as they are convenient —
  * they are public, they send `Access-Control-Allow-Origin: *`, so the browser
  * will let the globe fetch them, and they change while you watch.
@@ -56,6 +57,29 @@ export const CUBE = {
   },
 };
 
+/**
+ * A board of examples, each labelled with the simplestyle member it is
+ * demonstrating.
+ *
+ * Its own layer for the same reason the cube has one: what it is showing is a
+ * per-layer setting seen from the other side. The tour next door says nothing
+ * about how it wants to look, so it comes out in whatever colour the panel
+ * gives it; this one says a great deal, and comes out in its own — except for
+ * the controls dotted through it, which are there to be compared against the
+ * rest when the layer's colour is changed.
+ *
+ * Laid out over empty ocean on purpose. A swatch card is not a place, and the
+ * colours are easier to judge against one background than against five.
+ */
+export const STYLED = {
+  id: "simplestyle-examples",
+  label: "simplestyle · a document with opinions",
+  get url() {
+    return new URL("data/simplestyle-examples.geojson", document.baseURI).href;
+  },
+  refreshSeconds: null,
+};
+
 export const FEEDS = [
   {
     id: "quakes-hour",
@@ -83,4 +107,4 @@ export const FEEDS = [
 export const DEFAULT_FEED = FEEDS[0];
 
 /** Everything the panel offers as a button, samples first. */
-export const CATALOGUE = [SAMPLE, CUBE, ...FEEDS];
+export const CATALOGUE = [SAMPLE, CUBE, STYLED, ...FEEDS];

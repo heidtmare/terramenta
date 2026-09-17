@@ -178,9 +178,15 @@ impl FeatureSet {
         self.styles.iter().any(SimpleStyle::paints)
     }
 
-    /// How many features carried simplestyle members.
+    /// How many features style their own *appearance*.
+    ///
+    /// Features that paint, not features that carry a member: a feed whose
+    /// every feature has a `title` — the USGS earthquake feeds are exactly
+    /// that — carries simplestyle on all of them and is still drawn entirely in
+    /// the layer's colours, so counting those would have an interface offer a
+    /// switch that does nothing. The titles reach a pick either way.
     pub fn styled_features(&self) -> usize {
-        self.styles.iter().filter(|style| !style.is_empty()).count()
+        self.styles.iter().filter(|style| style.paints()).count()
     }
 
     /// One feature's simplestyle members, if it carried any.

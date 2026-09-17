@@ -1,0 +1,229 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "id": "marker-small",
+      "properties": {
+        "title": "Small marker",
+        "description": "marker-size: small",
+        "shows": "The first of the three sizes simplestyle allows. The layer's own marker size is ignored for this feature and for the two beside it.",
+        "marker-size": "small",
+        "marker-color": "#9df08a"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [-36.0, -24.0]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "marker-medium",
+      "properties": {
+        "title": "Medium marker",
+        "description": "marker-size: medium",
+        "shows": "The middle size, which is deliberately the globe's own default marker diameter — a document that asks for medium looks like a document that asked for nothing.",
+        "marker-size": "medium",
+        "marker-color": "#7fd4ff"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [-28.0, -24.0]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "marker-large",
+      "properties": {
+        "title": "Large marker",
+        "description": "marker-size: large",
+        "shows": "The largest of the three. Its pick target grows with it: the tolerance is worked out per feature, so a large marker is grabbable everywhere it is drawn and a small one is not grabbable beyond itself.",
+        "marker-size": "large",
+        "marker-color": "#ff7aa2"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [-20.0, -24.0]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "marker-plain",
+      "properties": {
+        "title": "Words, not paint",
+        "description": "This sentence is the description member. Together with the title above it and the marker-symbol beside it, these are the three members the globe reads and cannot draw — there is no label engine here and no icon atlas. They go out with the feature when it is picked, which is why the readout is titled with the name this document chose rather than the layer's.",
+        "shows": "A feature that carries every member the globe hands on and none that it paints, so it is drawn in the layer's colour at the layer's size — the control for the three markers beside it.",
+        "marker-symbol": "harbor"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [-12.0, -24.0]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "stroke-wide",
+      "properties": {
+        "title": "Colour and width",
+        "description": "stroke: #ff4136 · stroke-width: 8",
+        "shows": "Both stroke members at once. The width is in device pixels, exactly as the layer's own line width is, so this line stays eight pixels across from orbit and from a low pass.",
+        "stroke": "#ff4136",
+        "stroke-width": 8
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [-38.0, -32.0],
+          [-30.0, -32.0]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "stroke-faded",
+      "properties": {
+        "title": "Opacity alone",
+        "description": "stroke-opacity: 0.3",
+        "shows": "A member stands in only for the thing it names. This line said nothing about colour, so it keeps the layer's — faded to a third of it. Change the layer's colour and this line follows; the red one above it does not.",
+        "stroke-opacity": 0.3
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [-26.0, -32.0],
+          [-18.0, -32.0]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "stroke-plain",
+      "properties": {
+        "title": "Untouched",
+        "description": "no style members at all",
+        "shows": "The control. simplestyle's own defaults — a #555555 stroke at full opacity, two pixels wide — are not applied: a feature that says nothing about how it looks is drawn in the layer's colours, which is what makes the two kinds of styling compose.",
+        "note": "Recolour this layer from the panel and watch which of these three lines move."
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [-14.0, -32.0],
+          [-6.0, -32.0]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "fill-full",
+      "properties": {
+        "title": "Fill and outline",
+        "description": "fill: #b10dc9 · fill-opacity: 0.85 · stroke: #ffdc00 · stroke-width: 6",
+        "shows": "A ring painted twice over: the fill members give the interior, the stroke members the outline around it. Two different colours on one feature, and still one draw call for every fill in the document and one for every outline.",
+        "fill": "#b10dc9",
+        "fill-opacity": 0.85,
+        "stroke": "#ffdc00",
+        "stroke-width": 6
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-38.0, -47.0],
+            [-31.0, -47.0],
+            [-31.0, -41.0],
+            [-38.0, -41.0],
+            [-38.0, -47.0]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "fill-short-hex",
+      "properties": {
+        "title": "Three digits",
+        "description": "fill: #0f0",
+        "shows": "The short spelling of a colour, which simplestyle allows and which means #00ff00 — each digit doubled rather than shifted, so #fff is white and not fifteen sixteenths of it. The hash is optional too; the specification's own defaults are written both ways.",
+        "note": "No fill-opacity here, so the layer's own transparency stands and this ring reads as the inside of its outline rather than as a solid.",
+        "fill": "#0f0"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-29.0, -47.0],
+            [-22.0, -47.0],
+            [-22.0, -41.0],
+            [-29.0, -41.0],
+            [-29.0, -47.0]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "fill-off",
+      "properties": {
+        "title": "Outline only",
+        "description": "fill-opacity: 0 · stroke: #ffffff · stroke-width: 3",
+        "shows": "A fill turned off without taking the outline with it. The ring is still a shape as far as the hit test is concerned — the outline counts as much as the interior, so this is grabbable by the part of it that was actually drawn.",
+        "fill-opacity": 0,
+        "stroke": "#ffffff",
+        "stroke-width": 3
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-20.0, -47.0],
+            [-13.0, -47.0],
+            [-13.0, -41.0],
+            [-20.0, -41.0],
+            [-20.0, -47.0]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "fill-plain",
+      "properties": {
+        "title": "Untouched again",
+        "description": "no style members at all",
+        "shows": "The control for the three rings beside it, drawn in the layer's fill and the layer's outline. Switch the panel's own-colours toggle off and the other three come back to join it.",
+        "geometry_note": "A hole would be styled with the ring that holds it: simplestyle is per feature, and a polygon's holes belong to the polygon."
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-11.0, -47.0],
+            [-4.0, -47.0],
+            [-4.0, -41.0],
+            [-11.0, -41.0],
+            [-11.0, -47.0]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "unreadable",
+      "properties": {
+        "title": "A typo is not fatal",
+        "description": "stroke: rebeccapurple · stroke-width: wide · marker-size: enormous",
+        "shows": "None of these three can be read: a named CSS colour is not a simplestyle colour, a width is a number, and there are only three marker sizes. Each member is dropped on its own and the layer's value stands — a document does not lose its geometry over a typo in its styling. This line is drawn in the layer's colour at the layer's width.",
+        "stroke": "rebeccapurple",
+        "stroke-width": "wide",
+        "marker-size": "enormous"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [-38.0, -36.0],
+          [-6.0, -36.0]
+        ]
+      }
+    }
+  ]
+}

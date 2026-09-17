@@ -374,6 +374,13 @@ body.panel-collapsed #panel {
   cursor: pointer;
 }
 
+/* `display: flex` above beats the browser's own `[hidden] { display: none }`,
+   so a toggle that is only offered sometimes — the one for a document that
+   styles itself — needs this to stay hidden when it is not. */
+.toggle[hidden] {
+  display: none;
+}
+
 .toggle input {
   accent-color: var(--accent);
   margin: 0;

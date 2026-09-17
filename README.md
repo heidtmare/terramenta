@@ -63,7 +63,9 @@ interface, and the reference app is there to show what that takes.
   starts with three: a bundled sample holding one feature per GeoJSON geometry
   type — including a stepped airspace stacked out of rings at different heights
   — a second holding a cube, and the USGS feed of earthquakes in the past hour,
-  refetched every minute.
+  refetched every minute. A third sample, one button away, is a board of
+  examples showing what each simplestyle member does and what happens to the
+  features that use none of them.
 - **Placement at altitude.** A position's optional third element is drawn:
   markers stand off the surface, and a line climbs evenly between the heights of
   its corners, so a flight path or a balloon track is where it says it is. Per
