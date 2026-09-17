@@ -29,6 +29,7 @@ mod mvt;
 mod omm;
 mod overlays;
 mod picking;
+mod placemark;
 mod sun;
 mod tessellate;
 mod tiles;
@@ -50,6 +51,7 @@ use globe::GlobePlugin;
 use hud::HudPlugin;
 use imagery::{ImageFormat, ImageryLayer, ImageryPlugin};
 use overlays::{OverlayPlugin, OverlayRequest, OverlaySourcePlugin};
+use placemark::PlacemarkPlugin;
 use sun::SunPlugin;
 use tiles::TilePlugin;
 use vector_tiles::{VectorTileLayer, VectorTilePlugin, VectorTileSourcePlugin};
@@ -171,6 +173,7 @@ pub fn app(config: GlobeConfig) -> App {
             VectorTilePlugin,
             OverlayPlugin,
             EphemerisPlugin,
+            PlacemarkPlugin,
             HudPlugin,
         ));
 

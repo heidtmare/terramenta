@@ -707,6 +707,7 @@ src/
   picking.rs   Which feature is under the cursor
   overlays.rs  Overlay layers: sources, refresh, meshes and the `geojson://` source
   ephemeris.rs Satellite layers: the `omm://` source, propagation, markers and arcs
+  placemark.rs Icons pinned to a coordinate — the subsolar point
   hud.rs       The built-in readout, formatted from the state snapshot
 assets/shaders/
   globe.wgsl        Day/night, city lights, ocean specular, clouds, limb haze
@@ -714,6 +715,9 @@ assets/shaders/
   starfield.wgsl    Procedural stars and galactic band
   tile.wgsl         A single streamed imagery tile
   vector.wgsl       Overlay markers, lines and fills, sized in pixels
+  icon.wgsl         A placemark's icon, sized in pixels
+assets/icons/
+  sun32.png         The subsolar placemark
 scripts/
   fetch-assets.sh  Downloads the NASA imagery
   build-wasm.sh    Builds the WebAssembly module and its assets
