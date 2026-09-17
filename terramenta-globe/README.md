@@ -57,12 +57,15 @@ await init();
 
 // The catalogue answers before the globe exists, so an interface can be built
 // from it rather than from a hard-coded copy.
-globe.layers();  // [{index, label, protocol, maxLevel, tileSize, format}, ...]
-globe.limits();  // {minAltitudeKm, maxAltitudeKm, minTimeScale, maxTimeScale}
+globe.layers();        // [{index, label, protocol, maxLevel, tileSize, format}, ...]
+globe.vectorLayers();  // [{index, label, maxLevel, sourceLayers}, ...]
+globe.limits();        // {minAltitudeKm, maxAltitudeKm, minTimeScale, maxTimeScale,
+                       //  maxVectorTileLatitude}
 
 globe.onState((state) => {
   // {camera: {center, altitudeKm}, frame: {mode, label}, sun, imagery,
-  //  overlays, hud, cursor, keyboard} — see `GlobeState` in src/api.rs
+  //  vectorTiles, overlays, hud, cursor, keyboard} — see `GlobeState` in
+  // src/api.rs
 });
 
 globe.addOverlay("quakes", {
@@ -88,13 +91,15 @@ to tell that apart from a real failure.
 
 | | |
 | --- | --- |
-| `layers()` `limits()` | The imagery presets and the ranges the controls accept |
+| `layers()` `vectorLayers()` `limits()` | The imagery and vector tile presets, and the ranges the controls accept |
 | `lookAt(lat, lon, altitudeKm?)` | Look straight down at a coordinate |
 | `setAltitude(km)` `zoomBy(exp)` `orbitBy(yawDeg, pitchDeg)` `resetView()` | Move the camera |
 | `setFrame("ecef" \| "eci")` `toggleFrame()` | Which frame the scene is drawn in |
 | `setSunPaused(bool)` `setTimeScale(n)` `setClock(unixSeconds)` `snapClockToNow()` | The simulated clock |
 | `setSunShaded(bool)` | Terminator, or flat full daylight |
 | `setLayer(i)` `nextLayer()` `previousLayer()` `setImageryEnabled(bool)` | Streamed imagery |
+| `setVectorTileLayer(i)` `nextVectorTileLayer()` `previousVectorTileLayer()` `setVectorTilesEnabled(bool)` | Streamed vector tiles |
+| `setVectorTileStyle(style)` | What they are drawn in |
 | `addOverlay(id, options)` `removeOverlay(id)` | GeoJSON overlays |
 | `setOverlayVisible(id, bool)` `setOverlayStyle(id, style)` `setOverlaysEnabled(bool)` | How an overlay is drawn |
 | `setOverlayAltitude(id, altitude)` | How high it is drawn |
@@ -109,6 +114,128 @@ A native embedder uses the same queue through `api::send`, and reads state
 straight out of the `World` from the `LatestState` resource rather than through
 a listener. `app(GlobeConfig { .. })` builds the `App` without running it, for a
 host that wants to add plugins of its own first.
+
+## Streaming vector tiles
+
+[Mapbox Vector Tiles](https://github.com/mapbox/vector-tile-spec) from any
+`{z}/{x}/{y}` service, drawn on the globe as lines, rings and markers. It is the
+imagery streamer's idea applied to geometry: a quadtree walked from the camera
+each frame, tiles fetched through an asset source, coarser ancestors standing in
+for whatever has not arrived. What is in the tile is geometry rather than
+pixels, so instead of a texture it produces a vertex buffer.
+
+```js
+globe.vectorLayers();              // the presets, with their source layers
+globe.setVectorTileLayer(1);       // OpenStreetMap Shortbread
+globe.setVectorTileStyle({ lineColor: "#8fd6ff", lineWidthPx: 1.2 });
+globe.setVectorTilesEnabled(false);
+```
+
+Two keyless sources are wired up in `vector_tile_layers()` in
+[`lib.rs`](src/lib.rs) — MapLibre's demo country boundaries, and OpenStreetMap's
+own Shortbread tiles — because almost every hosted vector tile service wants a
+token, and a globe that draws nothing until one is pasted in looks broken. An
+embedder with a key of its own builds the `App` itself and passes its own
+presets. A layer is a URL template, a depth, a list of source layers and a
+style:
+
+```rust
+VectorTileLayer::new("My basemap", "https://example.org/tiles/{z}/{x}/{y}.mvt")
+    .with_max_level(12)
+    .with_source_layers(["water", "boundary"])
+```
+
+### Decoding
+
+The protobuf is read by [`geozero`](https://github.com/georust/geozero), whose
+MVT reader walks a source layer and calls back for every ring, strand and point.
+[`mvt.rs`](src/mvt.rs) is what sits either side of that walk: it collects the
+geometry, clips it, unprojects it, and hands back the same flattened lists of
+points, lines and rings a GeoJSON document collapses into — which is why
+[`vector_tiles.rs`](src/vector_tiles.rs) can build its meshes with the overlay
+mesh builders unchanged, and why a vector tile is drawn by the same
+[`vector.wgsl`](assets/shaders/vector.wgsl) that draws an overlay, in pixels
+rather than in kilometres.
+
+Decoding happens in Bevy's asset pipeline — a task thread natively, a microtask
+in the browser — so the schedule only ever sees a finished tile. Meshing has to
+happen on the schedule, where `Assets<Mesh>` is, so it is rationed to two tiles
+a frame: one zoomed-in city tile can hold several thousand rings, and ear
+clipping all of them at once is a visible hitch.
+
+### The grid, and the projection
+
+Vector tiles are cut in **Web Mercator**, where level `n` is a square `2^n`
+tiles on a side. The imagery here is cut in plate carrée, where level `n` is
+`2^(n+1)` by `2^n`. The two cannot share a `TileGrid`, so the walk in
+`vector_tiles.rs` is its own; `TileId` is shared, because a level with a column
+and a row is a level with a column and a row.
+
+Inside a tile, coordinates are integers running `0..extent` with `y` pointing
+south. `mvt::unproject` takes them back to WGS 84 latitude and longitude, which
+is the coordinate system everything else here speaks. Two things about that are
+worth being exact about:
+
+- **Web Mercator projects geodetic WGS 84 latitudes through spherical Mercator
+  formulas.** That mismatch is the standard's own, and every tile that has ever
+  been cut assumes it, so the inverse here does the same and hands back the
+  geodetic coordinate the tile's data was surveyed in.
+- **Where that coordinate is drawn is a separate question**, and the answer is
+  the sphere everything else is drawn on. Giving vector tiles an ellipsoid of
+  their own would put their lines up to twenty kilometres off the imagery they
+  annotate.
+
+**Nothing above 85.05° is in any tile.** Mercator sends the poles to infinity,
+so the grid stops where the projected world is square — which is why a Mercator
+basemap has no Arctic Ocean. `limits().maxVectorTileLatitude` reports it, so an
+interface can say so rather than leave someone wondering.
+
+### Clipping, and why a ring is clipped twice
+
+Tiles are cut with a buffer, so a road that leaves the tile is carried some way
+past the edge and the neighbouring tile carries the same stretch back the other
+way. Drawn as they arrive, every seam in the world gets two copies of everything
+crossing it — a ladder of darker rungs on alpha-blended lines, a darker frame
+around every fill. So geometry is clipped to the tile's own square first, in
+tile coordinates, where the square is exact.
+
+A ring cannot be clipped once, though, because the two things drawn from it want
+opposite answers. A **fill** wants the ring closed against the tile edge, so the
+piece of Brazil in this tile and the piece in the next meet along the seam with
+no gap and no overlap. An **outline** wants the opposite: the tile edge is not a
+coastline, and closing the ring against it would draw the grid over the planet.
+So every ring is clipped both ways — as a ring for the fills, and as an open
+path for the outline, whose surviving runs are the parts that are really a
+boundary.
+
+### How it is drawn
+
+Fills are **off by default**: a basemap's rings are most of its geometry, and
+filling them would hide the imagery the globe is showing. A fully transparent
+fill is not drawn at all rather than drawn invisibly, which also skips the
+triangulation — the most expensive part of a tile.
+
+Vector tiles sit at the same radius as the overlays, clear of the deepest
+imagery tile, but under them in the transparent pass: a basemap is the thing
+annotations are drawn *on*, so a coastline out of a tile stays beneath the
+earthquakes over it and beneath the halo around the one that is picked.
+
+### Things to get right
+
+- **Gzip.** Many services answer `Content-Encoding: gzip`. A browser unwraps
+  that before the bytes reach the globe, so the web build takes any service; a
+  native build may receive it compressed, and a tile that arrives gzipped is
+  reported as such rather than as a broken protobuf.
+- **Source layers.** A zoom-14 tile holds roads, buildings, land use, water,
+  labels and housenumbers. Drawing all six is a mat of ink, so name the ones you
+  want; the rest are skipped before they are decoded.
+- **Features are drawn, not picked.** A screenful of tiles is tens of thousands
+  of features against an overlay's tens, and the index that makes picking cheap
+  would cost more to build, every time the camera moved, than picking a basemap
+  is worth. Every feature does carry the layer it came from as a `sourceLayer`
+  property, alongside its own, for whoever wants to change that.
+- **CORS**, as ever. The browser needs `Access-Control-Allow-Origin` from the
+  tile host.
 
 ## GeoJSON overlays
 
@@ -350,6 +477,7 @@ for an embedder that would rather bind its own.
 | `I` | Drop the terminator and light the whole globe |
 | `T` | Toggle streamed imagery |
 | `L` / `Shift`+`L` | Next / previous imagery layer |
+| `V` / `Shift`+`V` | Toggle streamed vector tiles / next vector tile source |
 | `H` | Hide the control legend |
 
 ## Layout
@@ -369,6 +497,8 @@ src/
   wms.rs       WMS GetMap request URLs
   wmts.rs      WMTS GetTile request URLs, REST and KVP
   tiles.rs     Tile grids, level-of-detail selection and streaming
+  mvt.rs       Mapbox Vector Tiles: the protobuf, the Web Mercator grid, clipping
+  vector_tiles.rs  Vector tile layers: the `mvt://` source, streaming and meshing
   geojson.rs   The GeoJSON document format, flattened to drawable geometry
   tessellate.rs  Rings to triangles: ear clipping, holes and the antimeridian
   picking.rs   Which feature is under the cursor

@@ -54,6 +54,14 @@ pub fn layers() -> JsValue {
     to_js(&crate::layers())
 }
 
+/// The Mapbox Vector Tile presets the globe offers, in the order they cycle.
+///
+/// Available before [`start`], so an interface can be built before the globe is.
+#[wasm_bindgen(js_name = vectorLayers)]
+pub fn vector_layers() -> JsValue {
+    to_js(&crate::vector_layers())
+}
+
 /// The ranges the controls accept, for an interface building its own inputs.
 #[wasm_bindgen]
 pub fn limits() -> JsValue {
@@ -173,6 +181,58 @@ pub fn previous_layer() {
 #[wasm_bindgen(js_name = setImageryEnabled)]
 pub fn set_imagery_enabled(enabled: bool) {
     api::send(GlobeCommand::SetImageryEnabled(enabled));
+}
+
+// ---------------------------------------------------------------------------
+// Vector tiles
+// ---------------------------------------------------------------------------
+
+/// Whether Mapbox Vector Tiles are streamed at all.
+///
+/// Off, every tile is dropped rather than hidden — a vector tile is cheap to
+/// ask for again and the meshes are not cheap to keep — so switching back
+/// re-walks the view and refetches what it needs.
+#[wasm_bindgen(js_name = setVectorTilesEnabled)]
+pub fn set_vector_tiles_enabled(enabled: bool) {
+    api::send(GlobeCommand::SetVectorTilesEnabled(enabled));
+}
+
+/// Selects a preset by its index in [`vector_layers`], wrapping past the end.
+#[wasm_bindgen(js_name = setVectorTileLayer)]
+pub fn set_vector_tile_layer(index: usize) {
+    api::send(GlobeCommand::SetVectorTileLayer(index));
+}
+
+#[wasm_bindgen(js_name = nextVectorTileLayer)]
+pub fn next_vector_tile_layer() {
+    api::send(GlobeCommand::NextVectorTileLayer);
+}
+
+#[wasm_bindgen(js_name = previousVectorTileLayer)]
+pub fn previous_vector_tile_layer() {
+    api::send(GlobeCommand::PreviousVectorTileLayer);
+}
+
+/// Recolours the vector tile layer. Takes the same colour and size fields
+/// [`add_overlay`] does; anything left out goes back to its default.
+///
+/// ```js
+/// setVectorTileStyle({ lineColor: "#8fd6ff", lineWidthPx: 1.2 });
+/// // Rings filled as well as outlined — off by default, because a basemap's
+/// // fills would hide the imagery under them:
+/// setVectorTileStyle({ fillColor: "#8fd6ff33" });
+/// ```
+///
+/// Unlike an overlay this rebuilds the tiles on screen rather than swapping a
+/// colour on them: a tile's meshes are keyed to the style they were built with,
+/// and a layer whose fill was transparent never built a fill at all.
+#[wasm_bindgen(js_name = setVectorTileStyle)]
+pub fn set_vector_tile_style(style: JsValue) -> bool {
+    let Some(style) = from_js::<StyleOptions>(&style) else {
+        return false;
+    };
+    api::send(GlobeCommand::SetVectorTileStyle(style.resolve()));
+    true
 }
 
 // ---------------------------------------------------------------------------

@@ -36,6 +36,15 @@ const FIELDS = [
           `${state.imagery.visibleTiles} drawn · ${state.imagery.loadingTiles} loading`
         : "—",
   ],
+  ["vectors", (state) => (state.vectorTiles.enabled ? state.vectorTiles.label : "off")],
+  [
+    "vector tiles",
+    (state) =>
+      state.vectorTiles.enabled
+        ? `level ${state.vectorTiles.deepestLevel} of ${state.vectorTiles.maxLevel} · ` +
+          `${state.vectorTiles.visibleTiles} drawn · ${state.vectorTiles.features} features`
+        : "—",
+  ],
 ];
 
 export function mountReadout(root) {

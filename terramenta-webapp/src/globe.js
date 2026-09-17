@@ -80,7 +80,13 @@ function required() {
 /** The imagery presets, in the order they cycle: `{index, label, protocol, maxLevel, tileSize, format}`. */
 export const layers = () => required().layers();
 
-/** The ranges the controls accept: `{minAltitudeKm, maxAltitudeKm, minTimeScale, maxTimeScale}`. */
+/** The vector tile presets, in the order they cycle: `{index, label, maxLevel, sourceLayers}`. */
+export const vectorLayers = () => required().vectorLayers();
+
+/**
+ * The ranges the controls accept: `{minAltitudeKm, maxAltitudeKm, minTimeScale,
+ * maxTimeScale, maxVectorTileLatitude}`.
+ */
 export const limits = () => required().limits();
 
 // --- Camera ----------------------------------------------------------------
@@ -142,6 +148,35 @@ export const previousLayer = () => required().previousLayer();
 
 /** Whether tiles are streamed at all. Off, the globe falls back to its base texture. */
 export const setImageryEnabled = (enabled) => required().setImageryEnabled(enabled);
+
+// --- Vector tiles ----------------------------------------------------------
+
+/**
+ * Whether Mapbox Vector Tiles are streamed at all.
+ *
+ * Off, every tile is dropped rather than hidden — a vector tile is cheap to ask
+ * for again and its meshes are not cheap to keep — so switching back re-walks
+ * the view and refetches what it needs.
+ */
+export const setVectorTilesEnabled = (enabled) => required().setVectorTilesEnabled(enabled);
+
+/** Selects a preset by its index in `vectorLayers()`, wrapping past the end. */
+export const setVectorTileLayer = (index) => required().setVectorTileLayer(index);
+
+export const nextVectorTileLayer = () => required().nextVectorTileLayer();
+
+export const previousVectorTileLayer = () => required().previousVectorTileLayer();
+
+/**
+ * Recolours the vector tile layer. Takes the same style fields an overlay does:
+ * `pointColor`, `pointSizePx`, `lineColor`, `lineWidthPx`, `fillColor`.
+ *
+ * Unlike an overlay this rebuilds the tiles on screen rather than swapping a
+ * colour on them — a tile's meshes are keyed to the style they were built with,
+ * and a layer whose fill was transparent never built a fill at all. Anything
+ * left out returns to its default, so send the whole style each time.
+ */
+export const setVectorTileStyle = (style) => required().setVectorTileStyle(style);
 
 // --- GeoJSON overlays ------------------------------------------------------
 
@@ -246,8 +281,8 @@ export const setKeyboardEnabled = (enabled) => required().setKeyboardEnabled(ena
 /**
  * Registers the callback the globe reports its state to.
  *
- * The snapshot is `{camera, frame, sun, imagery, overlays, hud, cursor,
- * keyboard}`; see
+ * The snapshot is `{camera, frame, sun, imagery, vectorTiles, overlays, hud,
+ * cursor, keyboard}`; see
  * `readout.js` and `panel.js` for what is in each. Only one listener is kept,
  * so this app fans it out itself rather than registering twice.
  */

@@ -119,6 +119,15 @@ const HIGHLIGHT_GROW_PX: f32 = 7.0;
 /// and nearer is drawn last.
 const HIGHLIGHT_BEHIND: f32 = 1.0;
 
+/// How far under the overlays a vector tile's geometry is drawn.
+///
+/// Enough to clear the highlight as well as the overlays themselves, because a
+/// basemap is the thing annotations are drawn *on*: a coastline out of a vector
+/// tile has to sit under the layer of earthquakes over it and under the halo
+/// around the one that is picked. Same radius, so both are the same height
+/// above the imagery — this settles the order, not the placement.
+pub(crate) const VECTOR_TILE_BENEATH: f32 = 4.0;
+
 // ---------------------------------------------------------------------------
 // What an overlay is
 // ---------------------------------------------------------------------------
@@ -712,7 +721,7 @@ pub struct VectorMaterial {
 }
 
 impl VectorMaterial {
-    fn new(mode: VectorMode, color: Srgba, size_px: f32) -> Self {
+    pub(crate) fn new(mode: VectorMode, color: Srgba, size_px: f32) -> Self {
         let linear = bevy::color::LinearRgba::from(color);
         Self {
             depth_bias: mode.depth_bias(),
@@ -732,6 +741,13 @@ impl VectorMaterial {
     /// as a blob over it.
     fn behind(mut self) -> Self {
         self.depth_bias -= HIGHLIGHT_BEHIND;
+        self
+    }
+
+    /// Puts this draw under every overlay — what a vector tile basemap is
+    /// drawn with. See [`VECTOR_TILE_BENEATH`].
+    pub(crate) fn beneath(mut self) -> Self {
+        self.depth_bias -= VECTOR_TILE_BENEATH;
         self
     }
 }
@@ -1491,7 +1507,7 @@ fn radius_of(position: Position, altitude: OverlayAltitude, base: f32, lift: f32
 /// One quad per point, all four corners on the same anchor. The shader spreads
 /// them into a disc facing the camera, and the UV says which corner is which —
 /// which is also what the disc is rounded off with.
-fn marker_mesh(points: &[Shape<Position>], altitude: OverlayAltitude) -> Option<Mesh> {
+pub(crate) fn marker_mesh(points: &[Shape<Position>], altitude: OverlayAltitude) -> Option<Mesh> {
     let mut builder = MeshBuilder::new();
     for point in points {
         let direction = point.geometry.to_direction();
@@ -1511,7 +1527,7 @@ fn marker_mesh(points: &[Shape<Position>], altitude: OverlayAltitude) -> Option<
 
 /// Every line, plus every polygon's rings — so a polygon still reads as a shape
 /// when its fill is transparent, or when it was too big to triangulate.
-fn line_mesh(
+pub(crate) fn line_mesh(
     lines: &[Shape<Vec<Position>>],
     polygons: &[Shape<Polygon>],
     altitude: OverlayAltitude,
@@ -1546,7 +1562,7 @@ fn line_mesh(
 /// corner would have to be carried through ear clipping to reach the mesh, and
 /// what it would buy is a fill that folds. A lid at the average height, ringed
 /// by an outline that climbs, is both simpler and easier to read.
-fn fill_mesh(polygons: &[Shape<Polygon>], altitude: OverlayAltitude) -> Option<Mesh> {
+pub(crate) fn fill_mesh(polygons: &[Shape<Polygon>], altitude: OverlayAltitude) -> Option<Mesh> {
     let mut builder = MeshBuilder::new();
     for polygon in polygons {
         let (mut corners, indices) = tessellate::triangulate(&polygon.geometry);

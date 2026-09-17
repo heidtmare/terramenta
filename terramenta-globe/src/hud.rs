@@ -25,6 +25,7 @@ const HELP_TEXT: &str = "drag  orbit\n\
                          P  pause sun    , .  sun speed    N  now\n\
                          I  full illumination\n\
                          T  imagery    L  /  shift L  next / previous layer\n\
+                         V  vector tiles    shift V  next vector layer\n\
                          H  hide this";
 
 /// Whether the readout and its key list are drawn.
@@ -156,6 +157,21 @@ fn format_readout(state: &GlobeState) -> String {
         "off".to_string()
     };
 
+    // Named `vectors` rather than `tiles` in the readout: the row above is
+    // already tiles, and what tells the two apart is that one is pictures.
+    let vectors = if state.vector_tiles.enabled {
+        format!(
+            "{}\n           level {} · {} drawn · {} loading · {} features",
+            state.vector_tiles.label,
+            state.vector_tiles.deepest_level,
+            state.vector_tiles.visible_tiles,
+            state.vector_tiles.loading_tiles,
+            state.vector_tiles.features,
+        )
+    } else {
+        "off".to_string()
+    };
+
     // Only worth a line when there is something to say: a globe with no
     // overlays should not carry a row reporting that there are none.
     let overlays = match state.overlays.layers.len() {
@@ -197,7 +213,8 @@ fn format_readout(state: &GlobeState) -> String {
          frame     {}\n\
          sun over  {}{}\n\
          clock     {}{}\n\
-         imagery   {imagery}{overlays}{picked}",
+         imagery   {imagery}\n\
+         vectors   {vectors}{overlays}{picked}",
         state.camera.altitude_km,
         state.frame.label,
         state.sun.subsolar.format(),

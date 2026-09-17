@@ -1,4 +1,5 @@
 /target
+.DS_Store
 
 # Earth imagery is fetched by terramenta-globe/scripts/fetch-assets.sh, not committed.
 /terramenta-globe/assets/textures/*.jpg

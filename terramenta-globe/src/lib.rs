@@ -22,11 +22,13 @@ mod geojson;
 mod globe;
 mod hud;
 mod imagery;
+mod mvt;
 mod overlays;
 mod picking;
 mod sun;
 mod tessellate;
 mod tiles;
+mod vector_tiles;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
 mod wms;
@@ -45,6 +47,7 @@ use imagery::{ImageFormat, ImageryLayer, ImageryPlugin};
 use overlays::{OverlayPlugin, OverlayRequest, OverlaySourcePlugin};
 use sun::SunPlugin;
 use tiles::TilePlugin;
+use vector_tiles::{VectorTileLayer, VectorTilePlugin, VectorTileSourcePlugin};
 use wms::WmsConfig;
 use wmts::WmtsConfig;
 
@@ -104,6 +107,10 @@ pub fn app(config: GlobeConfig) -> App {
         .add_plugins(OverlaySourcePlugin {
             initial: config.overlays.clone(),
         })
+        .add_plugins(VectorTileSourcePlugin {
+            presets: vector_tile_layers(),
+            enabled: true,
+        })
         .add_plugins(
             DefaultPlugins
                 .set(WindowPlugin {
@@ -148,6 +155,7 @@ pub fn app(config: GlobeConfig) -> App {
             SunPlugin,
             FramePlugin,
             TilePlugin,
+            VectorTilePlugin,
             OverlayPlugin,
             HudPlugin,
         ));
@@ -158,6 +166,41 @@ pub fn app(config: GlobeConfig) -> App {
 /// The imagery presets the globe starts with, in the order they cycle.
 pub fn layers() -> Vec<api::LayerInfo> {
     api::describe_layers(&imagery_layers())
+}
+
+/// The vector tile presets the globe starts with, in the order they cycle.
+pub fn vector_layers() -> Vec<api::VectorTileLayerInfo> {
+    vector_tiles::describe_layers(&vector_tile_layers())
+}
+
+/// The vector tile sources wired up by default.
+///
+/// Both are keyless, which is the constraint that decides the list: almost
+/// every hosted vector tile service wants a token, and a globe that draws
+/// nothing until one is pasted in is a globe that looks broken. An embedder
+/// with a key of its own builds the `App` itself and passes its own presets.
+fn vector_tile_layers() -> Vec<VectorTileLayer> {
+    vec![
+        // MapLibre's demo tiles: one source layer of country polygons, cut to
+        // level 5. Coarse, tiny, and the reason it is first — it draws the
+        // world's borders over the imagery from the moment the globe starts.
+        VectorTileLayer::new(
+            "MapLibre · country boundaries",
+            "https://demotiles.maplibre.org/tiles/{z}/{x}/{y}.pbf",
+        )
+        .with_max_level(5)
+        .with_source_layers(["countries"]),
+        // OpenStreetMap's own vector tiles, in the Shortbread schema. Deep
+        // enough to fly down into, so the layers drawn are restricted to the
+        // ones that read as lines on a globe — coastlines, water and the road
+        // network — rather than the land use and labels underneath them.
+        VectorTileLayer::new(
+            "OpenStreetMap · Shortbread",
+            "https://vector.openstreetmap.org/shortbread_v1/{z}/{x}/{y}.mvt",
+        )
+        .with_max_level(12)
+        .with_source_layers(["ocean", "water_polygons", "streets", "boundaries"]),
+    ]
 }
 
 fn imagery_layers() -> Vec<ImageryLayer> {

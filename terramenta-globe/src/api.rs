@@ -34,6 +34,7 @@ use crate::imagery::{ImageryLayer, ImagerySettings};
 use crate::overlays::{self, OverlaySettings};
 use crate::sun::{self, Sun};
 use crate::tiles::TileCache;
+use crate::vector_tiles::{self, VectorTileCache, VectorTileSettings};
 
 /// The types a command or a snapshot is stated in, re-exported so the control
 /// surface is nameable from one place. A native embedder sending a
@@ -45,6 +46,7 @@ pub use crate::overlays::{
     AltitudeMode, MIN_REFRESH_SECONDS, OverlayAltitude, OverlayInfo, OverlayRequest, OverlaySource,
     OverlayStyle, PickedFeature,
 };
+pub use crate::vector_tiles::{VectorTileLayer, VectorTileLayerInfo, VectorTilesState};
 
 /// How often the state snapshot goes out, in seconds.
 ///
@@ -99,6 +101,18 @@ pub enum GlobeCommand {
     NextLayer,
     PreviousLayer,
     SetImageryEnabled(bool),
+
+    /// Whether Mapbox Vector Tiles are streamed at all. Off, every tile is
+    /// dropped; back on, the view is re-walked and refetched.
+    SetVectorTilesEnabled(bool),
+    /// Selects a vector tile preset by index, wrapping past the end of the list.
+    SetVectorTileLayer(usize),
+    NextVectorTileLayer,
+    PreviousVectorTileLayer,
+    /// Recolours the vector tile layer. Unlike an overlay this rebuilds the
+    /// tiles on screen: a tile's meshes are keyed to the style they were built
+    /// with, and a layer whose fill was transparent never built a fill at all.
+    SetVectorTileStyle(OverlayStyle),
 
     /// Puts a GeoJSON overlay up, replacing any already under the same id —
     /// which is how a refreshed local file becomes an update rather than a
@@ -183,6 +197,8 @@ pub struct GlobeState {
     pub frame: FrameState,
     pub sun: SunState,
     pub imagery: ImageryState,
+    /// The Mapbox Vector Tile layer, and how much of it is on screen.
+    pub vector_tiles: VectorTilesState,
     /// Every GeoJSON overlay, in the order they were added.
     pub overlays: OverlaysState,
     pub hud: HudState,
@@ -284,6 +300,13 @@ pub struct Limits {
     pub max_altitude_km: f32,
     pub min_time_scale: f32,
     pub max_time_scale: f32,
+    /// How far from the equator a vector tile can reach.
+    ///
+    /// Mercator sends the poles to infinity, so every vector tile scheme stops
+    /// where the projected world is square. Nothing above this latitude is in
+    /// any tile, and an interface is better off saying so than leaving someone
+    /// to wonder why the Arctic has no coastline.
+    pub max_vector_tile_latitude: f32,
 }
 
 impl Limits {
@@ -294,6 +317,7 @@ impl Limits {
             max_altitude_km,
             min_time_scale: sun::MIN_TIME_SCALE,
             max_time_scale: sun::MAX_TIME_SCALE,
+            max_vector_tile_latitude: crate::mvt::MAX_LATITUDE,
         }
     }
 }
@@ -366,6 +390,11 @@ struct Digest {
     sun_shaded: bool,
     imagery_enabled: bool,
     layer_index: usize,
+    vector_tiles_enabled: bool,
+    vector_layer_index: usize,
+    vector_deepest_level: u8,
+    vector_visible_tiles: usize,
+    vector_loading_tiles: usize,
     hud_visible: bool,
     help_visible: bool,
     keyboard: bool,
@@ -394,6 +423,11 @@ fn digest(state: &GlobeState, overlay_revision: u64, picks: PickDigest) -> Diges
         sun_shaded: state.sun.shaded,
         imagery_enabled: state.imagery.enabled,
         layer_index: state.imagery.layer_index,
+        vector_tiles_enabled: state.vector_tiles.enabled,
+        vector_layer_index: state.vector_tiles.layer_index,
+        vector_deepest_level: state.vector_tiles.deepest_level,
+        vector_visible_tiles: state.vector_tiles.visible_tiles,
+        vector_loading_tiles: state.vector_tiles.loading_tiles,
         hud_visible: state.hud.visible,
         help_visible: state.hud.help_visible,
         keyboard: state.keyboard,
@@ -495,6 +529,7 @@ fn apply_commands(
     mut realigned: MessageWriter<FrameRealigned>,
     mut sun: ResMut<Sun>,
     mut imagery: ResMut<ImagerySettings>,
+    mut vector_tiles: ResMut<VectorTileSettings>,
     mut hud: ResMut<HudSettings>,
     mut overlays: ResMut<OverlaySettings>,
     mut input: ResMut<GlobeInput>,
@@ -566,6 +601,12 @@ fn apply_commands(
             GlobeCommand::PreviousLayer => imagery.cycle_preset_back(),
             GlobeCommand::SetImageryEnabled(enabled) => imagery.enabled = enabled,
 
+            GlobeCommand::SetVectorTilesEnabled(enabled) => vector_tiles.enabled = enabled,
+            GlobeCommand::SetVectorTileLayer(index) => vector_tiles.select_preset(index),
+            GlobeCommand::NextVectorTileLayer => vector_tiles.cycle_preset(),
+            GlobeCommand::PreviousVectorTileLayer => vector_tiles.cycle_preset_back(),
+            GlobeCommand::SetVectorTileStyle(style) => vector_tiles.set_style(style),
+
             GlobeCommand::AddOverlay(request) => overlays.add(request),
             // Naming an overlay that is not up is not an error. An interface
             // can send one for a layer the user has just removed, and the layer
@@ -632,6 +673,8 @@ pub(crate) fn publish_state(
     sun: Res<Sun>,
     imagery: Res<ImagerySettings>,
     tiles: Res<TileCache>,
+    vector_settings: Res<VectorTileSettings>,
+    vector_cache: Res<VectorTileCache>,
     overlays: Res<OverlaySettings>,
     hud: Res<HudSettings>,
     input: Res<GlobeInput>,
@@ -671,6 +714,7 @@ pub(crate) fn publish_state(
             visible_tiles: tiles.visible_tiles,
             loading_tiles: tiles.loading_tiles,
         },
+        vector_tiles: vector_tiles::describe(&vector_settings, &vector_cache),
         overlays: OverlaysState {
             enabled: overlays.enabled,
             drawn: overlays.drawn(),

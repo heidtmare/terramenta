@@ -23,6 +23,7 @@ import { button, choice, slider, toggle } from "./widgets.js";
 export function mountPanel(root) {
   const limits = globe.limits();
   const layers = globe.layers();
+  const vectorTileLayers = globe.vectorLayers();
   const controls = [];
 
   /**
@@ -76,6 +77,78 @@ export function mountPanel(root) {
       button("Next", globe.nextLayer),
     ),
     imageryToggle.node,
+  );
+
+  // --- Vector tiles --------------------------------------------------------
+
+  const vectorSelect = el(
+    "select",
+    { class: "select", onchange: (event) => globe.setVectorTileLayer(Number(event.target.value)) },
+    ...vectorTileLayers.map((layer) => el("option", { value: String(layer.index) }, layer.label)),
+  );
+  bind(vectorSelect, (state) => {
+    vectorSelect.value = String(state.vectorTiles.layerIndex);
+  });
+
+  const vectorToggle = toggle("Stream tiles", globe.setVectorTilesEnabled);
+  bind(vectorToggle.node, (state) => vectorToggle.set(state.vectorTiles.enabled));
+
+  // The style is sent whole rather than a field at a time: the globe returns
+  // anything left out to its default, so a colour change alone would silently
+  // undo the width beside it. Declared as a function so the colour input and
+  // the fill toggle can both be built around it.
+  function sendVectorStyle() {
+    const hex = vectorColor.value;
+    globe.setVectorTileStyle({
+      lineColor: hex,
+      lineWidthPx: 1.4,
+      pointColor: hex,
+      pointSizePx: 5,
+      // A basemap's fills would hide the imagery under them, so the alpha stays
+      // low even when they are on — enough to tint a lake, not to hide it.
+      fillColor: `${hex}${vectorFill.input.checked ? "33" : "00"}`,
+    });
+  }
+
+  const vectorColor = el("input", {
+    class: "swatch",
+    type: "color",
+    value: "#8cd9ff",
+    title: "Vector tile colour",
+    oninput: sendVectorStyle,
+  });
+  const vectorFill = toggle("Fill rings", sendVectorStyle);
+  bind(vectorFill.node, (state) => {
+    vectorFill.set(!state.vectorTiles.style.fillColor.toLowerCase().endsWith("00"));
+    if (document.activeElement !== vectorColor) {
+      vectorColor.value = state.vectorTiles.style.lineColor.slice(0, 7).toLowerCase();
+    }
+  });
+
+  const vectorDetail = el("p", { class: "detail" }, "—");
+  bind(vectorDetail, (state) => {
+    const tiles = state.vectorTiles;
+    const sources = tiles.sourceLayers.length ? tiles.sourceLayers.join(", ") : "every source layer";
+    vectorDetail.textContent = tiles.enabled
+      ? `${sources} · level ${tiles.deepestLevel} of ${tiles.maxLevel} · ` +
+        `${tiles.visibleTiles} drawn · ${tiles.features} features`
+      : `${sources} · to level ${tiles.maxLevel}`;
+  });
+
+  const vectorTiles = section(
+    "Vector tiles",
+    row("Source", vectorSelect),
+    vectorDetail,
+    row("Colour", vectorColor),
+    vectorFill.node,
+    vectorToggle.node,
+    el(
+      "p",
+      { class: "detail" },
+      "Mapbox Vector Tiles, decoded and unprojected out of Web Mercator onto " +
+        "the globe. Nothing above 85° is in any tile, which is why the poles " +
+        "have no coastline.",
+    ),
   );
 
   // --- GeoJSON overlays ----------------------------------------------------
@@ -209,7 +282,7 @@ export function mountPanel(root) {
     ),
   );
 
-  root.append(imagery, overlays, sun, frame, camera, chrome);
+  root.append(imagery, vectorTiles, overlays, sun, frame, camera, chrome);
 
   return {
     sync(state) {

@@ -44,6 +44,13 @@ interface, and the reference app is there to show what that takes.
 - **Streaming OGC imagery.** A quadtree of tiles fetched from any OGC Web Map
   Service (WMS) or Web Map Tile Service (WMTS), refined as you descend, with
   NASA GIBS layers wired up over both by default.
+- **Streaming vector tiles.** Mapbox Vector Tiles (MVT) from any `{z}/{x}/{y}`
+  service, decoded with [`geozero`](https://github.com/georust/geozero),
+  unprojected out of Web Mercator and drawn on the globe as screen-sized lines,
+  rings and markers — the same quadtree walk the imagery uses, over a grid of
+  its own, because the two projections do not agree on where a tile is. Two
+  keyless sources are wired up: MapLibre's demo country boundaries and
+  OpenStreetMap's own Shortbread tiles.
 - **GeoJSON overlays.** Vector data over the imagery, from a URL or a local
   file, as screen-sized markers, lines and filled rings — several layers at
   once, each with its own colours and its own refresh period. The reference app
@@ -110,8 +117,14 @@ no build step at all. The only thing it builds is the globe.
 - Read `GetCapabilities` / `WMTSCapabilities.xml` to discover a server's layers,
   tile matrix sets and legal zoom range instead of transcribing them by hand.
 - Cache tiles to disk or IndexedDB so a revisit does not refetch the pyramid.
-- Support a Web Mercator tile matrix set, which would need the quadtree walk to
-  reproject rather than read a tile's bounds straight off as lat/lon.
+- Style a vector tile per source layer rather than per tile — one colour for
+  water, another for the road network. Every feature already carries the layer
+  it came from as a `sourceLayer` property; nothing reads it to decide a colour.
+- Unwrap gzipped vector tiles. A browser does it before the bytes reach the
+  globe, so the web build takes any service; a native one answering
+  `Content-Encoding: gzip` regardless is reported as such rather than drawn.
+- Pick vector tile features the way overlay features are picked, which needs an
+  index that can be built per tile rather than per document.
 - Add a bathymetry/elevation map for a normal-mapped surface and real terrain
   relief.
 - Pick against the drawn geometry rather than the ground under it, so a marker
@@ -129,5 +142,7 @@ no build step at all. The only thing it builds is the globe.
 
 Base Earth imagery: [NASA Visible Earth](https://visibleearth.nasa.gov) Blue
 Marble (public domain). Streamed layers: [NASA
-GIBS](https://nasa-gibs.github.io/gibs-api-docs/). Everything else is MIT OR
-Apache-2.0.
+GIBS](https://nasa-gibs.github.io/gibs-api-docs/). Vector tiles:
+[MapLibre demo tiles](https://demotiles.maplibre.org) and
+[OpenStreetMap](https://www.openstreetmap.org/copyright) (ODbL). Everything else
+is MIT OR Apache-2.0.

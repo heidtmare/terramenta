@@ -58,6 +58,7 @@ bevy = { version = "0.19", default-features = false, features = [
     # only used to unpack the tonemapping LUT once at startup.
     "zstd_rust",
 ] }
+geozero = { version = "0.15.1", default-features = false, features = ["with-mvt"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 bevy = { version = "0.19", default-features = false, features = [

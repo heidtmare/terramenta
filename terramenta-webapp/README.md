@@ -32,6 +32,7 @@ Everything, which is the point.
 | Section | |
 | --- | --- |
 | **Imagery** | All eight presets, grouped by protocol, with the tile size, format and pyramid depth of the active one; previous/next; streaming on or off |
+| **Vector tiles** | Both keyless MVT sources, the source layers and pyramid depth of the active one, its colour, whether rings are filled, and streaming on or off |
 | **GeoJSON overlays** | A layer from a URL or a local file, two bundled samples and three live feeds to try, auto-refresh with a period, picking on or off, and per layer: visibility, colour, clamp to surface, extrude to ground, refresh now, remove — plus what each one holds and how stale it is |
 | **Sun & clock** | Run or pause, the rate from real time to a day a second, jump to now or forward by hours or days, and whether the night side is shaded at all |
 | **Reference frame** | ECEF or ECI |
@@ -40,7 +41,7 @@ Everything, which is the point.
 
 Alongside them is a telemetry panel showing every field the globe reports:
 cursor and camera coordinates, altitude, frame, subsolar point, clock, rate,
-layer, overlays, and what the tile streamer is doing — and under it, whatever
+layer, overlays, and what both tile streamers are doing — and under it, whatever
 feature the cursor is over, with its properties.
 
 The app starts with three overlays already up, because a layer control with
