@@ -116,6 +116,7 @@ to tell that apart from a real failure.
 | `setEphemerisTrails(id, bool)` `setSatelliteTrail(id, noradId, bool)` `setEphemerisTrail(id, window)` | How much orbit is drawn through each |
 | `setEphemerisRefresh(id, seconds)` `refreshEphemeris(id)` | When the catalogue refetches |
 | `ephemerisObjects(id)` `ephemerisGeometry(id)` | What a layer holds, and where it currently is |
+| `pinPlacemark("sun" \| "moon")` `clearPinnedPlacemark()` | Picking the subsolar and sublunar icons |
 | `setHudVisible(bool)` `setHelpVisible(bool)` `setKeyboardEnabled(bool)` | The globe's own overlay and keys |
 | `onState(callback)` | The state stream. One listener; registering again replaces it |
 
@@ -578,6 +579,48 @@ keeping.
 
 [OMM]: https://public.ccsds.org/Pubs/502x0b3e1.pdf
 [ephemerisjs]: ../terramenta-webapp/src/ephemeris.js
+
+## Placemarks
+
+Two icons stand on the globe from the moment it starts: the **subsolar** point,
+where the sun is directly overhead, and the **sublunar** point, where the moon
+is. They are [`placemark.rs`](src/placemark.rs), drawn by
+[`icon.wgsl`](assets/shaders/icon.wgsl) and sized in pixels like everything else
+over the surface.
+
+Neither position is worked out there. The sun's comes from
+[`sun.rs`](src/sun.rs), which the terminator is already drawn from; the moon's
+comes from [`moon.rs`](src/moon.rs), which is a low-precision lunar series —
+Keplerian elements plus the perturbations that matter, through a right ascension
+and declination, against Greenwich's sidereal angle. Good to a few arcminutes,
+which is inside the icon. How far apart the two icons are *is* the phase:
+together is new, opposite is full.
+
+**An icon is never cut by the ground it stands on.** A flat quad held up to the
+camera at a point on a sphere is always partly inside that sphere — the surface
+curves away from it, so from anything but a view straight down the globe rises
+through the icon and the depth test eats the rest. Standing the icon on its
+anchor rather than centring it buys the common case and no more: toward the limb
+there is no height that clears the ground. So a placemark ignores the depth
+buffer and is drawn whole over the scene, and the one thing that should hide it
+— the planet — hides it explicitly, by a horizon test against the camera. All
+there, or not there: half an icon reads as a different icon.
+
+**Picking is in the viewport**, for the same reason a satellite's is: the icon
+is not where its coordinate is. It stands above the anchor by its own height, so
+the anchor is projected into the viewport and the pointer measured against the
+rectangle the icon covers there. A pick haloes the icon and goes out with the
+state, under the same switch as everything else pickable.
+
+```js
+globe.onState(({placemarks}) => {
+  placemarks.hovered;  // {body, label, coordinate} or null — body is "sun" | "moon"
+  placemarks.pinned;   // the same, for whatever was pinned
+});
+
+globe.pinPlacemark("moon");
+globe.clearPinnedPlacemark();
+```
 
 ## Geometry in memory
 

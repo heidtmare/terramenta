@@ -881,14 +881,16 @@ unsafe fn view_u32(slice: &[u32]) -> JsValue {
 /// Whether the cursor picks anything.
 ///
 /// On, every state snapshot carries `overlays.hovered` — the feature under the
-/// pointer, with its properties — and `ephemerides.hovered`, the satellite
-/// under it, with its elements and where it is now; the globe draws a halo
-/// around each. Off, none of that happens, and a pin already set stays set.
+/// pointer, with its properties — `ephemerides.hovered`, the satellite under
+/// it, with its elements and where it is now — and `placemarks.hovered`, the
+/// subsolar or sublunar icon under it; the globe draws a halo around each. Off,
+/// none of that happens, and a pin already set stays set.
 ///
-/// One switch for both, because they are one thing to whoever is pointing at
-/// the globe. What they are not is one hit test: a feature is picked where it
-/// stands on the ground, and a satellite where its marker was drawn, hundreds
-/// of kilometres above it.
+/// One switch for all three, because they are one thing to whoever is pointing
+/// at the globe. What they are not is one hit test: a feature is picked where
+/// it stands on the ground, a satellite where its marker was drawn hundreds of
+/// kilometres above it, and a placemark over the rectangle its icon covers on
+/// screen.
 #[wasm_bindgen(js_name = setPickingEnabled)]
 pub fn set_picking_enabled(enabled: bool) {
     api::send(GlobeCommand::SetPickingEnabled(enabled));
@@ -932,6 +934,20 @@ pub fn pin_satellite(layer: String, norad_id: u32) {
 #[wasm_bindgen(js_name = clearPinnedSatellite)]
 pub fn clear_pinned_satellite() {
     api::send(GlobeCommand::ClearPinnedSatellite);
+}
+
+/// Keeps a placemark selected, whatever the cursor does afterwards.
+///
+/// The same idea once more, for the icons standing on the subsolar and sublunar
+/// points: `body` is `"sun"` or `"moon"`, as `placemarks.hovered` reports it.
+#[wasm_bindgen(js_name = pinPlacemark)]
+pub fn pin_placemark(body: String) {
+    api::send(GlobeCommand::PinPlacemark(body));
+}
+
+#[wasm_bindgen(js_name = clearPinnedPlacemark)]
+pub fn clear_pinned_placemark() {
+    api::send(GlobeCommand::ClearPinnedPlacemark);
 }
 
 // ---------------------------------------------------------------------------

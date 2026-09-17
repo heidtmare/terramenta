@@ -33,6 +33,7 @@ use crate::globe::GLOBE_RADIUS;
 use crate::hud::HudSettings;
 use crate::imagery::{ImageryLayer, ImagerySettings};
 use crate::overlays::{self, OverlaySettings};
+use crate::placemark::{self, PlacemarkSettings};
 use crate::sun::{self, Sun};
 use crate::tiles::TileCache;
 use crate::vector_tiles::{self, VectorTileCache, VectorTileSettings};
@@ -54,6 +55,7 @@ pub use crate::overlays::{
     AltitudeMode, MIN_REFRESH_SECONDS, OverlayAltitude, OverlayInfo, OverlayRequest, OverlaySource,
     OverlayStyle, PickedFeature,
 };
+pub use crate::placemark::{Body, PickedPlacemark, PlacemarksState};
 pub use crate::vector_tiles::{VectorTileLayer, VectorTileLayerInfo, VectorTilesState};
 
 /// How often the state snapshot goes out, in seconds.
@@ -225,6 +227,12 @@ pub enum GlobeCommand {
     },
     ClearPinnedSatellite,
 
+    /// Keeps a placemark selected, whatever the cursor does afterwards. The
+    /// same idea again, by the body's name — `"sun"` or `"moon"`, as
+    /// `placemarks.hovered` reports it.
+    PinPlacemark(String),
+    ClearPinnedPlacemark,
+
     SetHudVisible(bool),
     SetHelpVisible(bool),
     /// Whether the globe's own keyboard shortcuts are live. An embedder that
@@ -271,6 +279,8 @@ pub struct GlobeState {
     pub overlays: OverlaysState,
     /// Every ephemeris layer, in the order they were added.
     pub ephemerides: EphemerisState,
+    /// The icons standing on the points the sun and the moon are overhead.
+    pub placemarks: PlacemarksState,
     pub hud: HudState,
     /// The coordinate under the pointer, or `None` when it is off the globe.
     pub cursor: Option<LatLon>,
@@ -472,6 +482,10 @@ type SatelliteKey = (u64, u64);
 /// The hovered and pinned satellites, in that order.
 pub(crate) type SatelliteDigest = (Option<SatelliteKey>, Option<SatelliteKey>);
 
+/// The hovered and pinned placemarks, in that order. A placemark is named by
+/// its body and there are only ever two, so the body is the whole key.
+pub(crate) type PlacemarkDigest = (Option<Body>, Option<Body>);
+
 /// The discrete part of the state — the fields a control flips rather than the
 /// ones that drift every frame. A change here publishes immediately.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -503,6 +517,10 @@ struct Digest {
     /// frame rather than on the next tick of the throttle.
     hovered_satellite: Option<SatelliteKey>,
     pinned_satellite: Option<SatelliteKey>,
+    /// And for placemarks, which are two icons rather than a layer of them —
+    /// the body is the whole of what a pick names.
+    hovered_placemark: Option<Body>,
+    pinned_placemark: Option<Body>,
     /// Ephemerides keep a counter for the same reason overlays do, and it
     /// serves one purpose more: a change to it is what tells an interface that
     /// the object list it pulled through `ephemerisObjects` is stale.
@@ -521,9 +539,11 @@ fn digest(
     ephemeris_revision: u64,
     picks: PickDigest,
     satellites: SatelliteDigest,
+    placemarks: PlacemarkDigest,
 ) -> Digest {
     let (hovered, pinned) = picks;
     let (hovered_satellite, pinned_satellite) = satellites;
+    let (hovered_placemark, pinned_placemark) = placemarks;
     Digest {
         frame: state.frame.mode,
         sun_paused: state.sun.paused,
@@ -547,6 +567,8 @@ fn digest(
         pinned,
         hovered_satellite,
         pinned_satellite,
+        hovered_placemark,
+        pinned_placemark,
         overlay_revision,
         ephemeris_revision,
         ephemerides_enabled: state.ephemerides.enabled,
@@ -644,6 +666,7 @@ fn apply_commands(
     mut hud: ResMut<HudSettings>,
     mut overlays: ResMut<OverlaySettings>,
     mut ephemerides: ResMut<EphemerisSettings>,
+    mut placemarks: ResMut<PlacemarkSettings>,
     mut input: ResMut<GlobeInput>,
 ) {
     let commands = take_queued();
@@ -787,6 +810,7 @@ fn apply_commands(
             GlobeCommand::SetPickingEnabled(enabled) => {
                 overlays.picking = enabled;
                 ephemerides.picking = enabled;
+                placemarks.picking = enabled;
             }
             GlobeCommand::PinFeature { layer, index } => {
                 overlays.pin(&layer, index);
@@ -796,6 +820,10 @@ fn apply_commands(
                 ephemerides.pin(&layer, norad_id);
             }
             GlobeCommand::ClearPinnedSatellite => ephemerides.clear_pin(),
+            GlobeCommand::PinPlacemark(body) => {
+                placemarks.pin(&body);
+            }
+            GlobeCommand::ClearPinnedPlacemark => placemarks.clear_pin(),
 
             GlobeCommand::SetHudVisible(visible) => hud.visible = visible,
             GlobeCommand::SetHelpVisible(visible) => hud.help_visible = visible,
@@ -837,6 +865,7 @@ pub(crate) fn publish_state(
     vector_cache: Res<VectorTileCache>,
     overlays: Res<OverlaySettings>,
     ephemerides: Res<EphemerisSettings>,
+    placemarks: placemark::PlacemarkPicks,
     hud: Res<HudSettings>,
     input: Res<GlobeInput>,
     mut stream: ResMut<StateStream>,
@@ -885,6 +914,7 @@ pub(crate) fn publish_state(
             pinned: overlays::pinned(&overlays),
         },
         ephemerides: ephemeris::describe(&ephemerides, sun.unix_seconds),
+        placemarks: placemarks.describe(&sun),
         hud: HudState {
             visible: hud.visible,
             help_visible: hud.help_visible,
@@ -900,6 +930,7 @@ pub(crate) fn publish_state(
         ephemerides.revision(),
         overlays::pick_digest(&overlays),
         ephemeris::pick_digest(&ephemerides),
+        placemarks.digest(),
     );
     let changed = stream.last_digest != Some(current);
     let due = stream.since_publish >= STATE_INTERVAL_SECONDS;

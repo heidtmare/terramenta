@@ -24,31 +24,62 @@
 //!
 //! Like an overlay marker, a placemark is **sized in pixels rather than in
 //! kilometres**: the mesh is one quad with all four corners on the anchor, and
-//! `assets/shaders/icon.wgsl` spreads them across the screen. And like
-//! everything else geographic, the anchor is Earth-fixed and rotated into world
-//! space by [`crate::frame::ReferenceFrame::earth_to_world`], so the icon stays
-//! over its ground in either frame.
+//! `assets/shaders/icon.wgsl` spreads them across the screen. It hangs *above*
+//! the anchor rather than around it, the way a pin stands on the point it
+//! marks. And like everything else geographic, the anchor is Earth-fixed and
+//! rotated into world space by
+//! [`crate::frame::ReferenceFrame::earth_to_world`], so the icon stays over its
+//! ground in either frame.
+//!
+//! **An icon is never cut by the ground it stands on.** That is the one thing
+//! here that is not like an overlay, and it takes two halves to arrange. A flat
+//! quad held up to the camera at a point on a sphere is always partly inside
+//! that sphere — the surface curves away from the quad, so from anything but a
+//! view straight down on the point, the globe rises through the icon and the
+//! depth buffer eats whatever is behind it. Standing the icon on its anchor
+//! rather than centring it buys the common case and no more: as the view
+//! flattens toward the limb there is no height that clears the ground, because
+//! the ground rises to meet the camera faster than the icon can be raised.
+//!
+//! So a placemark ignores the depth buffer entirely (see
+//! [`IconMaterial::specialize`]) and is drawn whole over the scene, and the one
+//! thing that could legitimately hide it — the planet — hides it explicitly in
+//! [`hide_over_the_horizon`]. The icon is either all there or not there at all,
+//! which is also the only behaviour that reads correctly at a glance: half an
+//! icon looks like a different icon.
+//!
+//! **Picking is in pixels too**, and for the same reason [`crate::ephemeris`]
+//! picks its satellites that way rather than through [`crate::picking`]: an
+//! icon is not where its coordinate is. It stands above the anchor by its own
+//! height, so the pointer is over the *icon* well before it is over the point
+//! the icon marks — further as the view flattens. So the anchor is projected
+//! into the viewport and the pointer measured against the rectangle the icon
+//! occupies there, which is the only test that agrees with what is on screen.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::NoFrustumCulling;
+use bevy::ecs::system::SystemParam;
 use bevy::mesh::{Indices, MeshVertexBufferLayoutRef, PrimitiveTopology};
 use bevy::pbr::{MaterialPipeline, MaterialPipelineKey};
 use bevy::prelude::*;
 use bevy::render::render_resource::{
-    AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
+    AsBindGroup, CompareFunction, RenderPipelineDescriptor, ShaderType,
+    SpecializedMeshPipelineError,
 };
 use bevy::shader::ShaderRef;
+use serde::Serialize;
 
+use crate::api::Cursor;
 use crate::frame::{FrameSet, ReferenceFrame};
 use crate::geo::LatLon;
 use crate::globe::GLOBE_RADIUS;
 use crate::moon::Moon;
+use crate::overlays::PICK_SLACK_PX;
 use crate::sun::Sun;
 use crate::tiles::MAX_TILE_RADIUS;
 
-/// The icons, drawn at the size they were authored at.
-const SUN_ICON: &str = "icons/sun32.png";
-const MOON_ICON: &str = "icons/moon32.png";
+/// How big an icon is drawn, in device pixels — the size the images were
+/// authored at, so neither is resampled at rest.
 const ICON_PX: f32 = 32.0;
 
 /// How far out a placemark's anchor sits, in scene units.
@@ -69,28 +100,132 @@ const PLACEMARK_RADIUS: f32 = MAX_TILE_RADIUS + GLOBE_RADIUS * 2.5e-4;
 /// kilometres further out, and should come out in front.
 const PLACEMARK_ABOVE: f32 = 6.0;
 
+/// How strongly the halo behind an icon burns: nothing for a placemark that is
+/// neither hovered nor pinned, a suggestion for one under the pointer, and the
+/// full thing for one an interface has kept.
+///
+/// Two levels rather than one, because they answer different questions — "this
+/// is what you are pointing at" and "this is what is selected" — and an
+/// interface that pins on click shows both at once while the pointer stays put.
+const HOVERED_HALO: f32 = 0.45;
+const PINNED_HALO: f32 = 1.0;
+
+/// Which body a placemark follows. A placemark *is* a body's point on the
+/// ground, so this is the whole of what tells one from the other: the icon it
+/// is drawn with, the name it is reported under, and the coordinate it tracks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Body {
+    Sun,
+    Moon,
+}
+
+impl Body {
+    /// Every placemark the globe puts up, in the order they are spawned.
+    const ALL: [Self; 2] = [Self::Sun, Self::Moon];
+
+    /// The stable name the control surface names this by, and what
+    /// [`crate::api::GlobeCommand::PinPlacemark`] takes.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Sun => "sun",
+            Self::Moon => "moon",
+        }
+    }
+
+    /// Parses [`Body::id`] back, for a placemark named by an embedder.
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|body| body.id() == id)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Sun => "Sun · subsolar point",
+            Self::Moon => "Moon · sublunar point",
+        }
+    }
+
+    fn icon(self) -> &'static str {
+        match self {
+            Self::Sun => "icons/sun32.png",
+            Self::Moon => "icons/moon32.png",
+        }
+    }
+
+    /// Where this body is overhead at the moment, which is the one thing a
+    /// placemark does not decide for itself.
+    fn coordinate(self, sun: &Sun, moon: &Moon) -> LatLon {
+        match self {
+            Self::Sun => sun.subsolar,
+            Self::Moon => moon.sublunar,
+        }
+    }
+}
+
 /// An icon pinned to a point on the globe.
 ///
-/// The coordinate is Earth-fixed. Write to it and the icon moves; the frame is
-/// applied afterwards, in [`place_placemarks`].
+/// The coordinate is Earth-fixed and rewritten every tick from the body's own
+/// resource; the frame is applied afterwards, in [`place_placemarks`].
 #[derive(Component, Debug, Clone, Copy)]
 pub struct Placemark {
+    pub body: Body,
     pub coordinate: LatLon,
 }
 
-/// Marks the placemark that follows the sun.
-#[derive(Component, Debug)]
-pub struct Subsolar;
+/// What the cursor has found among the placemarks, and whether it is looking.
+///
+/// The same shape as the picks [`crate::overlays`] and [`crate::ephemeris`]
+/// keep, and driven by the same switch: picking is one thing to whoever is
+/// pointing at the globe, however many hit tests are behind it.
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct PlacemarkSettings {
+    /// Whether the cursor picks placemarks at all. Off, nothing is hovered and
+    /// no halo is drawn; a pin already set stays set.
+    pub picking: bool,
+    /// What the cursor is over now.
+    hovered: Option<Body>,
+    /// What an embedder asked to keep, whatever the cursor does afterwards.
+    /// This is what a click becomes.
+    pinned: Option<Body>,
+}
 
-/// Marks the placemark that follows the moon.
-#[derive(Component, Debug)]
-pub struct Sublunar;
+impl Default for PlacemarkSettings {
+    fn default() -> Self {
+        Self {
+            picking: true,
+            hovered: None,
+            pinned: None,
+        }
+    }
+}
+
+impl PlacemarkSettings {
+    /// What the halo should be drawing: the pin if there is one, and otherwise
+    /// whatever the cursor is over.
+    fn highlight_target(&self) -> Option<Body> {
+        self.pinned.or(self.hovered)
+    }
+
+    /// Keeps one placemark selected until told otherwise. Returns whether the
+    /// globe has a placemark under that name.
+    pub fn pin(&mut self, id: &str) -> bool {
+        let Some(body) = Body::from_id(id) else {
+            return false;
+        };
+        self.pinned = Some(body);
+        true
+    }
+
+    pub fn clear_pin(&mut self) {
+        self.pinned = None;
+    }
+}
 
 pub struct PlacemarkPlugin;
 
 impl Plugin for PlacemarkPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(MaterialPlugin::<IconMaterial>::default())
+            .init_resource::<PlacemarkSettings>()
             .add_systems(Startup, spawn_placemarks)
             .add_systems(
                 Update,
@@ -98,9 +233,22 @@ impl Plugin for PlacemarkPlugin {
                 // so the points read here are this frame's, not last frame's —
                 // and the frame rotation they are placed under has been settled
                 // for this tick as well.
-                (follow_the_sun, follow_the_moon, place_placemarks)
+                //
+                // Then the chain runs downhill from where the icons ended up:
+                // what is over the horizon, what the pointer is on, and what
+                // that means for the halo. Each step reads the one before it
+                // within the tick, because a pick a frame stale highlights the
+                // placemark the pointer has just left.
+                (
+                    track_bodies,
+                    place_placemarks,
+                    hide_over_the_horizon,
+                    pick_placemarks,
+                    highlight_placemarks,
+                )
                     .chain()
-                    .in_set(FrameSet::Apply),
+                    .in_set(FrameSet::Apply)
+                    .after(crate::api::track_cursor),
             );
     }
 }
@@ -113,51 +261,32 @@ fn spawn_placemarks(
     sun: Res<Sun>,
     moon: Res<Moon>,
 ) {
-    // One quad serves both, and every placemark added after them: the mesh is
-    // four corners on the origin, and everything that makes one icon different
-    // from another is in its material and its transform.
+    // One quad serves every placemark: the mesh is four corners on the origin,
+    // and everything that makes one icon different from another is in its
+    // material and its transform.
     let quad = meshes.add(icon_quad());
 
-    commands.spawn((
-        Name::new("Subsolar placemark"),
-        Placemark {
-            coordinate: sun.subsolar,
-        },
-        Subsolar,
-        Mesh3d(quad.clone()),
-        MeshMaterial3d(materials.add(IconMaterial::new(assets.load(SUN_ICON), ICON_PX))),
-        Transform::from_translation(anchor(sun.subsolar)),
-        // The quad is spread in the vertex shader from four corners sitting on
-        // top of one another, so its own bounds are a point: left to cull
-        // itself it would vanish the moment the anchor left the screen, with
-        // half the icon still on it.
-        NoFrustumCulling,
-    ));
-
-    commands.spawn((
-        Name::new("Sublunar placemark"),
-        Placemark {
-            coordinate: moon.sublunar,
-        },
-        Sublunar,
-        Mesh3d(quad),
-        MeshMaterial3d(materials.add(IconMaterial::new(assets.load(MOON_ICON), ICON_PX))),
-        Transform::from_translation(anchor(moon.sublunar)),
-        NoFrustumCulling,
-    ));
-}
-
-/// Keeps the subsolar placemark on the point the sun is overhead.
-fn follow_the_sun(sun: Res<Sun>, mut placemarks: Query<&mut Placemark, With<Subsolar>>) {
-    for mut placemark in &mut placemarks {
-        placemark.coordinate = sun.subsolar;
+    for body in Body::ALL {
+        let coordinate = body.coordinate(&sun, &moon);
+        commands.spawn((
+            Name::new(format!("{} placemark", body.id())),
+            Placemark { body, coordinate },
+            Mesh3d(quad.clone()),
+            MeshMaterial3d(materials.add(IconMaterial::new(assets.load(body.icon()), ICON_PX))),
+            Transform::from_translation(anchor(coordinate)),
+            // The quad is spread in the vertex shader from four corners sitting
+            // on top of one another, so its own bounds are a point: left to cull
+            // itself it would vanish the moment the anchor left the screen, with
+            // half the icon still on it.
+            NoFrustumCulling,
+        ));
     }
 }
 
-/// And the sublunar one on the point the moon is.
-fn follow_the_moon(moon: Res<Moon>, mut placemarks: Query<&mut Placemark, With<Sublunar>>) {
+/// Keeps each placemark on the point its body is overhead.
+fn track_bodies(sun: Res<Sun>, moon: Res<Moon>, mut placemarks: Query<&mut Placemark>) {
     for mut placemark in &mut placemarks {
-        placemark.coordinate = moon.sublunar;
+        placemark.coordinate = placemark.body.coordinate(&sun, &moon);
     }
 }
 
@@ -172,14 +301,147 @@ fn place_placemarks(
     }
 }
 
+/// Hides the placemarks whose point has gone round the back of the globe.
+///
+/// This is the other half of drawing an icon that ignores the depth buffer —
+/// see [`IconMaterial::specialize`]. Nothing in the scene can hide a placemark
+/// any more, so the planet has to hide it here instead: an icon is drawn only
+/// while its anchor is on the near side of the horizon its own globe cuts.
+fn hide_over_the_horizon(
+    camera: Query<&GlobalTransform, With<Camera3d>>,
+    mut placemarks: Query<(&Transform, &mut Visibility), With<Placemark>>,
+) {
+    let Some(camera) = camera.iter().next() else {
+        return;
+    };
+    let eye = camera.translation();
+
+    for (transform, mut visibility) in &mut placemarks {
+        *visibility = if above_the_horizon(transform.translation, eye) {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+    }
+}
+
+/// Works out which placemark the pointer is over.
+///
+/// In the viewport, against the rectangle the icon covers there, because that
+/// is what is on screen — see the module docs. A placemark already hidden at
+/// the horizon is not a target: there is nothing drawn to be pointing at.
+fn pick_placemarks(
+    cursor: Res<Cursor>,
+    camera: Query<(&Camera, &GlobalTransform)>,
+    placemarks: Query<(&Placemark, &Transform, &Visibility)>,
+    mut settings: ResMut<PlacemarkSettings>,
+) {
+    let Some((camera, camera_transform)) = camera.iter().next() else {
+        return;
+    };
+
+    let hovered = settings
+        .picking
+        .then_some(cursor.screen)
+        .flatten()
+        .and_then(|pointer| {
+            // The icon is sized in device pixels and the pointer arrives in
+            // logical ones, so the rectangle has to be stated in the pointer's
+            // terms or a retina display would be picked at twice the size.
+            let size = ICON_PX / camera.target_scaling_factor().unwrap_or(1.0);
+
+            let mut best: Option<(Body, f32)> = None;
+            for (placemark, transform, visibility) in &placemarks {
+                if *visibility == Visibility::Hidden {
+                    continue;
+                }
+                let Ok(anchor) = camera.world_to_viewport(camera_transform, transform.translation)
+                else {
+                    // Behind the camera, or off a viewport with no size. Neither
+                    // is anywhere an icon was drawn.
+                    continue;
+                };
+                let Some(distance) = distance_to_icon(pointer, anchor, size) else {
+                    continue;
+                };
+                if best.is_none_or(|(_, held)| distance < held) {
+                    best = Some((placemark.body, distance));
+                }
+            }
+            best.map(|(body, _)| body)
+        });
+
+    if settings.hovered != hovered {
+        settings.hovered = hovered;
+    }
+}
+
+/// How far the pointer is from the centre of an icon, or `None` when it is
+/// outside the icon altogether.
+///
+/// The icon stands on its anchor, so in viewport coordinates — which count
+/// down the screen — it covers the square *above* that point. The slack is the
+/// same one an overlay allows: a thirty-two pixel target is generous, but it is
+/// a target that is also moving.
+fn distance_to_icon(pointer: Vec2, anchor: Vec2, size_px: f32) -> Option<f32> {
+    let half = size_px * 0.5 + PICK_SLACK_PX;
+    let center = Vec2::new(anchor.x, anchor.y - size_px * 0.5);
+    let offset = (pointer - center).abs();
+    (offset.x <= half && offset.y <= half).then(|| pointer.distance(center))
+}
+
+/// Burns the halo behind whatever is picked, and puts out the rest.
+///
+/// Written into the material rather than swapped for another one: there is a
+/// material per placemark already, and the halo is one number in it.
+fn highlight_placemarks(
+    settings: Res<PlacemarkSettings>,
+    placemarks: Query<(&Placemark, &MeshMaterial3d<IconMaterial>)>,
+    mut materials: ResMut<Assets<IconMaterial>>,
+) {
+    let target = settings.highlight_target();
+    for (placemark, material) in &placemarks {
+        let halo = if target == Some(placemark.body) {
+            if settings.pinned == Some(placemark.body) {
+                PINNED_HALO
+            } else {
+                HOVERED_HALO
+            }
+        } else {
+            0.0
+        };
+        if let Some(mut material) = materials.get_mut(&material.0)
+            && material.uniform.halo != halo
+        {
+            material.uniform.halo = halo;
+        }
+    }
+}
+
+/// Whether a point on the globe can be seen from the camera.
+///
+/// The horizon of a sphere of radius `r` as seen from `eye` is the plane
+/// `dot(point, eye) == r * r`, so that one product answers it — nearer the eye
+/// than the plane and the point is over the edge of the world.
+///
+/// Measured against the radius the *imagery* reaches rather than the sphere's,
+/// because a tile stands proud of the sphere and is what an icon would really
+/// disappear behind. The difference is a fraction of a degree of arc; it is
+/// there so an icon does not linger for a frame on a horizon the terrain has
+/// already crossed.
+fn above_the_horizon(point: Vec3, eye: Vec3) -> bool {
+    point.dot(eye) >= MAX_TILE_RADIUS * MAX_TILE_RADIUS
+}
+
 /// Where a coordinate's icon hangs, in the Earth-fixed frame.
 fn anchor(coordinate: LatLon) -> Vec3 {
     coordinate.to_direction() * PLACEMARK_RADIUS
 }
 
 /// One quad, all four corners on the anchor. The UV says which corner this is,
-/// which is both what the vertex shader spreads it by and what the fragment
-/// shader reads the icon with.
+/// which is what the vertex shader spreads it by — bottom edge on the
+/// coordinate, the rest standing above it — and what the fragment shader reads
+/// the icon with.
 fn icon_quad() -> Mesh {
     let corners = [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]];
     Mesh::new(
@@ -193,6 +455,73 @@ fn icon_quad() -> Mesh {
 }
 
 // ---------------------------------------------------------------------------
+// What the state stream reports
+// ---------------------------------------------------------------------------
+
+/// The placemarks, as an interface sees them.
+#[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PlacemarksState {
+    /// Whether the cursor is picking placemarks.
+    pub picking: bool,
+    /// The placemark under the cursor, if there is one.
+    pub hovered: Option<PickedPlacemark>,
+    /// The placemark that was pinned, if one was. The globe haloes this in
+    /// preference to whatever is hovered, so an interface showing one of them
+    /// should prefer it too.
+    pub pinned: Option<PickedPlacemark>,
+}
+
+/// A placemark the cursor found, and where it stands at this moment.
+#[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PickedPlacemark {
+    /// `"sun"` or `"moon"` — what [`crate::api::GlobeCommand::PinPlacemark`]
+    /// has to be given to name this one again.
+    pub body: &'static str,
+    pub label: &'static str,
+    /// The point the body is overhead, which is where the icon is standing.
+    pub coordinate: LatLon,
+}
+
+/// What the state snapshot reads the placemarks through: the picks, and the
+/// moon — whose coordinate the snapshot needs and nothing else in it carries.
+///
+/// One parameter rather than two because a system may only take sixteen, and
+/// [`crate::api::publish_state`] already spans every controllable part of the
+/// globe. Grouping them here also keeps the snapshot from having to know that
+/// a placemark's coordinate lives somewhere other than the placemark.
+#[derive(SystemParam)]
+pub struct PlacemarkPicks<'w> {
+    settings: Res<'w, PlacemarkSettings>,
+    moon: Res<'w, Moon>,
+}
+
+impl PlacemarkPicks<'_> {
+    /// Describes both picks, with the coordinate each placemark is on now.
+    pub fn describe(&self, sun: &Sun) -> PlacemarksState {
+        let describe = |body: Option<Body>| {
+            body.map(|body| PickedPlacemark {
+                body: body.id(),
+                label: body.label(),
+                coordinate: body.coordinate(sun, &self.moon),
+            })
+        };
+        PlacemarksState {
+            picking: self.settings.picking,
+            hovered: describe(self.settings.hovered),
+            pinned: describe(self.settings.pinned),
+        }
+    }
+
+    /// The two picks as the state digest compares them — which placemark,
+    /// rather than where it has drifted to since the last frame.
+    pub fn digest(&self) -> crate::api::PlacemarkDigest {
+        (self.settings.hovered, self.settings.pinned)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The material
 // ---------------------------------------------------------------------------
 
@@ -203,7 +532,10 @@ pub struct IconUniform {
     /// Half the icon's size on screen, in device pixels: the mesh spreads each
     /// corner one unit either way, so the shader wants the half-extent.
     pub size_px: f32,
-    pub _padding: Vec3,
+    /// How strongly the halo behind the icon burns, from nothing to
+    /// [`PINNED_HALO`].
+    pub halo: f32,
+    pub _padding: Vec2,
 }
 
 #[derive(Asset, AsBindGroup, TypePath, Clone)]
@@ -221,7 +553,8 @@ impl IconMaterial {
             uniform: IconUniform {
                 tint: Vec4::ONE,
                 size_px: (size_px * 0.5).max(0.1),
-                _padding: Vec3::ZERO,
+                halo: 0.0,
+                _padding: Vec2::ZERO,
             },
             icon: Some(icon),
         }
@@ -265,6 +598,23 @@ impl Material for IconMaterial {
         // The quad's winding flips as the globe turns under it, so which way it
         // faces cannot decide whether it is drawn.
         descriptor.primitive.cull_mode = None;
+
+        // And neither can the depth buffer. A placemark is a flat quad held up
+        // to the camera at a point on a curved surface, so the ground it is
+        // standing on rises through it from every angle but straight overhead —
+        // half an icon at a grazing view, a corner of one near the limb, and
+        // the line where it is cut moving as the camera does. Raising the
+        // anchor cannot fix that, because the amount the surface rises across
+        // the icon is unbounded as the view flattens.
+        //
+        // So the icon is drawn over the scene rather than into it: never
+        // clipped, never half-buried, and always whole. What it gives up is
+        // being hidden by anything in front of it — which is only the globe
+        // itself, and [`hide_over_the_horizon`] takes that back by hiding a
+        // placemark whose point has gone round the far side.
+        if let Some(depth_stencil) = descriptor.depth_stencil.as_mut() {
+            depth_stencil.depth_compare = Some(CompareFunction::Always);
+        }
         Ok(())
     }
 }
@@ -288,6 +638,80 @@ mod tests {
         let placed = LatLon::from_direction(anchor(coordinate));
         assert!((placed.lat - coordinate.lat).abs() < 1.0e-3, "{placed:?}");
         assert!((placed.lon - coordinate.lon).abs() < 1.0e-3, "{placed:?}");
+    }
+
+    #[test]
+    fn a_point_facing_the_camera_is_drawn() {
+        let eye = Vec3::Z * 4.0;
+        assert!(above_the_horizon(anchor(LatLon::new(0.0, 0.0)), eye));
+        // Well inside the visible cap, and well outside it.
+        assert!(above_the_horizon(anchor(LatLon::new(0.0, 60.0)), eye));
+        assert!(!above_the_horizon(anchor(LatLon::new(0.0, 120.0)), eye));
+        assert!(!above_the_horizon(anchor(LatLon::new(0.0, 180.0)), eye));
+    }
+
+    #[test]
+    fn the_horizon_closes_in_as_the_camera_drops() {
+        // From low down only a small cap is in view; from far off, very nearly
+        // a hemisphere. The same coordinate crosses the horizon between the two.
+        let low = Vec3::Z * (GLOBE_RADIUS + 0.02);
+        let high = Vec3::Z * 60.0;
+        let point = anchor(LatLon::new(0.0, 80.0));
+        assert!(!above_the_horizon(point, low));
+        assert!(above_the_horizon(point, high));
+    }
+
+    #[test]
+    fn the_icon_is_picked_where_it_is_drawn() {
+        // Viewport coordinates count down the screen, so the icon covers the
+        // square above its anchor.
+        let anchor = Vec2::new(100.0, 200.0);
+        let middle = Vec2::new(100.0, 184.0);
+        assert!(distance_to_icon(middle, anchor, 32.0).is_some());
+        // Its top edge, and well above it.
+        assert!(distance_to_icon(Vec2::new(100.0, 170.0), anchor, 32.0).is_some());
+        assert!(distance_to_icon(Vec2::new(100.0, 140.0), anchor, 32.0).is_none());
+        // Below the anchor is the ground the icon stands on, not the icon.
+        assert!(distance_to_icon(Vec2::new(100.0, 230.0), anchor, 32.0).is_none());
+        // And off to one side.
+        assert!(distance_to_icon(Vec2::new(160.0, 184.0), anchor, 32.0).is_none());
+    }
+
+    #[test]
+    fn the_nearer_icon_is_the_one_picked() {
+        let size = 32.0;
+        let pointer = Vec2::new(100.0, 184.0);
+        let near = distance_to_icon(pointer, Vec2::new(100.0, 200.0), size).expect("a hit");
+        let far = distance_to_icon(pointer, Vec2::new(110.0, 205.0), size).expect("a hit");
+        assert!(near < far, "{near} vs {far}");
+    }
+
+    #[test]
+    fn a_pin_outlives_the_pointer_and_answers_to_its_name() {
+        let mut settings = PlacemarkSettings {
+            hovered: Some(Body::Sun),
+            ..Default::default()
+        };
+        assert_eq!(settings.highlight_target(), Some(Body::Sun));
+
+        assert!(settings.pin("moon"));
+        // Pinned beats hovered, which is what an interface showing one of them
+        // has to be able to rely on.
+        assert_eq!(settings.highlight_target(), Some(Body::Moon));
+        settings.hovered = None;
+        assert_eq!(settings.highlight_target(), Some(Body::Moon));
+
+        assert!(!settings.pin("mars"));
+        settings.clear_pin();
+        assert_eq!(settings.highlight_target(), None);
+    }
+
+    #[test]
+    fn every_body_is_named_both_ways() {
+        for body in Body::ALL {
+            assert_eq!(Body::from_id(body.id()), Some(body));
+        }
+        assert_eq!(Body::from_id("sol"), None);
     }
 
     #[test]

@@ -229,6 +229,23 @@ fn format_readout(state: &GlobeState) -> String {
         None => String::new(),
     };
 
+    // The placemarks get their own line for the same reason the satellite does:
+    // an icon standing over the ground and a feature drawn on it are different
+    // things in different places, and both can be under the pointer at once.
+    let placemark = match state
+        .placemarks
+        .pinned
+        .as_ref()
+        .or(state.placemarks.hovered.as_ref())
+    {
+        Some(placemark) => format!(
+            "\nplacemark {} · {}",
+            placemark.label,
+            placemark.coordinate.format()
+        ),
+        None => String::new(),
+    };
+
     format!(
         "TERRAMENTA\n\
          cursor    {cursor}\n\
@@ -237,7 +254,7 @@ fn format_readout(state: &GlobeState) -> String {
          sun over  {}{}\n\
          clock     {}{}\n\
          imagery   {imagery}\n\
-         vectors   {vectors}{overlays}{picked}{satellite}",
+         vectors   {vectors}{overlays}{picked}{satellite}{placemark}",
         state.camera.altitude_km,
         state.frame.label,
         state.sun.subsolar.format(),

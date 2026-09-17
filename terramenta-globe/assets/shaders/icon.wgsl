@@ -20,8 +20,20 @@ struct IconUniform {
     tint: vec4<f32>,
     // Half the icon's size on screen, in device pixels.
     size_px: f32,
-    padding: vec3<f32>,
+    // How strongly the halo behind the icon burns: zero for a placemark that is
+    // neither hovered nor picked.
+    halo: f32,
+    padding: vec2<f32>,
 };
+
+// How far out the halo reaches and where it starts fading, as a fraction of the
+// quad's half-width. It has to stay inside the quad — there is no room to draw
+// beyond it — so it is a disc a little larger than the icon rather than an
+// outline traced around it.
+const HALO_INNER: f32 = 0.25;
+const HALO_OUTER: f32 = 0.95;
+// The most opaque the halo goes at its centre, under the icon.
+const HALO_ALPHA: f32 = 0.55;
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> icon: IconUniform;
 @group(#{MATERIAL_BIND_GROUP}) @binding(1) var icon_texture: texture_2d<f32>;
@@ -49,11 +61,18 @@ fn vertex(vertex: Vertex) -> VertexOutput {
 
     // Spread over the view's own axes, so the icon faces the camera and stays
     // upright however the globe under it is turned.
+    //
+    // Hung *from* the anchor rather than centred on it — the `+ 1.0` lifts the
+    // quad by its own half-height, putting its bottom edge on the coordinate,
+    // which is how a pin works. Centred, the lower half of the icon is inside
+    // the globe: the quad faces the camera while the surface curves away from
+    // it, so everywhere but straight overhead the depth test eats the bottom of
+    // the icon along the line where the two cross.
     let extent = world_per_pixel(world_position.xyz) * icon.size_px;
     let right = view.world_from_view[0].xyz;
     let up = view.world_from_view[1].xyz;
     world_position = vec4<f32>(
-        world_position.xyz + (right * vertex.uv.x + up * vertex.uv.y) * extent,
+        world_position.xyz + (right * vertex.uv.x + up * (vertex.uv.y + 1.0)) * extent,
         1.0,
     );
 
@@ -81,5 +100,26 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // up the screen where a texture's runs down it.
     let texcoord = vec2<f32>(in.uv.x * 0.5 + 0.5, 0.5 - in.uv.y * 0.5);
     let texel = textureSample(icon_texture, icon_sampler, texcoord);
-    return vec4<f32>(texel.rgb * icon.tint.rgb, texel.a * icon.tint.a);
+    let color = texel.rgb * icon.tint.rgb;
+    let alpha = texel.a * icon.tint.a;
+
+    if icon.halo <= 0.0 {
+        return vec4<f32>(color, alpha);
+    }
+
+    // A soft disc behind the icon rather than over it, on the same reasoning as
+    // the overlay highlight: a picked thing keeps its own colours and gains a
+    // glow around them, instead of disappearing under a wash. Near-white, so it
+    // separates the pick from whatever the icon itself is coloured.
+    let glow = (1.0 - smoothstep(HALO_INNER, HALO_OUTER, length(in.uv)))
+        * HALO_ALPHA
+        * clamp(icon.halo, 0.0, 1.0);
+
+    // The icon composited over the halo, both in straight alpha.
+    let combined = alpha + glow * (1.0 - alpha);
+    if combined <= 0.0 {
+        return vec4<f32>(0.0);
+    }
+    let blended = (color * alpha + vec3<f32>(1.0) * glow * (1.0 - alpha)) / combined;
+    return vec4<f32>(blended, combined);
 }
