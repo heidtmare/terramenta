@@ -4,6 +4,10 @@ This is a rebirth of our original JavaFX + NetBean Terramenta GIS platform from 
 (which has sadly now been pruned by bitbucket, but an old fork can be found here: https://github.com/emxsys/emxsys-terramenta)  
 It is a spiritual successor and will not have feature parity. The entire stack has changed, but the lessons live on.
 
+Note: Not taking pull requests at the moment as I work though the core feature backlog.
+
+----------
+
 A navigable 3D globe of Earth, written in Rust with [Bevy](https://bevy.org),
 rendered through WebGPU, and shipped to the browser as WebAssembly — with a web
 app around it that drives every part of it from JavaScript.
