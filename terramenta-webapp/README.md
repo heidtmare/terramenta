@@ -33,7 +33,7 @@ Everything, which is the point.
 | --- | --- |
 | **Imagery** | All eight presets, grouped by protocol, with the tile size, format and pyramid depth of the active one; previous/next; streaming on or off |
 | **Vector tiles** | Both keyless MVT sources, the source layers and pyramid depth of the active one, its colour, whether rings are filled, and streaming on or off |
-| **GeoJSON overlays** | A layer from a URL or a local file, two bundled samples and three live feeds to try, auto-refresh with a period, picking on or off, and per layer: visibility, colour, clamp to surface, extrude to ground, refresh now, remove — plus what each one holds and how stale it is |
+| **GeoJSON overlays** | A layer from a URL or a local file, two bundled samples and three live feeds to try, auto-refresh with a period, picking on or off, and per layer: visibility, colour, clamp to surface, extrude to ground, refresh now, remove — plus what each one holds and how stale it is. A document that styles its own features the simplestyle way is drawn that way, and a toggle appears to take the layer back |
 | **Satellites** | An OMM catalogue from a URL or a local file, five Celestrak groups to try, and per layer: visibility, colour, orbit trails on or off, how far ahead and behind they run, refetching, remove — plus a filterable list of every object in it, each with its own switch for being drawn and for being trailed |
 | **Sun & clock** | Run or pause, the rate from real time to a day a second, jump to now or forward by hours or days, and whether the night side is shaded at all |
 | **Reference frame** | ECEF or ECI |

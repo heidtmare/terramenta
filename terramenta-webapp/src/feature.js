@@ -138,10 +138,17 @@ function choose(state) {
 }
 
 function describeFeature(feature, pinned) {
+  // simplestyle-spec's `title` is the one name a document gives its own
+  // features, so it beats the layer's — which then moves down to the subtitle,
+  // where it still says which feed this came out of. The globe parses it for
+  // us; `feature.style` is absent for a document that styles nothing.
+  const title = feature.style?.title;
   return {
     pinned,
-    title: feature.label,
-    subtitle: [feature.kind, feature.id ?? `feature ${feature.index}`].join(" · "),
+    title: title ?? feature.label,
+    subtitle: [title ? feature.label : null, feature.kind, feature.id ?? `feature ${feature.index}`]
+      .filter(Boolean)
+      .join(" · "),
     properties: feature.properties,
   };
 }

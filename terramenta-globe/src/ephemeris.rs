@@ -94,8 +94,8 @@ use crate::frame::{FrameMode, FrameSet, ReferenceFrame};
 use crate::geo::{EARTH_RADIUS_KM, Position};
 use crate::omm::{self, Catalogue};
 use crate::overlays::{
-    AltitudeMode, HIGHLIGHT_COLOR, HIGHLIGHT_GROW_PX, OverlayAltitude, OverlaySource, OverlayStyle,
-    OverlayStyleInfo, PICK_SLACK_PX, VectorMaterial, VectorMode,
+    AltitudeMode, FeaturePaint, HIGHLIGHT_COLOR, HIGHLIGHT_GROW_PX, OverlayAltitude, OverlaySource,
+    OverlayStyle, OverlayStyleInfo, PICK_SLACK_PX, VectorMaterial, VectorMode,
 };
 use crate::sun::Sun;
 use crate::tiles::MAX_TILE_RADIUS;
@@ -574,21 +574,11 @@ impl Ephemeris {
     /// are made twice — once when a part is first spawned, and again whenever
     /// the style changes — and two spellings of the same material would drift.
     fn marker_material(&self) -> VectorMaterial {
-        VectorMaterial::new(
-            VectorMode::Marker,
-            self.style.point_color,
-            self.style.point_size_px,
-        )
-        .above()
+        VectorMaterial::new(VectorMode::Marker, self.style.paint(VectorMode::Marker)).above()
     }
 
     fn arc_material(&self) -> VectorMaterial {
-        VectorMaterial::new(
-            VectorMode::Line,
-            self.style.line_color,
-            self.style.line_width_px,
-        )
-        .above()
+        VectorMaterial::new(VectorMode::Line, self.style.paint(VectorMode::Line)).above()
     }
 
     /// Larger than the marker and drawn behind it, so what is picked keeps its
@@ -598,8 +588,10 @@ impl Ephemeris {
     fn highlight_material(&self) -> VectorMaterial {
         VectorMaterial::new(
             VectorMode::Marker,
-            HIGHLIGHT_COLOR,
-            self.style.point_size_px + HIGHLIGHT_GROW_PX,
+            crate::overlays::Paint {
+                color: HIGHLIGHT_COLOR,
+                size_px: self.style.point_size_px + HIGHLIGHT_GROW_PX,
+            },
         )
         .above()
         .behind()
@@ -1288,7 +1280,7 @@ fn draw_ephemerides(
         }
 
         let (positions, drawn) = positions_of(layer, &catalogue, now, mode);
-        let markers = crate::overlays::marker_mesh(&positions, None, ALTITUDE);
+        let markers = crate::overlays::marker_mesh(&positions, None, ALTITUDE, FeaturePaint::Layer);
         // The material is taken before the layer is borrowed to be drawn into.
         let material = layer.marker_material();
         let positions = Arc::new(positions);
@@ -1326,7 +1318,7 @@ fn draw_ephemerides(
                 &mut layer.arcs,
                 "trails",
                 material,
-                crate::overlays::line_mesh(&trails, None, false, ALTITUDE),
+                crate::overlays::line_mesh(&trails, None, false, ALTITUDE, FeaturePaint::Layer),
             );
             Arc::new(trails)
         });
@@ -1702,7 +1694,7 @@ fn highlight_satellites(
                 builder.push_point(feature, position);
                 // The same builder the markers are drawn with, so the halo is
                 // spread around the same anchor by the same shader.
-                crate::overlays::marker_mesh(&builder.finish(), None, ALTITUDE)
+                crate::overlays::marker_mesh(&builder.finish(), None, ALTITUDE, FeaturePaint::Layer)
             });
 
         let material = layer.highlight_material();

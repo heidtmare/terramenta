@@ -84,11 +84,80 @@ impl PickKind {
     }
 }
 
-/// How close a shape has to be to count, in degrees, per kind of shape.
+/// How close a shape has to be to count.
+///
+/// In pixels rather than in degrees, and with the conversion carried alongside,
+/// because a shape's reach is its own size on screen and a document is allowed
+/// to size its features one at a time — see [`crate::simplestyle`]. Resolving
+/// it here rather than at the call site is what keeps a feed of small markers
+/// and one large one from all being grabbable at the large one's radius.
 #[derive(Debug, Clone, Copy)]
 pub struct Tolerance {
-    pub point: f32,
-    pub line: f32,
+    /// How much globe one device pixel covers, in degrees, at the depth the
+    /// cursor is at.
+    pub degrees_per_pixel: f32,
+    /// The layer's marker diameter, for the features the document did not size.
+    pub point_px: f32,
+    /// The layer's line width, likewise.
+    pub line_px: f32,
+    /// How far off a shape the cursor may still be, on top of the shape's own
+    /// half-width. A two-pixel line is otherwise a two-pixel target.
+    pub slack_px: f32,
+    /// Whether the document's own sizes count. Off, every feature is measured
+    /// at the layer's size — which is what it was drawn at, because the layer
+    /// is ignoring the document's style there too.
+    pub simple_style: bool,
+}
+
+impl Tolerance {
+    /// How far from a shape of this size on screen the cursor still counts, in
+    /// the degrees [`separation`] measures.
+    ///
+    /// Half the size, because a shape is drawn either side of where it is.
+    fn reach(&self, size_px: f32) -> f64 {
+        f64::from((size_px * 0.5 + self.slack_px) * self.degrees_per_pixel)
+    }
+
+    /// The reach of one feature's markers, or of its lines.
+    fn point_reach(&self, document: &FeatureSet, feature: u32) -> f64 {
+        self.reach(self.sized(document, feature, PickKind::Point))
+    }
+
+    fn line_reach(&self, document: &FeatureSet, feature: u32) -> f64 {
+        self.reach(self.sized(document, feature, PickKind::Line))
+    }
+
+    /// The size on screen the document asked for, or the layer's.
+    fn sized(&self, document: &FeatureSet, feature: u32, kind: PickKind) -> f32 {
+        let layer = match kind {
+            PickKind::Point => self.point_px,
+            _ => self.line_px,
+        };
+        if !self.simple_style {
+            return layer;
+        }
+        let Some(style) = document.feature_style(feature as usize) else {
+            return layer;
+        };
+        match kind {
+            PickKind::Point => style
+                .marker_size
+                .map_or(layer, crate::simplestyle::MarkerSize::diameter_px),
+            _ => style.stroke_width.unwrap_or(layer),
+        }
+    }
+
+    /// The widest anything in this document is drawn, which is as far as the
+    /// broad phase has to look before it can dismiss a shape outright.
+    fn widest_line_reach(&self, document: &FeatureSet) -> f64 {
+        if !self.simple_style || !document.has_styles() {
+            return self.reach(self.line_px);
+        }
+        let widest = (0..document.feature_count())
+            .map(|feature| self.sized(document, feature as u32, PickKind::Line))
+            .fold(self.line_px, f32::max);
+        self.reach(widest)
+    }
 }
 
 /// One feature found under the cursor.
@@ -163,11 +232,14 @@ impl PickIndex {
     pub fn pick(&self, document: &FeatureSet, cursor: LatLon, tolerance: Tolerance) -> Option<Hit> {
         let mut best: Option<Hit> = None;
         let cursor = DVec2::new(f64::from(cursor.lon), f64::from(cursor.lat));
-        let (point_reach, line_reach) = (f64::from(tolerance.point), f64::from(tolerance.line));
+        // The broad phase has to be generous enough for the widest feature in
+        // the document; the measurement that follows is per feature, so being
+        // generous here only costs a distance test that then fails.
+        let widest = tolerance.widest_line_reach(document);
 
         for (feature, point) in document.points() {
             let distance = separation(cursor, ground(point));
-            if distance <= point_reach {
+            if distance <= tolerance.point_reach(document, feature) {
                 consider(
                     &mut best,
                     Hit {
@@ -180,9 +252,10 @@ impl PickIndex {
         }
 
         for ((feature, line), reach) in document.lines().zip(&self.lines) {
-            if !reach.could_reach(cursor, line_reach) {
+            if !reach.could_reach(cursor, widest) {
                 continue;
             }
+            let line_reach = tolerance.line_reach(document, feature);
             if let Some(distance) = path_distance(line, cursor, line_reach) {
                 consider(
                     &mut best,
@@ -196,9 +269,10 @@ impl PickIndex {
         }
 
         for ((feature, polygon), reach) in document.polygons().zip(&self.polygons) {
-            if !reach.could_reach(cursor, line_reach) {
+            if !reach.could_reach(cursor, widest) {
                 continue;
             }
+            let line_reach = tolerance.line_reach(document, feature);
             // The outline counts as much as the fill: a ring with a transparent
             // fill is still a shape on screen, and has to be grabbable by the
             // only part of it that was drawn.
@@ -391,15 +465,18 @@ mod tests {
         crate::geojson::parse(json).expect("valid")
     }
 
+    /// Half a degree of reach for everything, so the tests read in degrees:
+    /// one pixel to the degree, a shape a degree across, and no slack.
+    const HALF_A_DEGREE: Tolerance = Tolerance {
+        degrees_per_pixel: 1.0,
+        point_px: 1.0,
+        line_px: 1.0,
+        slack_px: 0.0,
+        simple_style: true,
+    };
+
     fn pick_at(document: &FeatureSet, lat: f32, lon: f32) -> Option<Hit> {
-        PickIndex::build(document).pick(
-            document,
-            LatLon::new(lat, lon),
-            Tolerance {
-                point: 0.5,
-                line: 0.5,
-            },
-        )
+        PickIndex::build(document).pick(document, LatLon::new(lat, lon), HALF_A_DEGREE)
     }
 
     #[test]
@@ -422,19 +499,58 @@ mod tests {
     }
 
     #[test]
+    fn a_marker_is_grabbable_at_the_size_it_was_drawn() {
+        // A document that sized its own markers gets a target to match — a
+        // large marker with a small marker's reach is a thing you can see and
+        // cannot click.
+        let quakes = document(
+            r##"{"type": "FeatureCollection", "features": [
+                {"type": "Feature", "properties": {"marker-size": "large"},
+                 "geometry": {"type": "Point", "coordinates": [0, 0]}},
+                {"type": "Feature", "properties": {"marker-size": "small"},
+                 "geometry": {"type": "Point", "coordinates": [40, 0]}}
+            ]}"##,
+        );
+        // One degree per pixel, so a marker's reach in degrees is half the
+        // pixels it was drawn at.
+        let tolerance = Tolerance {
+            degrees_per_pixel: 1.0,
+            point_px: 1.0,
+            line_px: 1.0,
+            slack_px: 0.0,
+            simple_style: true,
+        };
+        let index = PickIndex::build(&quakes);
+        let at = |lon: f32| index.pick(&quakes, LatLon::new(0.0, lon), tolerance);
+
+        let large = crate::simplestyle::MARKER_LARGE_PX * 0.5;
+        let small = crate::simplestyle::MARKER_SMALL_PX * 0.5;
+        assert!(at(f32::midpoint(0.0, large)).is_some());
+        assert!(at(large + 1.0).is_none());
+        // And the small one is not grabbable at the large one's reach.
+        assert!(at(40.0 + small - 0.5).is_some());
+        assert!(at(40.0 + small + 1.0).is_none());
+
+        // A layer that ignores the document measures every feature at its own
+        // size, which is also what it drew them at.
+        let plain = Tolerance {
+            simple_style: false,
+            ..tolerance
+        };
+        assert!(
+            index
+                .pick(&quakes, LatLon::new(0.0, large - 1.0), plain)
+                .is_none()
+        );
+    }
+
+    #[test]
     fn the_nearer_of_two_markers_wins() {
         let pair = document(r#"{"type": "MultiPoint", "coordinates": [[0, 0], [0.4, 0]]}"#);
         // Both are inside the tolerance; the closer one is the one meant.
         let index = PickIndex::build(&pair);
         let hit = index
-            .pick(
-                &pair,
-                LatLon::new(0.0, 0.3),
-                Tolerance {
-                    point: 0.5,
-                    line: 0.5,
-                },
-            )
+            .pick(&pair, LatLon::new(0.0, 0.3), HALF_A_DEGREE)
             .expect("a hit");
         assert!((hit.distance - 0.1).abs() < 1.0e-3, "{hit:?}");
     }

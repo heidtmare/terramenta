@@ -311,6 +311,15 @@ function layerRow(layer, files) {
     globe.setOverlayAltitude(layer.id, height()),
   );
 
+  // A document is allowed to say how it wants to look — simplestyle-spec's
+  // `stroke`, `fill`, `marker-size` and the rest — and where it does, the
+  // colour above only reaches the features that said nothing. This is how to
+  // take the layer back: it is shown only for a document that styles something,
+  // because otherwise there is nothing for it to do.
+  const ownStyleToggle = toggle("Use the file's own colours", (on) =>
+    globe.setOverlaySimpleStyle(layer.id, on),
+  );
+
   /** A file's timer lives here; a URL's lives in the globe. */
   const setRefresh = (id, seconds) => {
     const file = files.get(id);
@@ -337,7 +346,13 @@ function layerRow(layer, files) {
     { class: "layer" },
     el("div", { class: "layer-head" }, visible.node, color),
     detail,
-    el("div", { class: "layer-height" }, clampToggle.node, extrudeToggle.node),
+    el(
+      "div",
+      { class: "layer-height" },
+      clampToggle.node,
+      extrudeToggle.node,
+      ownStyleToggle.node,
+    ),
     el(
       "div",
       { class: "buttons" },
@@ -354,6 +369,8 @@ function layerRow(layer, files) {
       visible.set(layer.visible);
       clampToggle.set(layer.altitude.mode === "clampToSurface");
       extrudeToggle.set(layer.altitude.extrude);
+      ownStyleToggle.set(layer.simpleStyle);
+      ownStyleToggle.node.hidden = layer.styledFeatures === 0;
       node.dataset.status = layer.status;
 
       const local = files.get(layer.id);
@@ -380,6 +397,7 @@ function describe(layer, local) {
 
   const geometry = [
     layer.features && `${layer.features} features`,
+    layer.styledFeatures && `${layer.styledFeatures} styled`,
     layer.points && `${layer.points} points`,
     layer.lines && `${layer.lines} lines`,
     layer.polygons && `${layer.polygons} polygons`,

@@ -27,12 +27,23 @@
 //! than shapes, and the corners are spread in the vertex shader — see
 //! `assets/shaders/vector.wgsl`, which is where the size is finally decided.
 //!
+//! **A document may style itself, one feature at a time.** GeoJSON has a
+//! convention for it — [simplestyle-spec 1.1.0], read by [`crate::simplestyle`]
+//! — and where a feature carries those members they override the layer's
+//! colours and sizes for that feature alone. It stays three draws: a styled
+//! feature's paint rides in its own vertices, and everything else in the same
+//! mesh still follows the material's uniform, which is what keeps recolouring a
+//! layer from having to rebuild it. See [`FeaturePaint`], and `simple_style` on
+//! [`OverlayRequest`] for turning the whole business off.
+//!
 //! **Height is the layer's to interpret.** GeoJSON's third element is carried
 //! through parsing unread (see [`crate::geo::Position`]) and turned into a
 //! radius here, under the layer's [`OverlayAltitude`]: what unit it is in, and
 //! whether it is honoured at all. It is measured up from the drape radii below
 //! rather than from the sphere, so a position with no height, one at sea level
 //! and one on a clamped layer all draw in the same place.
+//!
+//! [simplestyle-spec 1.1.0]: https://github.com/mapbox/simplestyle-spec/tree/master/1.1.0
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, RwLock};
@@ -58,6 +69,7 @@ use crate::frame::{FrameSet, ReferenceFrame};
 use crate::geo::{EARTH_RADIUS_KM, Position};
 use crate::globe::GLOBE_RADIUS;
 use crate::picking::{self, Hit, PickIndex, PickKind, Tolerance};
+use crate::simplestyle::SimpleStyleInfo;
 use crate::tessellate;
 use crate::tiles::MAX_TILE_RADIUS;
 
@@ -164,10 +176,12 @@ impl OverlaySource {
 
 /// How an overlay is drawn.
 ///
-/// One style for the whole layer. Per-feature styling would mean carrying
-/// GeoJSON properties through to the mesh builder and then a draw call per
-/// distinct appearance, and a layer is the unit an interface gives a colour to
-/// anyway — two feeds are told apart by being two colours.
+/// One style for the whole layer — the unit an interface gives a colour to,
+/// and what two feeds are told apart by. A feature may still override it for
+/// itself, but only by the document saying so in the members of
+/// [simplestyle-spec 1.1.0]; see [`crate::simplestyle`] and [`FeaturePaint`].
+///
+/// [simplestyle-spec 1.1.0]: https://github.com/mapbox/simplestyle-spec/tree/master/1.1.0
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OverlayStyle {
     pub point_color: Srgba,
@@ -193,6 +207,39 @@ impl Default for OverlayStyle {
             fill_color: Srgba::new(1.0, 0.62, 0.24, 0.22),
         }
     }
+}
+
+impl OverlayStyle {
+    /// What this layer draws one kind of shape with.
+    pub(crate) fn paint(&self, mode: VectorMode) -> Paint {
+        match mode {
+            VectorMode::Marker => Paint {
+                color: self.point_color,
+                size_px: self.point_size_px,
+            },
+            VectorMode::Line => Paint {
+                color: self.line_color,
+                size_px: self.line_width_px,
+            },
+            // A fill has no size on screen: it is as big as its ring.
+            VectorMode::Fill => Paint {
+                color: self.fill_color,
+                size_px: 0.0,
+            },
+        }
+    }
+}
+
+/// What one shape is drawn with: a colour, and a size on screen in device
+/// pixels — a marker's diameter, or a line's width.
+///
+/// The pair rather than two arguments, because everything that decides either
+/// of them decides both: the layer's style, a feature's own simplestyle over
+/// it, and the highlight over that.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Paint {
+    pub color: Srgba,
+    pub size_px: f32,
 }
 
 /// What a layer does with the height in its positions.
@@ -314,6 +361,11 @@ pub struct OverlayRequest {
     pub label: String,
     pub source: OverlaySource,
     pub style: OverlayStyle,
+    /// Whether the document's own [simplestyle-spec 1.1.0] members override
+    /// that style, feature by feature. On unless an embedder says otherwise.
+    ///
+    /// [simplestyle-spec 1.1.0]: https://github.com/mapbox/simplestyle-spec/tree/master/1.1.0
+    pub simple_style: bool,
     pub altitude: OverlayAltitude,
     /// Seconds between refetches, or `None` to fetch once. A text source has
     /// nowhere to refetch from, so it ignores this.
@@ -351,6 +403,9 @@ impl OverlayStatus {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct OverlayCounts {
     pub features: usize,
+    /// How many of those carried simplestyle members of their own, which is
+    /// what tells an interface why recolouring the layer left some of it alone.
+    pub styled: usize,
     pub points: usize,
     pub lines: usize,
     pub polygons: usize,
@@ -390,6 +445,11 @@ struct Overlay {
     /// never answered out of the cache of the one before it.
     generation: u32,
     style: OverlayStyle,
+    /// Whether the document's own simplestyle members are honoured over the
+    /// style above. On by default — a document that took the trouble to say how
+    /// it looks generally meant it — and off for an interface that wants every
+    /// layer in a colour of its choosing whatever the feed thinks.
+    simple_style: bool,
     altitude: OverlayAltitude,
     refresh_seconds: Option<f32>,
     /// Seconds since the last fetch was started, which is both the refresh
@@ -424,6 +484,23 @@ struct Overlay {
 }
 
 impl Overlay {
+    /// What one feature of this layer is actually drawn with: the layer's own
+    /// paint, with the document's simplestyle over it where there is one and
+    /// where the layer is honouring it.
+    ///
+    /// The one answer to that question, so that the hit test, the highlight and
+    /// the mesh cannot disagree about how big a marker is — which they would
+    /// show by the halo sitting inside the thing it is meant to be around.
+    fn drawn_paint(&self, document: &FeatureSet, feature: usize, mode: VectorMode) -> Paint {
+        let base = self.style.paint(mode);
+        if !self.simple_style {
+            return base;
+        }
+        document
+            .feature_style(feature)
+            .map_or(base, |style| style.paint(mode, base))
+    }
+
     /// The asset path this overlay's document is fetched over.
     fn asset_path(&self) -> String {
         fetch::asset_path(OVERLAY_SOURCE, self.slot, self.generation, "geojson")
@@ -599,6 +676,7 @@ impl OverlaySettings {
             slot,
             generation: 0,
             style: request.style,
+            simple_style: request.simple_style,
             altitude: request.altitude,
             refresh_seconds: None,
             age_seconds: 0.0,
@@ -659,6 +737,22 @@ impl OverlaySettings {
         self.with(id, |overlay| {
             overlay.style = style;
             overlay.wants_restyle = true;
+        })
+    }
+
+    /// Sets whether the document's own simplestyle members are honoured.
+    ///
+    /// A remesh rather than a restyle, because where a feature's own colour
+    /// goes is into its vertices — which is exactly what makes it survive a
+    /// restyle. Nothing is refetched: the document already in hand is rebuilt,
+    /// so a pinned feature stays pinned.
+    pub fn set_simple_style(&mut self, id: &str, simple_style: bool) -> bool {
+        self.highlighted = None;
+        self.with(id, |overlay| {
+            if overlay.simple_style != simple_style {
+                overlay.simple_style = simple_style;
+                overlay.wants_remesh = true;
+            }
         })
     }
 
@@ -731,8 +825,12 @@ impl VectorMode {
 pub struct VectorUniform {
     /// Linear RGBA — the style is stated in sRGB, because that is what a colour
     /// picker hands over, and converted here.
+    ///
+    /// What the layer is painted with. A vertex carrying a colour of its own
+    /// overrides it, one vertex at a time; see [`FeaturePaint`].
     pub color: Vec4,
-    /// Marker radius, or half a line's width, in device pixels.
+    /// Marker radius, or half a line's width, in device pixels. Overridden the
+    /// same way, and halved the same way when it is.
     pub size_px: f32,
     pub mode: u32,
     pub _padding: Vec2,
@@ -748,15 +846,15 @@ pub struct VectorMaterial {
 }
 
 impl VectorMaterial {
-    pub(crate) fn new(mode: VectorMode, color: Srgba, size_px: f32) -> Self {
-        let linear = bevy::color::LinearRgba::from(color);
+    pub(crate) fn new(mode: VectorMode, paint: Paint) -> Self {
+        let linear = bevy::color::LinearRgba::from(paint.color);
         Self {
             depth_bias: mode.depth_bias(),
             uniform: VectorUniform {
                 color: Vec4::new(linear.red, linear.green, linear.blue, linear.alpha),
                 // Half-extents: the mesh spreads each corner one unit either
                 // way, so the shader wants the radius rather than the diameter.
-                size_px: (size_px * 0.5).max(0.1),
+                size_px: (paint.size_px * 0.5).max(0.1),
                 mode: mode as u32,
                 _padding: Vec2::ZERO,
             },
@@ -1071,6 +1169,7 @@ fn rebuild_overlays(
             Some(document) => {
                 overlay.counts = OverlayCounts {
                     features: document.feature_count(),
+                    styled: document.styled_features(),
                     points: document.point_count(),
                     lines: document.line_count(),
                     polygons: document.polygon_count(),
@@ -1102,34 +1201,39 @@ fn rebuild_overlays(
 
         let style = overlay.style;
         let altitude = overlay.altitude;
+        // What the document is allowed to say about its own appearance. A layer
+        // told to ignore it draws as if the members were not there at all —
+        // which is also what makes turning the toggle back and forth a remesh
+        // rather than a restyle.
+        let paint = |mode| {
+            if overlay.simple_style {
+                FeaturePaint::Over(style.paint(mode))
+            } else {
+                FeaturePaint::Layer
+            }
+        };
         // Fills first, then lines, then markers: the radii above already put
         // them in that order, and building them in it keeps the two agreeing.
         let built = [
             (
                 VectorMode::Fill,
-                style.fill_color,
-                0.0,
-                fill_mesh(&document, None, altitude),
+                fill_mesh(&document, None, altitude, paint(VectorMode::Fill)),
             ),
             (
                 VectorMode::Line,
-                style.line_color,
-                style.line_width_px,
-                line_mesh(&document, None, true, altitude),
+                line_mesh(&document, None, true, altitude, paint(VectorMode::Line)),
             ),
             (
                 VectorMode::Marker,
-                style.point_color,
-                style.point_size_px,
-                marker_mesh(&document, None, altitude),
+                marker_mesh(&document, None, altitude, paint(VectorMode::Marker)),
             ),
         ];
 
-        for (mode, color, size_px, mesh) in built {
+        for (mode, mesh) in built {
             let Some(mesh) = mesh else {
                 continue;
             };
-            let material = materials.add(VectorMaterial::new(mode, color, size_px));
+            let material = materials.add(VectorMaterial::new(mode, style.paint(mode)));
             let entity = commands
                 .spawn((
                     Name::new(format!("Overlay {} ({mode:?})", overlay.id)),
@@ -1168,7 +1272,13 @@ fn rebuild_overlays(
 }
 
 /// Applies a colour or size change without rebuilding any geometry — the mesh
-/// holds anchors, and none of the style is in it.
+/// holds anchors, and none of the *layer's* style is in it.
+///
+/// A feature that styled itself is the one thing this does not reach, and that
+/// is the intended answer rather than a limitation: a document that asked for a
+/// red ring asked for a red ring, and recolouring the layer around it should
+/// leave it red. Everything else in the same mesh follows the uniform as it
+/// always did.
 fn restyle_overlays(
     mut settings: ResMut<OverlaySettings>,
     mut materials: ResMut<Assets<VectorMaterial>>,
@@ -1178,13 +1288,8 @@ fn restyle_overlays(
             continue;
         }
         for part in &overlay.parts {
-            let (color, size_px) = match part.mode {
-                VectorMode::Marker => (overlay.style.point_color, overlay.style.point_size_px),
-                VectorMode::Line => (overlay.style.line_color, overlay.style.line_width_px),
-                VectorMode::Fill => (overlay.style.fill_color, 0.0),
-            };
             if let Some(mut material) = materials.get_mut(&part.material) {
-                *material = VectorMaterial::new(part.mode, color, size_px);
+                *material = VectorMaterial::new(part.mode, overlay.style.paint(part.mode));
             }
         }
     }
@@ -1228,16 +1333,18 @@ fn pick_features(
                 let Some(document) = overlay.data.as_ref() else {
                     continue;
                 };
-                // Half the width, because a shape is drawn either side of where
-                // it is; plus a little, because a two-pixel line is otherwise a
-                // two-pixel target.
-                let reach = |size_px: f32| (size_px * 0.5 + PICK_SLACK_PX) * tolerance;
                 let Some(hit) = overlay.index.pick(
                     document,
                     cursor,
                     Tolerance {
-                        point: reach(overlay.style.point_size_px),
-                        line: reach(overlay.style.line_width_px),
+                        degrees_per_pixel: tolerance,
+                        point_px: overlay.style.point_size_px,
+                        line_px: overlay.style.line_width_px,
+                        slack_px: PICK_SLACK_PX,
+                        // A feature drawn at the size it asked for has to be
+                        // grabbable at that size, or a large marker would have
+                        // a small target and a thin one a fat one.
+                        simple_style: overlay.simple_style,
                     },
                 ) else {
                     continue;
@@ -1310,36 +1417,40 @@ fn highlight_pick(
         return;
     };
 
-    let style = overlay.style;
     let altitude = overlay.altitude;
     // The same builders the layer itself was drawn with, told to walk past
     // every shape that is not this feature's. Cheap, because walking past a
     // shape is reading one integer out of the owner column — which is what
     // having that column separate from the coordinates buys.
     let only = Some(pick.feature as u32);
+    // A halo has to be bigger than the thing it is around, so it is sized from
+    // what that feature was actually drawn at — its own `stroke-width` or
+    // `marker-size` where the document gave it one, and the layer's otherwise.
+    // One feature, one size: nothing here needs paint per vertex.
+    let grown = |mode| Paint {
+        color: match mode {
+            VectorMode::Fill => HIGHLIGHT_FILL,
+            _ => HIGHLIGHT_COLOR,
+        },
+        size_px: overlay.drawn_paint(&document, pick.feature, mode).size_px + HIGHLIGHT_GROW_PX,
+    };
 
     let built = [
         (
             VectorMode::Fill,
-            HIGHLIGHT_FILL,
-            0.0,
-            fill_mesh(&document, only, altitude),
+            fill_mesh(&document, only, altitude, FeaturePaint::Layer),
         ),
         (
             VectorMode::Line,
-            HIGHLIGHT_COLOR,
-            style.line_width_px + HIGHLIGHT_GROW_PX,
-            line_mesh(&document, only, true, altitude),
+            line_mesh(&document, only, true, altitude, FeaturePaint::Layer),
         ),
         (
             VectorMode::Marker,
-            HIGHLIGHT_COLOR,
-            style.point_size_px + HIGHLIGHT_GROW_PX,
-            marker_mesh(&document, only, altitude),
+            marker_mesh(&document, only, altitude, FeaturePaint::Layer),
         ),
     ];
 
-    for (mode, color, size_px, mesh) in built {
+    for (mode, mesh) in built {
         let Some(mesh) = mesh else {
             continue;
         };
@@ -1350,7 +1461,7 @@ fn highlight_pick(
                 // globe and hidden with the layer like everything else of it.
                 OverlayEntity(overlay.id.clone()),
                 Mesh3d(meshes.add(mesh)),
-                MeshMaterial3d(materials.add(VectorMaterial::new(mode, color, size_px).behind())),
+                MeshMaterial3d(materials.add(VectorMaterial::new(mode, grown(mode)).behind())),
                 Transform::from_rotation(frame.earth_to_world()),
                 NoFrustumCulling,
             ))
@@ -1381,11 +1492,60 @@ fn orient_overlays(
 // Meshes
 // ---------------------------------------------------------------------------
 
+/// Where a mesh's colours come from.
+///
+/// [`FeaturePaint::Layer`] is every shape the same, which is what the
+/// material's uniform already does: the mesh carries no colour at all, and a
+/// restyle swaps the layer's colours without touching a vertex. It is what a
+/// vector tile, an ephemeris and a highlight are built with, and what an
+/// ordinary overlay is built with too until a document turns up that styles
+/// itself.
+///
+/// [`FeaturePaint::Over`] is such a document. Every vertex carries the paint
+/// its own feature asked for, over the layer paint given here — and a vertex
+/// whose feature asked for nothing carries [`INHERIT`] instead, which sends the
+/// shader back to the uniform. That is the part worth keeping: a document where
+/// one country is red stays one draw, still restyles the other nine hundred
+/// from the uniform, and keeps the red one red while it does.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum FeaturePaint {
+    /// The material decides, for everything in the mesh.
+    Layer,
+    /// The document decides, feature by feature, over this layer paint.
+    Over(Paint),
+}
+
+impl FeaturePaint {
+    /// Whether the mesh has to carry paint per vertex at all. A document that
+    /// styles nothing — which is most of them, and every vector tile — pays
+    /// nothing for this, not even an attribute of sentinels.
+    fn per_vertex(self, document: &FeatureSet) -> bool {
+        matches!(self, Self::Over(_)) && document.styles_paint()
+    }
+
+    /// What one feature's shapes are drawn with, or `None` to leave it to the
+    /// material — which is what a feature that styled nothing wants, so that a
+    /// restyle still reaches it.
+    fn of(self, document: &FeatureSet, feature: u32, mode: VectorMode) -> Option<Paint> {
+        let Self::Over(base) = self else {
+            return None;
+        };
+        let paint = document.feature_style(feature as usize)?.paint(mode, base);
+        (paint != base).then_some(paint)
+    }
+}
+
 /// The attributes every overlay mesh carries.
 ///
 /// All three shapes use the same set whether or not they need all of it: the
 /// vertex layout is what decides which fields of Bevy's `Vertex` struct exist,
 /// and one shader serving all three has to find the same ones every time.
+///
+/// The paint attributes are the exception, and they are an exception on
+/// purpose: they are either on every vertex of a mesh or on none of it, and the
+/// shader finds them through the `VERTEX_COLORS` and `VERTEX_UVS_B` definitions
+/// Bevy sets from the layout. A layer that does not need them draws through a
+/// pipeline that does not have them, and its vertices stay the size they were.
 struct MeshBuilder {
     positions: Vec<[f32; 3]>,
     normals: Vec<[f32; 3]>,
@@ -1397,21 +1557,50 @@ struct MeshBuilder {
     /// this corner steps off to. Unused by markers and fills, which still carry
     /// it so that the vertex layout does not change between them.
     tangents: Vec<[f32; 4]>,
+    /// Linear RGBA per vertex, and the size in pixels beside it, for a mesh
+    /// built from a document that styles itself. Empty otherwise, and then no
+    /// attribute is inserted at all.
+    colors: Vec<[f32; 4]>,
+    sizes: Vec<[f32; 2]>,
+    /// Whether the two above are being filled, decided once for the whole mesh.
+    per_vertex_paint: bool,
+    /// What [`Self::push`] writes into them, until it is set again. `None` is
+    /// the sentinel: this vertex takes the material's word for it.
+    paint: Option<Paint>,
     indices: Vec<u32>,
 }
 
 /// What a vertex that is not part of a line puts in its tangent.
 const NO_TANGENT: [f32; 4] = [1.0, 0.0, 0.0, 0.0];
 
+/// What a vertex writes when its feature said nothing about how to paint it:
+/// a negative alpha and a negative size, neither of which is a value anything
+/// could otherwise mean, so the shader reads either one as "ask the uniform".
+const INHERIT_COLOR: [f32; 4] = [0.0, 0.0, 0.0, -1.0];
+const INHERIT_SIZE: [f32; 2] = [-1.0, 0.0];
+
 impl MeshBuilder {
-    fn new() -> Self {
+    fn new(per_vertex_paint: bool) -> Self {
         Self {
             positions: Vec::new(),
             normals: Vec::new(),
             uvs: Vec::new(),
             tangents: Vec::new(),
+            colors: Vec::new(),
+            sizes: Vec::new(),
+            per_vertex_paint,
+            paint: None,
             indices: Vec::new(),
         }
+    }
+
+    /// Sets what the vertices pushed from here on are painted with.
+    ///
+    /// Held on the builder rather than passed to [`Self::push`] because a shape
+    /// is pushed from half a dozen places — a ribbon, a corner post, a wall —
+    /// and all of them would only be carrying it through.
+    fn paint(&mut self, paint: Option<Paint>) {
+        self.paint = paint;
     }
 
     fn push(&mut self, direction: Vec3, radius: f32, uv: [f32; 2], tangent: [f32; 4]) {
@@ -1419,6 +1608,23 @@ impl MeshBuilder {
         self.normals.push(direction.to_array());
         self.uvs.push(uv);
         self.tangents.push(tangent);
+        if self.per_vertex_paint {
+            match self.paint {
+                Some(paint) => {
+                    // Linear, because that is what a vertex colour means to a
+                    // shader — the sRGB the style was stated in is converted
+                    // here exactly as the uniform's is.
+                    let linear = bevy::color::LinearRgba::from(paint.color);
+                    self.colors
+                        .push([linear.red, linear.green, linear.blue, linear.alpha]);
+                    self.sizes.push([paint.size_px, 0.0]);
+                }
+                None => {
+                    self.colors.push(INHERIT_COLOR);
+                    self.sizes.push(INHERIT_SIZE);
+                }
+            }
+        }
     }
 
     fn next_index(&self) -> u32 {
@@ -1429,16 +1635,21 @@ impl MeshBuilder {
         if self.indices.is_empty() {
             return None;
         }
+        let mesh = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::RENDER_WORLD,
+        )
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, self.positions)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, self.normals)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, self.uvs)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, self.tangents)
+        .with_inserted_indices(Indices::U32(self.indices));
+        if !self.per_vertex_paint {
+            return Some(mesh);
+        }
         Some(
-            Mesh::new(
-                PrimitiveTopology::TriangleList,
-                RenderAssetUsages::RENDER_WORLD,
-            )
-            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, self.positions)
-            .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, self.normals)
-            .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, self.uvs)
-            .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, self.tangents)
-            .with_inserted_indices(Indices::U32(self.indices)),
+            mesh.with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, self.colors)
+                .with_inserted_attribute(Mesh::ATTRIBUTE_UV_1, self.sizes),
         )
     }
 }
@@ -1487,12 +1698,14 @@ pub(crate) fn marker_mesh(
     document: &FeatureSet,
     only: Option<u32>,
     altitude: OverlayAltitude,
+    paint: FeaturePaint,
 ) -> Option<Mesh> {
-    let mut builder = MeshBuilder::new();
+    let mut builder = MeshBuilder::new(paint.per_vertex(document));
     for (feature, point) in document.points() {
         if only.is_some_and(|wanted| wanted != feature) {
             continue;
         }
+        builder.paint(paint.of(document, feature, VectorMode::Marker));
         let direction = point.to_direction();
         let radius = marker_radius(point, altitude);
         let base = builder.next_index();
@@ -1520,12 +1733,14 @@ pub(crate) fn line_mesh(
     only: Option<u32>,
     outline_rings: bool,
     altitude: OverlayAltitude,
+    paint: FeaturePaint,
 ) -> Option<Mesh> {
-    let mut builder = MeshBuilder::new();
+    let mut builder = MeshBuilder::new(paint.per_vertex(document));
     for (feature, line) in document.lines() {
         if only.is_some_and(|wanted| wanted != feature) {
             continue;
         }
+        builder.paint(paint.of(document, feature, VectorMode::Line));
         push_ribbon(&mut builder, &densify(line, false, altitude, LINE_RADIUS));
     }
     if outline_rings {
@@ -1533,6 +1748,9 @@ pub(crate) fn line_mesh(
             if only.is_some_and(|wanted| wanted != feature) {
                 continue;
             }
+            // A ring's outline is a stroke, so it takes `stroke` and
+            // `stroke-width` — the same members the feature's lines take.
+            builder.paint(paint.of(document, feature, VectorMode::Line));
             for ring in polygon.rings() {
                 push_ribbon(&mut builder, &densify(ring, true, altitude, LINE_RADIUS));
                 if altitude.extrude {
@@ -1624,12 +1842,14 @@ pub(crate) fn fill_mesh(
     document: &FeatureSet,
     only: Option<u32>,
     altitude: OverlayAltitude,
+    paint: FeaturePaint,
 ) -> Option<Mesh> {
-    let mut builder = MeshBuilder::new();
+    let mut builder = MeshBuilder::new(paint.per_vertex(document));
     for (feature, polygon) in document.polygons() {
         if only.is_some_and(|wanted| wanted != feature) {
             continue;
         }
+        builder.paint(paint.of(document, feature, VectorMode::Fill));
         let (mut corners, indices) = tessellate::triangulate(polygon);
         let indices = refine(&mut corners, indices);
         if indices.is_empty() {
@@ -1993,10 +2213,17 @@ pub struct OverlayInfo {
     /// How long ago the document on screen was asked for.
     pub age_seconds: f32,
     pub features: usize,
+    /// How many of those styled themselves, in the members of
+    /// simplestyle-spec 1.1.0. Reported so an interface can say why a colour it
+    /// chose did not reach the whole layer — and offer `simpleStyle: false`,
+    /// which is what makes it.
+    pub styled_features: usize,
     pub points: usize,
     pub lines: usize,
     pub polygons: usize,
     pub style: OverlayStyleInfo,
+    /// Whether those members are being honoured.
+    pub simple_style: bool,
     pub altitude: OverlayAltitudeInfo,
 }
 
@@ -2057,10 +2284,18 @@ pub struct PickedFeature {
     pub id: Option<String>,
     /// `"point"`, `"line"` or `"polygon"` — which of its shapes was hit.
     pub kind: &'static str,
-    /// The `properties` object, exactly as the document wrote it. The globe
-    /// reads nothing in here; what a `mag` or a `place` means is the feed's
-    /// business and the interface's.
+    /// The `properties` object, exactly as the document wrote it. What a `mag`
+    /// or a `place` means is the feed's business and the interface's.
     pub properties: serde_json::Value,
+    /// The simplestyle members of those properties, parsed, for a feature that
+    /// carried any.
+    ///
+    /// Duplicated out of `properties` on purpose: the globe has already had to
+    /// read them to draw the feature, and three of them — `title`,
+    /// `description` and `marker-symbol` — it cannot draw at all and can only
+    /// hand on. An interface wanting a label for what the cursor is over should
+    /// not have to re-implement [`crate::simplestyle`] to find one.
+    pub style: Option<SimpleStyleInfo>,
 }
 
 /// Fills in a pick, or `None` when the layer or feature has since gone.
@@ -2082,6 +2317,10 @@ pub fn describe_pick(settings: &OverlaySettings, pick: Pick) -> Option<PickedFea
         // Parsed here rather than held parsed — see `crate::features`. This
         // runs once when the pick changes, not once a frame.
         properties: document.feature_properties(pick.feature),
+        style: document
+            .feature_style(pick.feature)
+            .filter(|style| !style.is_empty())
+            .map(SimpleStyleInfo::from),
     })
 }
 
@@ -2125,10 +2364,12 @@ pub fn describe(settings: &OverlaySettings) -> Vec<OverlayInfo> {
                 .map(|period| (period - overlay.age_seconds).max(0.0)),
             age_seconds: overlay.age_seconds,
             features: overlay.counts.features,
+            styled_features: overlay.counts.styled,
             points: overlay.counts.points,
             lines: overlay.counts.lines,
             polygons: overlay.counts.polygons,
             style: OverlayStyleInfo::from(&overlay.style),
+            simple_style: overlay.simple_style,
             altitude: OverlayAltitudeInfo::from(&overlay.altitude),
         })
         .collect()
@@ -2223,7 +2464,13 @@ mod tests {
 
     #[test]
     fn a_refined_fill_is_lifted_clear_of_the_imagery() {
-        let mesh = fill_mesh(&big_polygon(), None, OverlayAltitude::default()).expect("a fill");
+        let mesh = fill_mesh(
+            &big_polygon(),
+            None,
+            OverlayAltitude::default(),
+            FeaturePaint::Layer,
+        )
+        .expect("a fill");
         let positions = mesh
             .attribute(Mesh::ATTRIBUTE_POSITION)
             .and_then(|values| values.as_float3())
@@ -2298,7 +2545,7 @@ mod tests {
 
     #[test]
     fn a_ribbon_has_two_corners_per_point_and_two_triangles_per_segment() {
-        let mut builder = MeshBuilder::new();
+        let mut builder = MeshBuilder::new(false);
         let line = line_set(&[at(0.0, 0.0), at(1.0, 0.0)]);
         let path = densify(
             line.line(0).1,
@@ -2324,7 +2571,7 @@ mod tests {
             ring.first().unwrap().direction,
             ring.last().unwrap().direction
         );
-        let mut builder = MeshBuilder::new();
+        let mut builder = MeshBuilder::new(false);
         push_ribbon(&mut builder, &ring);
         assert_eq!(builder.indices.len(), (ring.len() - 1) * 6);
     }
@@ -2333,7 +2580,7 @@ mod tests {
     fn a_marker_is_drawn_at_the_height_it_was_given() {
         let points = point_set(Position::new(0.0, 0.0, 100_000.0));
         let radius = |altitude| {
-            let mesh = marker_mesh(&points, None, altitude).expect("a marker");
+            let mesh = marker_mesh(&points, None, altitude, FeaturePaint::Layer).expect("a marker");
             let positions = mesh
                 .attribute(Mesh::ATTRIBUTE_POSITION)
                 .and_then(|values| values.as_float3())
@@ -2362,6 +2609,7 @@ mod tests {
                     scale,
                     ..OverlayAltitude::default()
                 },
+                FeaturePaint::Layer,
             )
             .expect("a marker");
             let positions = mesh
@@ -2410,7 +2658,13 @@ mod tests {
     #[test]
     fn a_fill_is_drawn_at_the_mean_height_of_its_ring() {
         let radius = |altitude| {
-            let mesh = fill_mesh(&big_polygon_at(50_000.0), None, altitude).expect("a fill");
+            let mesh = fill_mesh(
+                &big_polygon_at(50_000.0),
+                None,
+                altitude,
+                FeaturePaint::Layer,
+            )
+            .expect("a fill");
             let positions = mesh
                 .attribute(Mesh::ATTRIBUTE_POSITION)
                 .and_then(|values| values.as_float3())
@@ -2463,8 +2717,16 @@ mod tests {
         };
 
         // The outlines span the whole stack, floor to ceiling.
-        let (low, high) =
-            radii(line_mesh(&shelves, None, true, OverlayAltitude::default()).expect("lines"));
+        let (low, high) = radii(
+            line_mesh(
+                &shelves,
+                None,
+                true,
+                OverlayAltitude::default(),
+                FeaturePaint::Layer,
+            )
+            .expect("lines"),
+        );
         let expected = (floors.last().unwrap() - floors[0]) as f32 * units_per_metre();
         assert!((high - low - expected).abs() < 1.0e-5, "{low} to {high}");
 
@@ -2473,8 +2735,10 @@ mod tests {
         let mut levels = Vec::new();
         for (index, floor) in floors.iter().enumerate() {
             let one = polygon_set(std::slice::from_ref(&rings[index]));
-            let (low, high) =
-                radii(fill_mesh(&one, None, OverlayAltitude::default()).expect("a fill"));
+            let (low, high) = radii(
+                fill_mesh(&one, None, OverlayAltitude::default(), FeaturePaint::Layer)
+                    .expect("a fill"),
+            );
             // One height across the whole lid, to within the precision of a
             // direction that was built from a sine and a cosine.
             assert!(high - low < 1.0e-6, "{low} to {high}");
@@ -2489,8 +2753,16 @@ mod tests {
         }
 
         // Clamped, the stack is one flat drawing again.
-        let (low, high) =
-            radii(line_mesh(&shelves, None, true, OverlayAltitude::CLAMPED).expect("lines"));
+        let (low, high) = radii(
+            line_mesh(
+                &shelves,
+                None,
+                true,
+                OverlayAltitude::CLAMPED,
+                FeaturePaint::Layer,
+            )
+            .expect("lines"),
+        );
         assert!(high - low < 1.0e-6, "{low} to {high}");
     }
 
@@ -2507,7 +2779,7 @@ mod tests {
         ]]);
 
         let spread = |altitude| {
-            let mesh = fill_mesh(&box_lid, None, altitude).expect("a fill");
+            let mesh = fill_mesh(&box_lid, None, altitude, FeaturePaint::Layer).expect("a fill");
             let radii: Vec<f32> = mesh
                 .attribute(Mesh::ATTRIBUTE_POSITION)
                 .and_then(|values| values.as_float3())
@@ -2546,7 +2818,7 @@ mod tests {
             at(side, -side),
         ]]);
         let count = |altitude| {
-            fill_mesh(&on_the_ground, None, altitude)
+            fill_mesh(&on_the_ground, None, altitude, FeaturePaint::Layer)
                 .expect("a fill")
                 .count_vertices()
         };
@@ -2568,7 +2840,8 @@ mod tests {
         ]]);
 
         let spread = |altitude| {
-            let mesh = line_mesh(&box_lid, None, true, altitude).expect("an outline");
+            let mesh =
+                line_mesh(&box_lid, None, true, altitude, FeaturePaint::Layer).expect("an outline");
             let radii: Vec<f32> = mesh
                 .attribute(Mesh::ATTRIBUTE_POSITION)
                 .and_then(|values| values.as_float3())
@@ -2605,7 +2878,8 @@ mod tests {
         // from the difference between neighbouring points cannot do. The
         // tangents are what carry that, so they have to be the direction
         // itself, not the zero a collapsed ribbon would leave.
-        let mesh = line_mesh(&box_lid, None, true, extruded).expect("an outline");
+        let mesh =
+            line_mesh(&box_lid, None, true, extruded, FeaturePaint::Layer).expect("an outline");
         let bevy::mesh::VertexAttributeValues::Float32x4(tangents) =
             mesh.attribute(Mesh::ATTRIBUTE_TANGENT).expect("tangents")
         else {
@@ -2627,7 +2901,7 @@ mod tests {
             at(side, -side),
         ]]);
         let count = |altitude| {
-            line_mesh(&on_the_ground, None, true, altitude)
+            line_mesh(&on_the_ground, None, true, altitude, FeaturePaint::Layer)
                 .expect("an outline")
                 .count_vertices()
         };
@@ -2644,6 +2918,7 @@ mod tests {
                 r#"{"type": "Point", "coordinates": [1, 2, 5000]}"#.to_string(),
             ),
             style: OverlayStyle::default(),
+            simple_style: true,
             altitude: OverlayAltitude::default(),
             refresh_seconds: None,
             visible: true,
@@ -2683,6 +2958,7 @@ mod tests {
             label: String::new(),
             source: OverlaySource::Text(r#"{"type": "Point", "coordinates": [1, 2]}"#.to_string()),
             style: OverlayStyle::default(),
+            simple_style: true,
             altitude: OverlayAltitude::default(),
             refresh_seconds: Some(30.0),
             visible: true,
@@ -2708,6 +2984,7 @@ mod tests {
             label: String::new(),
             source: OverlaySource::Text("{".to_string()),
             style: OverlayStyle::default(),
+            simple_style: true,
             altitude: OverlayAltitude::default(),
             refresh_seconds: None,
             visible: true,
@@ -2724,6 +3001,7 @@ mod tests {
             label: "Feed".into(),
             source: OverlaySource::Url(url.into()),
             style: OverlayStyle::default(),
+            simple_style: true,
             altitude: OverlayAltitude::default(),
             refresh_seconds: None,
             visible: true,
@@ -2738,6 +3016,114 @@ mod tests {
         assert_ne!(settings.overlays[0].slot, first_slot);
         let urls = settings.urls.read().expect("lock");
         assert_eq!(urls.len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // What a document says about its own appearance
+    // -----------------------------------------------------------------------
+
+    /// Two rings, of which only the first says how it wants to look.
+    fn half_styled() -> FeatureSet {
+        crate::geojson::parse(
+            r##"{"type": "FeatureCollection", "features": [
+                {"type": "Feature",
+                 "properties": {"fill": "#ff0000", "fill-opacity": 1.0, "stroke-width": 8},
+                 "geometry": {"type": "Polygon",
+                              "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]}},
+                {"type": "Feature", "properties": {"name": "plain"},
+                 "geometry": {"type": "Polygon",
+                              "coordinates": [[[5, 5], [6, 5], [6, 6], [5, 6], [5, 5]]]}}
+            ]}"##,
+        )
+        .expect("valid")
+    }
+
+    /// Every vertex colour of a mesh, or `None` where the mesh carries none.
+    fn vertex_colors(mesh: &Mesh) -> Option<Vec<[f32; 4]>> {
+        match mesh.attribute(Mesh::ATTRIBUTE_COLOR)? {
+            bevy::mesh::VertexAttributeValues::Float32x4(values) => Some(values.clone()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn a_layer_whose_document_says_nothing_carries_no_paint() {
+        // The whole point of the sentinel being opt-in: a feed that styles
+        // nothing draws through the same pipeline it always did, with vertices
+        // the size they always were.
+        let plain = crate::geojson::parse(
+            r#"{"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 0]]]}"#,
+        )
+        .expect("valid");
+        let style = OverlayStyle::default();
+        let mesh = fill_mesh(
+            &plain,
+            None,
+            OverlayAltitude::default(),
+            FeaturePaint::Over(style.paint(VectorMode::Fill)),
+        )
+        .expect("a fill");
+        assert!(vertex_colors(&mesh).is_none());
+        assert!(mesh.attribute(Mesh::ATTRIBUTE_UV_1).is_none());
+    }
+
+    #[test]
+    fn a_feature_that_styles_itself_carries_its_colour_and_its_neighbour_does_not() {
+        let document = half_styled();
+        let style = OverlayStyle::default();
+        let mesh = fill_mesh(
+            &document,
+            None,
+            OverlayAltitude::default(),
+            FeaturePaint::Over(style.paint(VectorMode::Fill)),
+        )
+        .expect("a fill");
+
+        let colors = vertex_colors(&mesh).expect("colours");
+        let red = bevy::color::LinearRgba::from(Srgba::new(1.0, 0.0, 0.0, 1.0));
+        assert!(
+            colors.contains(&[red.red, red.green, red.blue, red.alpha]),
+            "the styled ring should carry the colour it asked for: {colors:?}"
+        );
+        // And the ring that asked for nothing carries the sentinel, so a
+        // restyle of the layer still reaches it.
+        assert!(
+            colors.contains(&INHERIT_COLOR),
+            "the unstyled ring should defer to the material: {colors:?}"
+        );
+    }
+
+    #[test]
+    fn a_layer_told_to_ignore_the_document_carries_no_paint_either() {
+        let document = half_styled();
+        let mesh = fill_mesh(
+            &document,
+            None,
+            OverlayAltitude::default(),
+            FeaturePaint::Layer,
+        )
+        .expect("a fill");
+        assert!(vertex_colors(&mesh).is_none());
+    }
+
+    #[test]
+    fn a_stroke_width_reaches_the_mesh_as_a_size() {
+        let document = half_styled();
+        let style = OverlayStyle::default();
+        let mesh = line_mesh(
+            &document,
+            None,
+            true,
+            OverlayAltitude::default(),
+            FeaturePaint::Over(style.paint(VectorMode::Line)),
+        )
+        .expect("outlines");
+        let sizes = match mesh.attribute(Mesh::ATTRIBUTE_UV_1).expect("sizes") {
+            bevy::mesh::VertexAttributeValues::Float32x2(values) => values.clone(),
+            other => panic!("unexpected sizes: {other:?}"),
+        };
+        assert!(sizes.iter().any(|size| size[0] == 8.0), "{sizes:?}");
+        assert!(sizes.contains(&INHERIT_SIZE), "{sizes:?}");
     }
 
     /// One document holding a feature of every kind the globe draws, run end to
@@ -2782,9 +3168,9 @@ mod tests {
         assert_eq!(document.polygon_count(), 3);
 
         let altitude = OverlayAltitude::default();
-        assert!(marker_mesh(&document, None, altitude).is_some());
-        assert!(line_mesh(&document, None, true, altitude).is_some());
-        assert!(fill_mesh(&document, None, altitude).is_some());
+        assert!(marker_mesh(&document, None, altitude, FeaturePaint::Layer).is_some());
+        assert!(line_mesh(&document, None, true, altitude, FeaturePaint::Layer).is_some());
+        assert!(fill_mesh(&document, None, altitude, FeaturePaint::Layer).is_some());
 
         // Every shape names a feature that exists, which is what the hit test
         // and the highlight both depend on.
@@ -2801,8 +3187,9 @@ mod tests {
         // highlighting the chain — and that is fewer vertices than the layer.
         let chain = document.polygon_owners()[0];
         assert_eq!(document.polygon_owners()[1], chain);
-        let whole = fill_mesh(&document, None, altitude).expect("a fill");
-        let one = fill_mesh(&document, Some(chain), altitude).expect("one feature's fill");
+        let whole = fill_mesh(&document, None, altitude, FeaturePaint::Layer).expect("a fill");
+        let one = fill_mesh(&document, Some(chain), altitude, FeaturePaint::Layer)
+            .expect("one feature's fill");
         assert!(one.count_vertices() < whole.count_vertices());
     }
 
@@ -2830,6 +3217,7 @@ mod tests {
             slot: 0,
             generation: 0,
             style: OverlayStyle::default(),
+            simple_style: true,
             altitude: OverlayAltitude::default(),
             refresh_seconds: None,
             age_seconds: 0.0,

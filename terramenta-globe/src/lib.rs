@@ -31,6 +31,7 @@ mod omm;
 mod overlays;
 mod picking;
 mod placemark;
+mod simplestyle;
 mod sun;
 mod tessellate;
 mod tiles;

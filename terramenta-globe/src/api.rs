@@ -141,6 +141,14 @@ pub enum GlobeCommand {
     /// layer the globe did not fetch and so cannot fetch again.
     /// How a layer reads the heights in its positions. Moves its geometry, so
     /// the layer is rebuilt — from the document already loaded, not refetched.
+    /// Whether a layer honours the simplestyle members of its own document.
+    /// Rebuilds the layer's geometry from the document already loaded — the
+    /// document's colours are in its vertices, which is what makes them survive
+    /// a restyle.
+    SetOverlaySimpleStyle {
+        id: String,
+        simple_style: bool,
+    },
     SetOverlayAltitude {
         id: String,
         altitude: OverlayAltitude,
@@ -754,6 +762,9 @@ fn apply_commands(
             }
             GlobeCommand::SetOverlayStyle { id, style } => {
                 overlays.set_style(&id, style);
+            }
+            GlobeCommand::SetOverlaySimpleStyle { id, simple_style } => {
+                overlays.set_simple_style(&id, simple_style);
             }
             GlobeCommand::SetOverlayAltitude { id, altitude } => {
                 overlays.set_altitude(&id, altitude);

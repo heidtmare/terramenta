@@ -60,6 +60,7 @@ use geoarrow_array::array::{
 use geoarrow_schema::{Crs, Dimension, Metadata};
 
 use crate::geo::Position;
+use crate::simplestyle::SimpleStyle;
 
 /// How many doubles one coordinate takes: longitude, latitude, height.
 ///
@@ -101,6 +102,17 @@ pub struct FeatureSet {
     /// Each feature's `properties`, as the JSON text it arrived as. Null where
     /// there was none.
     properties: StringArray,
+    /// The simplestyle members read off those properties, for the features that
+    /// carried any — see [`crate::simplestyle`].
+    ///
+    /// The one thing here that is *read* rather than carried, and so the one
+    /// thing that is not a column: it is empty for every vector tile and for
+    /// every document that styles nothing, and for a document that styles a
+    /// little it is only as long as it has to be — a set whose fourth feature
+    /// is the last styled one holds four entries, not one per feature. Short is
+    /// the normal case, which is why the accessor answers past the end rather
+    /// than indexing.
+    styles: Vec<SimpleStyle>,
 
     /// Every `Point`, and every position of every `MultiPoint`.
     points: PointArray,
@@ -147,6 +159,33 @@ impl FeatureSet {
     /// One feature's GeoJSON `id`, if it had one.
     pub fn feature_id(&self, feature: usize) -> Option<&str> {
         (feature < self.ids.len() && self.ids.is_valid(feature)).then(|| self.ids.value(feature))
+    }
+
+    /// Whether any feature of this set styled itself.
+    pub fn has_styles(&self) -> bool {
+        !self.styles.is_empty()
+    }
+
+    /// Whether any of those styles changes how something is *drawn*, which is
+    /// what decides whether the meshes built from this set have to carry paint
+    /// per vertex at all. A document whose only style member is a `title` has
+    /// styles and paints nothing.
+    ///
+    /// Scanned rather than remembered: it is asked once per mesh built, three
+    /// times a layer, over a vector that is usually empty and never longer than
+    /// the feature list — beside triangulating the same document, it is free.
+    pub fn styles_paint(&self) -> bool {
+        self.styles.iter().any(SimpleStyle::paints)
+    }
+
+    /// How many features carried simplestyle members.
+    pub fn styled_features(&self) -> usize {
+        self.styles.iter().filter(|style| !style.is_empty()).count()
+    }
+
+    /// One feature's simplestyle members, if it carried any.
+    pub fn feature_style(&self, feature: usize) -> Option<&SimpleStyle> {
+        self.styles.get(feature)
     }
 
     /// One feature's `properties`, parsed.
@@ -414,6 +453,7 @@ fn interleaved(coords: &CoordBuffer) -> &[f64] {
 pub struct FeatureSetBuilder {
     ids: Vec<Option<String>>,
     properties: Vec<Option<String>>,
+    styles: Vec<SimpleStyle>,
 
     point_coords: Vec<f64>,
     point_owners: Vec<u32>,
@@ -448,6 +488,27 @@ impl FeatureSetBuilder {
         self.ids.push(id);
         self.properties.push(properties);
         (self.ids.len() - 1) as u32
+    }
+
+    /// The same, for a feature whose properties turned out to hold simplestyle
+    /// members. An empty style is not stored, so the column stays absent for
+    /// the documents — and the formats — that never style anything.
+    pub fn styled_feature(
+        &mut self,
+        id: Option<String>,
+        properties: Option<String>,
+        style: SimpleStyle,
+    ) -> u32 {
+        let feature = self.feature(id, properties);
+        if !style.is_empty() {
+            // Pads over the unstyled features in between, so the position in
+            // this vector is the feature index. Only ever as far as the last
+            // styled feature: see the field.
+            self.styles
+                .resize_with(feature as usize, SimpleStyle::default);
+            self.styles.push(style);
+        }
+        feature
     }
 
     pub fn push_point(&mut self, feature: u32, position: Position) {
@@ -535,6 +596,7 @@ impl FeatureSetBuilder {
         FeatureSet {
             ids: StringArray::from(self.ids),
             properties: StringArray::from(self.properties),
+            styles: self.styles,
             points: PointArray::new(coords(self.point_coords), None, metadata.clone()),
             lines: LineStringArray::new(
                 coords(self.line_coords),

@@ -14,6 +14,20 @@
 //
 // The overlay is drawn unlit. It is annotation rather than imagery: a track
 // across the night side has to stay as readable as the same track at noon.
+//
+// Colour and size come from the material, one draw at a time, except where a
+// GeoJSON document styled its own features (simplestyle-spec 1.1.0) — then the
+// mesh carries a colour and a size per vertex as well, and each vertex takes
+// whichever of the two its own feature asked for. A vertex whose feature asked
+// for nothing carries a negative alpha and a negative size, neither of which is
+// a value anything could otherwise mean, and falls back to the material. That
+// is what lets one draw hold a layer where nine hundred rings follow the
+// interface's colour and one is the red the document asked for — and what lets
+// recolouring the layer move the nine hundred without touching the red one.
+//
+// The two attributes are either on every vertex of a mesh or on none of it, so
+// a layer that needs neither is compiled without them and its vertices stay the
+// size they were.
 
 #import bevy_pbr::forward_io::{Vertex, VertexOutput}
 #import bevy_pbr::mesh_functions
@@ -34,6 +48,19 @@ struct VectorUniform {
 const MODE_MARKER: u32 = 0u;
 const MODE_LINE: u32 = 1u;
 const MODE_FILL: u32 = 2u;
+
+/// The colour a vertex is drawn in: its own, or the material's where it has
+/// none of its own to give.
+fn resolve_color(own: vec4<f32>) -> vec4<f32> {
+    return select(vector.color, own, own.a >= 0.0);
+}
+
+/// The same for a size. Halved, because the mesh spreads each corner one unit
+/// either way and the shader works in radii — which the uniform's own value was
+/// halved for before it was written.
+fn resolve_size(own: f32) -> f32 {
+    return select(vector.size_px, max(own * 0.5, 0.1), own >= 0.0);
+}
 
 // Where a marker's dark rim starts and ends, as a fraction of its radius.
 const RIM_INNER: f32 = 0.60;
@@ -59,7 +86,11 @@ fn vertex(vertex: Vertex) -> VertexOutput {
         vec4<f32>(vertex.position, 1.0),
     );
 
-    let extent = world_per_pixel(world_position.xyz) * vector.size_px;
+    var size_px = vector.size_px;
+#ifdef VERTEX_UVS_B
+    size_px = resolve_size(vertex.uv_b.x);
+#endif
+    let extent = world_per_pixel(world_position.xyz) * size_px;
 
     if vector.mode == MODE_MARKER {
         // A disc facing the camera, spread over the view's own axes so it stays
@@ -96,8 +127,14 @@ fn vertex(vertex: Vertex) -> VertexOutput {
 #ifdef VERTEX_UVS_A
     out.uv = vertex.uv;
 #endif
+#ifdef VERTEX_UVS_B
+    out.uv_b = vertex.uv_b;
+#endif
 #ifdef VERTEX_TANGENTS
     out.world_tangent = vertex.tangent;
+#endif
+#ifdef VERTEX_COLORS
+    out.color = vertex.color;
 #endif
 #ifdef VERTEX_OUTPUT_INSTANCE_INDEX
     out.instance_index = vertex.instance_index;
@@ -107,13 +144,22 @@ fn vertex(vertex: Vertex) -> VertexOutput {
 
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
-    var color = vector.color.rgb;
-    var alpha = vector.color.a;
+    var painted = vector.color;
+#ifdef VERTEX_COLORS
+    painted = resolve_color(in.color);
+#endif
+    var size_px = vector.size_px;
+#ifdef VERTEX_UVS_B
+    size_px = resolve_size(in.uv_b.x);
+#endif
+
+    var color = painted.rgb;
+    var alpha = painted.a;
 
     // One device pixel, in the units the quad's own coordinates are measured
     // in, which is what the edge is softened over. Below a pixel or so across
     // the feathering would eat the whole shape, so it is capped.
-    let feather = clamp(1.0 / max(vector.size_px, 1.0e-3), 0.0, 0.5);
+    let feather = clamp(1.0 / max(size_px, 1.0e-3), 0.0, 0.5);
 
     if vector.mode == MODE_MARKER {
         let radius = length(in.uv);

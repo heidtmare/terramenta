@@ -56,7 +56,10 @@ interface, and the reference app is there to show what that takes.
   OpenStreetMap's own Shortbread tiles.
 - **GeoJSON overlays.** Vector data over the imagery, from a URL or a local
   file, as screen-sized markers, lines and filled rings — several layers at
-  once, each with its own colours and its own refresh period. The reference app
+  once, each with its own colours and its own refresh period, and each feature
+  free to override those colours for itself in the members of
+  [simplestyle-spec 1.1.0](https://github.com/mapbox/simplestyle-spec/tree/master/1.1.0).
+  The reference app
   starts with three: a bundled sample holding one feature per GeoJSON geometry
   type — including a stepped airspace stacked out of rings at different heights
   — a second holding a cube, and the USGS feed of earthquakes in the past hour,
@@ -167,10 +170,14 @@ no build step at all. The only thing it builds is the globe.
   tilted. Satellites already are; a line and a fill are the harder half, because
   a screen-space test against a densified ribbon is not the same problem as one
   against a point.
-- Style a GeoJSON overlay per feature rather than per layer — colour the
-  earthquake markers by magnitude, which is the obvious next thing to want from
-  the feed the reference app ships with. The properties are already carried
-  through to the picking layer; nothing reads them to decide an appearance.
+- Style a GeoJSON overlay from properties the document did *not* write for a
+  renderer — colour the earthquake markers by magnitude, say. A document that
+  styles itself the simplestyle way is already honoured, member by member; what
+  is missing is a rule an interface supplies, mapping some property of the feed
+  onto a colour ramp or a size.
+- Draw `marker-symbol`, which simplestyle allows and this reads and carries but
+  cannot render: a globe with no icon atlas and no label engine has nowhere to
+  put a Maki symbol or a `title`. Both go out with a picked feature instead.
 - Fly to a picked feature, or frame it: the globe knows where every shape is,
   and `lookAt` is already there.
 - Click-to-fly: the cursor coordinate is already in the state stream, so the app

@@ -257,6 +257,9 @@ struct OverlayOptions {
     /// Seconds between refetches. Omit or `null` to fetch once.
     refresh_seconds: Option<f32>,
     visible: Option<bool>,
+    /// Whether the document's own simplestyle members override the colours and
+    /// sizes above, feature by feature. On unless this says otherwise.
+    simple_style: Option<bool>,
     #[serde(flatten)]
     altitude: AltitudeOptions,
     #[serde(flatten)]
@@ -350,7 +353,18 @@ impl StyleOptions {
 /// addOverlay("flight", { url, altitudeScale: 1000 });
 /// // Footprints at a height, walled down to the ground:
 /// addOverlay("buildings", { url, extrude: true });
+/// // A document that styles itself, drawn in the interface's colours anyway:
+/// addOverlay("route", { url, simpleStyle: false });
 /// ```
+///
+/// A document is allowed to say how it wants to look, in the members of
+/// [simplestyle-spec 1.1.0] — `stroke`, `fill`, `marker-size` and the rest of
+/// them. Those override the colours and sizes given here for the features that
+/// carry them, and `simpleStyle: false` turns that off for the whole layer. The
+/// state stream reports how many features styled themselves, so an interface
+/// can say why a colour it chose did not reach all of them.
+///
+/// [simplestyle-spec 1.1.0]: https://github.com/mapbox/simplestyle-spec/tree/master/1.1.0
 ///
 /// Returns whether the options could be read. A layer that fails to *load*
 /// still returns `true` — the failure arrives on the state stream, with the
@@ -373,6 +387,7 @@ pub fn add_overlay(id: String, options: JsValue) -> bool {
         label: options.label.unwrap_or_default(),
         source,
         style: options.style.resolve(),
+        simple_style: options.simple_style.unwrap_or(true),
         altitude: options.altitude.resolve(),
         refresh_seconds: options.refresh_seconds,
         visible: options.visible.unwrap_or(true),
@@ -425,6 +440,15 @@ pub fn set_overlay_altitude(id: String, altitude: JsValue) -> bool {
         altitude: altitude.resolve(),
     });
     true
+}
+
+/// Turns the document's own simplestyle members on or off for a layer.
+///
+/// The layer is rebuilt where it stands — nothing is refetched, and a pinned
+/// feature stays pinned.
+#[wasm_bindgen(js_name = setOverlaySimpleStyle)]
+pub fn set_overlay_simple_style(id: String, simple_style: bool) {
+    api::send(GlobeCommand::SetOverlaySimpleStyle { id, simple_style });
 }
 
 #[wasm_bindgen(js_name = setOverlayRefresh)]

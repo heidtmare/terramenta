@@ -40,12 +40,22 @@
 //!
 //! Properties are kept as the JSON text the store holds them in, rebuilt from
 //! the values the decoder reports, and handed back out untouched when a feature
-//! is picked. Nothing here reads them: what a `mag` or a `place` means is the
-//! feed's business and the interface's, not the globe's. One detail of the
-//! round trip is the decoder's: a property whose value is `null` is not
-//! reported, so it does not survive into the store — which is the same thing
-//! the store already does with a feature whose whole `properties` member is
-//! `null`.
+//! is picked. What a `mag` or a `place` means is the feed's business and the
+//! interface's, not the globe's. One detail of the round trip is the decoder's:
+//! a property whose value is `null` is not reported, so it does not survive
+//! into the store — which is the same thing the store already does with a
+//! feature whose whole `properties` member is `null`.
+//!
+//! **Ten of those properties are read on the way past.** A document is allowed
+//! to say how it wants to look, in the members of [simplestyle-spec 1.1.0], and
+//! those are picked out as each feature's properties arrive — see
+//! [`crate::simplestyle`] for what they are and what is done with them. They
+//! are read off the values the decoder has already produced, and left in the
+//! properties as well, so a feed that styles itself is neither parsed twice nor
+//! handed to an interface with members missing. Nothing else in `properties` is
+//! looked at, here or anywhere else.
+//!
+//! [simplestyle-spec 1.1.0]: https://github.com/mapbox/simplestyle-spec/tree/master/1.1.0
 
 use geozero::{
     ColumnValue, CoordDimensions, FeatureProcessor, GeomProcessor, GeozeroDatasource,
@@ -56,6 +66,7 @@ use serde_json::{Map, Value};
 
 use crate::features::{FeatureSet, FeatureSetBuilder};
 use crate::geo::Position;
+use crate::simplestyle::SimpleStyle;
 
 /// Parses a document. See the module docs for what is tolerated.
 pub fn parse(text: &str) -> Result<FeatureSet, GeoJsonError> {
@@ -191,10 +202,20 @@ impl<'a> Collector<'a> {
         let pending = self.pending.take().unwrap_or_default();
         // Storing the word `null` for every feature of a large feed would be
         // four bytes apiece to say the feature had no properties.
+        // Read before the object is turned back into text, because the
+        // decoder has already done the work of turning the members into values
+        // and a second parse of the same document would buy nothing. See
+        // [`crate::simplestyle`] for why this is the one thing in `properties`
+        // the globe reads.
+        let style = pending
+            .properties
+            .as_ref()
+            .map(SimpleStyle::read)
+            .unwrap_or_default();
         let properties = pending
             .properties
             .map(|properties| Value::Object(properties).to_string());
-        let owner = self.into.feature(pending.id, properties);
+        let owner = self.into.styled_feature(pending.id, properties, style);
         self.owner = Some(owner);
         owner
     }
@@ -577,6 +598,51 @@ mod tests {
             .map(|index| parsed.feature_id(index))
             .collect();
         assert_eq!(ids, vec![Some("nc75096121"), Some("42"), None]);
+    }
+
+    #[test]
+    fn simplestyle_members_are_read_and_still_handed_on() {
+        let parsed = parse(
+            r##"{
+                "type": "FeatureCollection",
+                "features": [
+                    {"type": "Feature",
+                     "properties": {"title": "Route", "stroke": "#ff0000", "stroke-width": 6},
+                     "geometry": {"type": "LineString", "coordinates": [[0, 0], [1, 1]]}},
+                    {"type": "Feature",
+                     "properties": {"mag": 4.2},
+                     "geometry": {"type": "Point", "coordinates": [2, 3]}}
+                ]
+            }"##,
+        )
+        .expect("valid");
+
+        let style = parsed.feature_style(0).expect("a style");
+        assert_eq!(style.title.as_deref(), Some("Route"));
+        assert_eq!(style.stroke_width, Some(6.0));
+        // Read, not consumed: an interface still gets the whole object, and a
+        // feed that keeps other data beside its styling keeps all of it.
+        assert_eq!(
+            parsed.feature_properties(0),
+            serde_json::json!({"title": "Route", "stroke": "#ff0000", "stroke-width": 6})
+        );
+
+        // A feature that styled nothing carries nothing, and the column is only
+        // as long as it has to be.
+        assert!(parsed.feature_style(1).is_none());
+        assert_eq!(parsed.styled_features(), 1);
+        assert!(parsed.styles_paint());
+    }
+
+    #[test]
+    fn a_document_that_styles_nothing_carries_no_styles_at_all() {
+        let parsed = parse(
+            r#"{"type": "Feature", "properties": {"mag": 4.2},
+                "geometry": {"type": "Point", "coordinates": [0, 0]}}"#,
+        )
+        .expect("valid");
+        assert!(!parsed.has_styles());
+        assert!(!parsed.styles_paint());
     }
 
     #[test]

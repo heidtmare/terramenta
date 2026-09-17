@@ -106,6 +106,7 @@ to tell that apart from a real failure.
 | `setVectorTileStyle(style)` | What they are drawn in |
 | `addOverlay(id, options)` `removeOverlay(id)` | GeoJSON overlays |
 | `setOverlayVisible(id, bool)` `setOverlayStyle(id, style)` `setOverlaysEnabled(bool)` | How an overlay is drawn |
+| `setOverlaySimpleStyle(id, bool)` | Whether the document's own simplestyle members override that |
 | `setOverlayAltitude(id, altitude)` | How high it is drawn |
 | `setOverlayRefresh(id, seconds)` `refreshOverlay(id)` | When it refetches |
 | `setPickingEnabled(bool)` `pinFeature(layer, index)` `clearPinnedFeature()` | Picking features out of an overlay |
@@ -409,6 +410,43 @@ Overlays are drawn unlit and above the deepest imagery tile. Unlit because an
 overlay is annotation rather than imagery: a track across the night side has to
 stay as readable as the same track at noon.
 
+### When the document has its own opinion
+
+A layer has one style, but a GeoJSON document may style itself feature by
+feature, in the `properties` members of [simplestyle-spec 1.1.0][simplestyle] —
+`marker-size`, `marker-color`, `stroke`, `stroke-opacity`, `stroke-width`,
+`fill`, `fill-opacity`, and `title`, `description` and `marker-symbol` beside
+them. [`simplestyle.rs`](src/simplestyle.rs) reads them as the document is
+parsed, off the values the decoder has already produced.
+
+Three rules make it fit a globe that already had a colour for every layer:
+
+- **A member overrides the one thing it names, and nothing else.** The
+  specification's defaults — grey markers, a `#555555` stroke, a fill at 0.6 —
+  are *not* applied: a document that says nothing about its appearance is drawn
+  in the layer's colours, exactly as before. `fill` replaces the fill colour and
+  leaves the layer's opacity; `fill-opacity` replaces the opacity and leaves the
+  colour. So an interface can recolour a layer and only the features that asked
+  for nothing move.
+- **It is still three draws.** A styled feature's colour and size ride in its
+  own vertices; a vertex whose feature asked for nothing carries a sentinel that
+  sends the shader back to the material's uniform. That is what lets one draw
+  hold nine hundred rings following the interface's colour and one in the red
+  the document asked for — and what keeps `setOverlayStyle` a uniform write
+  rather than a rebuild, without it stamping over the red one.
+- **What cannot be drawn is handed on.** `title`, `description` and
+  `marker-symbol` need a label engine and an icon atlas, and the globe has
+  neither. They go out with the picked feature, parsed, under `style`.
+
+`setOverlaySimpleStyle(id, false)` — or `simpleStyle: false` when the layer goes
+up — ignores the lot and draws the layer in its own colours. That one *is* a
+rebuild, because where a feature's colour lives is in its vertices. The state
+stream reports `styledFeatures` per layer, so an interface can say why a colour
+it chose did not reach all of them.
+
+A member that cannot be read is dropped and the layer's value stands: a document
+should not lose its geometry over a typo in its styling.
+
 ### Picking
 
 The globe hit-tests the cursor against overlay geometry on every frame it is
@@ -416,7 +454,7 @@ over the globe, reports what it found, and draws a halo around it.
 
 ```js
 globe.onState(({overlays}) => {
-  overlays.hovered;  // {layer, label, index, id, kind, properties} or null
+  overlays.hovered;  // {layer, label, index, id, kind, properties, style} or null
   overlays.pinned;   // the same, for whatever was pinned
 });
 
@@ -427,8 +465,13 @@ globe.clearPinnedFeature();
 ```
 
 `properties` is the feature's `properties` object exactly as the document wrote
-it. Nothing in the globe reads it — what a `mag` or a `place` means is the
-feed's business and the interface's — so it goes out untouched, nesting and all.
+it — what a `mag` or a `place` means is the feed's business and the interface's,
+so it goes out untouched, nesting and all. `style` beside it is the one part the
+globe does read: the [simplestyle-spec 1.1.0][simplestyle] members, parsed, for
+a feature that carried any, so that an interface wanting a `title` or a
+`marker-symbol` does not have to re-implement the parsing to find one.
+
+[simplestyle]: https://github.com/mapbox/simplestyle-spec/tree/master/1.1.0
 
 **A feature, not a shape.** A `MultiPolygon` of forty islands is one feature, so
 picking any island highlights the country. That is why
@@ -441,7 +484,8 @@ filled country selectable at all. The rule is applied across layers as well as
 within one.
 
 **The tolerance is in pixels**, because the geometry is: a nine-pixel marker is
-a nine-pixel target from any altitude. [`picking.rs`](src/picking.rs) converts
+a nine-pixel target from any altitude — and per feature, because a document that
+sized its own markers gets a target to match each one. [`picking.rs`](src/picking.rs) converts
 that to degrees at the cursor's distance and works in degrees from there,
 scaling longitude by the cosine of the latitude so that the number means the
 same thing at any latitude — and progressively less near the poles, where
@@ -746,6 +790,7 @@ src/
   features.rs  The GeoArrow store every vector coordinate lives in
   fetch.rs     The slot-addressed asset source a layer's document is fetched over
   geojson.rs   The GeoJSON document format, flattened to drawable geometry
+  simplestyle.rs  simplestyle-spec 1.1.0: how a document says it wants to look
   omm.rs       OMM catalogues, read into SGP4 propagators
   tessellate.rs  Rings to triangles: ear clipping, holes and the antimeridian
   picking.rs   Which feature is under the cursor

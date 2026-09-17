@@ -857,38 +857,36 @@ fn build_vector_tiles(
         let altitude = OverlayAltitude::CLAMPED;
         // Fills first, then lines, then markers, which is the order the radii
         // in `overlays` already put them in.
+        // A vector tile has no styling of its own to honour: the format has
+        // nowhere to put simplestyle, and a basemap is styled as a basemap
+        // rather than a feature at a time. See `crate::overlays::FeaturePaint`.
+        let paint = crate::overlays::FeaturePaint::Layer;
         let built = [
             (
                 VectorMode::Fill,
-                style.fill_color,
-                0.0,
                 // A fully transparent fill is not drawn at all rather than
                 // drawn invisibly: a basemap's rings can be most of its
                 // geometry, and triangulating them to blend nothing would be
                 // the most expensive part of the whole tile.
                 (style.fill_color.alpha > 0.0)
-                    .then(|| crate::overlays::fill_mesh(document, None, altitude))
+                    .then(|| crate::overlays::fill_mesh(document, None, altitude, paint))
                     .flatten(),
             ),
             (
                 VectorMode::Line,
-                style.line_color,
-                style.line_width_px,
                 // No polygons here, unlike an overlay. A clipped ring's edges
                 // are not all boundaries, so `mvt` puts the parts that are into
                 // the line list; outlining the rings as well would draw every
                 // border twice and the tile grid once. See `crate::mvt`.
-                crate::overlays::line_mesh(document, None, false, altitude),
+                crate::overlays::line_mesh(document, None, false, altitude, paint),
             ),
             (
                 VectorMode::Marker,
-                style.point_color,
-                style.point_size_px,
-                crate::overlays::marker_mesh(document, None, altitude),
+                crate::overlays::marker_mesh(document, None, altitude, paint),
             ),
         ];
 
-        for (mode, color, size_px, mesh) in built {
+        for (mode, mesh) in built {
             let Some(mesh) = mesh else {
                 continue;
             };
@@ -901,7 +899,7 @@ fn build_vector_tiles(
                     VectorTileEntity(tile),
                     Mesh3d(meshes.add(mesh)),
                     MeshMaterial3d(
-                        materials.add(VectorMaterial::new(mode, color, size_px).beneath()),
+                        materials.add(VectorMaterial::new(mode, style.paint(mode)).beneath()),
                     ),
                     // `orient_vector_tiles` keeps this in step with the frame;
                     // the spawn value only has to be right for this frame.
