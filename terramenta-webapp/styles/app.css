@@ -696,6 +696,15 @@ body.panel-collapsed #panel {
   letter-spacing: 0.35em;
 }
 
+/* The banner is the title on the loading screen; the heading text it replaces
+   lives on in the alt attribute. It never grows past its own pixels, and gives
+   up width before the gutter does. */
+#status h1 img {
+  display: block;
+  width: min(517px, calc(100vw - 2 * var(--gutter)));
+  height: auto;
+}
+
 #status p {
   margin: 0;
   max-width: 34rem;

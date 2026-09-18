@@ -207,6 +207,8 @@ here is the source of truth, the pull is just how the truth gets across.
 
 ```
 index.html          Canvas, overlay, loading state
+assets/
+  terramenta.png    The banner on the loading screen
 data/               Documents served beside the page
   geometry-tour.geojson   One feature per GeoJSON geometry, up at boot
   extruded-cube.geojson   A ring at a height, walled to the ground
