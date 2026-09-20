@@ -33,6 +33,7 @@ mod overlays;
 mod picking;
 mod placemark;
 mod simplestyle;
+mod solar;
 mod sun;
 mod tessellate;
 mod tiles;
@@ -57,6 +58,7 @@ use imagery::{ImageFormat, ImageryLayer, ImageryPlugin};
 use moon::MoonPlugin;
 use overlays::{OverlayPlugin, OverlayRequest, OverlaySourcePlugin};
 use placemark::PlacemarkPlugin;
+use solar::SolarSystemPlugin;
 use sun::SunPlugin;
 use tiles::TilePlugin;
 use vector_tiles::{VectorTileLayer, VectorTilePlugin, VectorTileSourcePlugin};
@@ -176,6 +178,7 @@ pub fn app(config: GlobeConfig) -> App {
             MoonPlugin,
             FramePlugin,
             GncPlugin,
+            SolarSystemPlugin,
             TilePlugin,
             VectorTilePlugin,
             OverlayPlugin,
