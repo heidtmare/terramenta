@@ -41,6 +41,14 @@ interface, and the reference app is there to show what that takes.
   tracks are drawn in whichever is active — a closed ellipse in ECI, and the
   corkscrew a ground track is in ECEF, because the Earth turned underneath it
   while the satellite went round.
+- **Both of them at once.** The inertial triad in cyan, the Earth-fixed triad
+  and graticule in amber, and the sidereal angle between them drawn as the arc
+  it is — over whichever frame the scene is in. Click a satellite and its path
+  is drawn twice from one propagation: the smooth closed ellipse it is against
+  the stars, and the ground track the same object writes across the turning
+  Earth. The readout carries the rotation as a quaternion and as a direction
+  cosine matrix, and both of the object's speeds, which differ by the transport
+  term `ω × r` and by nothing else.
 - **Altitude-aware navigation.** Drag sensitivity scales with height, so a drag
   sweeps continents from far out and nudges streets from low orbit. Ctrl + drag
   swings the camera around whatever it is looking at — compass heading and a

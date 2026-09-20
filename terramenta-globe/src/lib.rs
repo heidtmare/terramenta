@@ -23,6 +23,7 @@ mod frame;
 mod geo;
 mod geojson;
 mod globe;
+mod gnc;
 mod hud;
 mod imagery;
 mod moon;
@@ -50,6 +51,7 @@ use camera::OrbitCameraPlugin;
 use ephemeris::{EphemerisPlugin, EphemerisRequest, EphemerisSourcePlugin};
 use frame::FramePlugin;
 use globe::GlobePlugin;
+use gnc::GncPlugin;
 use hud::HudPlugin;
 use imagery::{ImageFormat, ImageryLayer, ImageryPlugin};
 use moon::MoonPlugin;
@@ -173,6 +175,7 @@ pub fn app(config: GlobeConfig) -> App {
             SunPlugin,
             MoonPlugin,
             FramePlugin,
+            GncPlugin,
             TilePlugin,
             VectorTilePlugin,
             OverlayPlugin,

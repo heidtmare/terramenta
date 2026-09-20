@@ -220,6 +220,100 @@ export function mountPanel(root) {
 
   const frame = section("Reference frame", frameChoice.node, frameDetail);
 
+  // --- Both frames at once -------------------------------------------------
+
+  // The section above is a choice between the two frames; this one draws both
+  // of them, so the rotation between them is on screen rather than implied.
+  const gncToggle = toggle("Draw both frames", globe.setGncEnabled);
+  bind(gncToggle.node, (state) => gncToggle.set(state.gnc.enabled));
+
+  const eciAxesToggle = toggle("Inertial triad (cyan)", globe.setGncEciAxes);
+  bind(eciAxesToggle.node, (state) => eciAxesToggle.set(state.gnc.eciAxes));
+
+  const ecefAxesToggle = toggle("Earth-fixed triad (amber)", globe.setGncEcefAxes);
+  bind(ecefAxesToggle.node, (state) => ecefAxesToggle.set(state.gnc.ecefAxes));
+
+  const siderealToggle = toggle("Sidereal angle arc", globe.setGncSidereal);
+  bind(siderealToggle.node, (state) => siderealToggle.set(state.gnc.sidereal));
+
+  const graticuleToggle = toggle("Graticule", globe.setGncGraticule);
+  bind(graticuleToggle.node, (state) => graticuleToggle.set(state.gnc.graticule));
+
+  const graticuleStep = slider({
+    min: limits.minGraticuleStep,
+    max: limits.maxGraticuleStep,
+    format: (degrees) => `${degrees.toFixed(0)}° spacing`,
+    onInput: globe.setGncGraticuleStep,
+  });
+  bind(
+    graticuleStep.node,
+    (state) => graticuleStep.set(state.gnc.graticuleStepDeg),
+    graticuleStep.isHeld,
+  );
+
+  const trackToggle = toggle("Satellite path in both frames", globe.setGncTrack);
+  bind(trackToggle.node, (state) => trackToggle.set(state.gnc.track));
+
+  const trackOrbits = slider({
+    min: limits.minTrackOrbits,
+    max: limits.maxTrackOrbits,
+    format: (orbits) => `${orbits.toFixed(2)} orbits each way`,
+    onInput: globe.setGncTrackOrbits,
+  });
+  bind(trackOrbits.node, (state) => trackOrbits.set(state.gnc.trackOrbits), trackOrbits.isHeld);
+
+  // The rotation itself, in both of the forms flight software carries it in.
+  // Shown here rather than only in the readout because this is the section that
+  // draws it, and a number beside the picture is what makes the picture a
+  // measurement.
+  const gncAngle = el("p", { class: "detail" }, "—");
+  bind(gncAngle, (state) => {
+    gncAngle.textContent =
+      `GMST ${state.gnc.gmstDeg.toFixed(3)}° · the Earth turns ` +
+      `${(state.gnc.earthRateDegS * 3600).toFixed(3)}° per hour`;
+  });
+
+  const gncQuaternion = el("p", { class: "detail" }, "—");
+  bind(gncQuaternion, (state) => {
+    const fixed = (value) => value.toFixed(4);
+    gncQuaternion.textContent = `ECI → ECEF  q = (${state.gnc.quaternion.map(fixed).join(", ")})`;
+  });
+
+  const gncFocus = el("p", { class: "detail" }, "—");
+  bind(gncFocus, (state) => {
+    const focus = state.gnc.focus;
+    gncFocus.textContent = focus
+      ? `${focus.name} · ${focus.speedEciKmS.toFixed(3)} km/s inertial, ` +
+        `${focus.speedEcefKmS.toFixed(3)} km/s over the ground · ` +
+        `${focus.altitudeKm.toFixed(0)} km up`
+      : "No satellite followed. Click one on the globe, and its orbit and its " +
+        "ground track are drawn at the same time.";
+  });
+
+  const gnc = section(
+    "Both frames at once",
+    gncToggle.node,
+    eciAxesToggle.node,
+    ecefAxesToggle.node,
+    siderealToggle.node,
+    graticuleToggle.node,
+    graticuleStep.node,
+    trackToggle.node,
+    trackOrbits.node,
+    gncAngle,
+    gncQuaternion,
+    gncFocus,
+    el(
+      "p",
+      { class: "detail" },
+      "Cyan is fixed to the stars, amber to the ground; the arc between the two " +
+        "triads is the sidereal angle, and it is the whole difference between " +
+        "the frames. Run the clock fast and watch the satellite's cyan orbit " +
+        "stay a closed ellipse while the same object writes an amber ground " +
+        "track that shifts west every revolution.",
+    ),
+  );
+
   // --- Camera --------------------------------------------------------------
 
   const altitudeSlider = slider({
@@ -303,7 +397,7 @@ export function mountPanel(root) {
   const { strip, panes } = tabs([
     { id: "imagery", label: "Imagery", panes: [imagery] },
     { id: "data", label: "Data layers", panes: [vectorTiles, overlays, ephemerides] },
-    { id: "other", label: "Other", panes: [sun, frame, camera, chrome] },
+    { id: "other", label: "Other", panes: [sun, frame, gnc, camera, chrome] },
   ]);
 
   // The strip keeps its place while the pane below it scrolls, so the tabs are

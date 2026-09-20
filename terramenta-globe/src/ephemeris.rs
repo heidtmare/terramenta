@@ -726,6 +726,32 @@ impl EphemerisSettings {
         }
     }
 
+    /// The pinned object, named the way a command names one: the layer's id and
+    /// the catalogue number.
+    ///
+    /// [`crate::gnc`] draws one satellite in both frames at once, and the
+    /// obvious satellite to draw is whichever one was just clicked on — so
+    /// rather than a second selection with a second way of getting out of step
+    /// with the first, it follows this one when it is given nothing else.
+    pub(crate) fn pinned_object(&self) -> Option<(String, u64)> {
+        let pick = self.pinned?;
+        let layer = self.layers.iter().find(|layer| layer.slot == pick.slot)?;
+        Some((layer.id.clone(), pick.norad_id))
+    }
+
+    /// One object's propagator, by layer and catalogue number.
+    ///
+    /// The `Arc` is cloned out rather than borrowed because the caller
+    /// propagates while holding other resources of its own, and a borrow of
+    /// this one would keep the whole settings resource locked for as long as it
+    /// took — which is the same reason [`draw_ephemerides`] clones it.
+    pub(crate) fn propagator(&self, layer: &str, norad_id: u64) -> Option<(Arc<Catalogue>, usize)> {
+        let layer = self.layers.iter().find(|held| held.id == layer)?;
+        let catalogue = layer.catalogue.as_ref()?;
+        let index = catalogue.index_of(norad_id)?;
+        Some((catalogue.clone(), index))
+    }
+
     /// Forgets any pick that named this layer — after a removal, because there
     /// is no layer left to have picked anything in. A refresh deliberately does
     /// not: a pin names a catalogue number, and that is the same satellite in
@@ -2072,53 +2098,66 @@ fn oldest_elements_days(layer: &Ephemeris, unix_seconds: f64) -> Option<f64> {
         })
 }
 
+/// A settings resource holding one layer, with its catalogue already adopted —
+/// the state everything but a fetch runs against.
+///
+/// Outside `mod tests` because [`crate::gnc`] needs one too: its drawing follows
+/// a satellite out of a layer, and the only honest way to test that is against a
+/// layer that really holds one. The fields are private and staying that way, so
+/// this is the seam rather than making them public for a test.
+#[cfg(test)]
+pub(crate) fn test_settings(document: &str, id: &str) -> EphemerisSettings {
+    let mut settings = EphemerisSettings {
+        enabled: true,
+        picking: true,
+        hovered: None,
+        pinned: None,
+        layers: Vec::new(),
+        urls: Arc::new(RwLock::new(HashMap::new())),
+        next_slot: 0,
+        revision: 0,
+        retired: Vec::new(),
+    };
+    settings.add(EphemerisRequest {
+        source: OverlaySource::Text(document.to_string()),
+        ..EphemerisRequest::from_url(id, "")
+    });
+    let layer = settings.layers.last_mut().expect("a layer");
+    layer.catalogue = Some(Arc::new(layer.pending.take().expect("a catalogue")));
+    layer.resolve_selection();
+    settings
+}
+
+/// One record, which is enough to exercise everything that is not a fetch.
+#[cfg(test)]
+pub(crate) const TEST_ISS: &str = r#"[{
+    "OBJECT_NAME": "ISS (ZARYA)",
+    "OBJECT_ID": "1998-067A",
+    "EPOCH": "2026-09-16T03:25:57.950976",
+    "MEAN_MOTION": 15.49133683,
+    "ECCENTRICITY": 0.00049077,
+    "INCLINATION": 51.631,
+    "RA_OF_ASC_NODE": 209.9325,
+    "ARG_OF_PERICENTER": 145.256,
+    "MEAN_ANOMALY": 214.875,
+    "EPHEMERIS_TYPE": 0,
+    "CLASSIFICATION_TYPE": "U",
+    "NORAD_CAT_ID": 25544,
+    "ELEMENT_SET_NO": 999,
+    "REV_AT_EPOCH": 58585,
+    "BSTAR": 0.00013461457,
+    "MEAN_MOTION_DOT": 7.008e-5,
+    "MEAN_MOTION_DDOT": 0
+}]"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// One record, which is enough to exercise everything that is not a fetch.
-    const ISS: &str = r#"[{
-        "OBJECT_NAME": "ISS (ZARYA)",
-        "OBJECT_ID": "1998-067A",
-        "EPOCH": "2026-09-16T03:25:57.950976",
-        "MEAN_MOTION": 15.49133683,
-        "ECCENTRICITY": 0.00049077,
-        "INCLINATION": 51.631,
-        "RA_OF_ASC_NODE": 209.9325,
-        "ARG_OF_PERICENTER": 145.256,
-        "MEAN_ANOMALY": 214.875,
-        "EPHEMERIS_TYPE": 0,
-        "CLASSIFICATION_TYPE": "U",
-        "NORAD_CAT_ID": 25544,
-        "ELEMENT_SET_NO": 999,
-        "REV_AT_EPOCH": 58585,
-        "BSTAR": 0.00013461457,
-        "MEAN_MOTION_DOT": 7.008e-5,
-        "MEAN_MOTION_DDOT": 0
-    }]"#;
+    use super::{TEST_ISS as ISS, test_settings};
 
-    /// A settings resource holding one layer, with its catalogue adopted — the
-    /// state everything but a fetch runs against.
     fn settings() -> EphemerisSettings {
-        let mut settings = EphemerisSettings {
-            enabled: true,
-            picking: true,
-            hovered: None,
-            pinned: None,
-            layers: Vec::new(),
-            urls: Arc::new(RwLock::new(HashMap::new())),
-            next_slot: 0,
-            revision: 0,
-            retired: Vec::new(),
-        };
-        settings.add(EphemerisRequest {
-            source: OverlaySource::Text(ISS.to_string()),
-            ..EphemerisRequest::from_url("stations", "")
-        });
-        let layer = settings.layers.last_mut().expect("a layer");
-        layer.catalogue = Some(Arc::new(layer.pending.take().expect("a catalogue")));
-        layer.resolve_selection();
-        settings
+        test_settings(ISS, "stations")
     }
 
     fn layer() -> Ephemeris {

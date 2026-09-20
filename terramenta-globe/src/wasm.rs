@@ -16,7 +16,7 @@ use wasm_bindgen::prelude::*;
 use crate::GlobeConfig;
 use crate::api::{
     self, AltitudeMode, EphemerisRequest, GlobeCommand, GlobeState, Limits, OverlayAltitude,
-    OverlayRequest, OverlaySource, OverlayStyle, Selection, TrailPath, TrailWindow,
+    OverlayRequest, OverlaySource, OverlayStyle, SatelliteFocus, Selection, TrailPath, TrailWindow,
 };
 use crate::frame::FrameMode;
 use crate::geo::LatLon;
@@ -121,6 +121,85 @@ pub fn set_frame(mode: &str) {
 #[wasm_bindgen(js_name = toggleFrame)]
 pub fn toggle_frame() {
     api::send(GlobeCommand::ToggleFrame);
+}
+
+// ---------------------------------------------------------------------------
+// Both frames at once
+// ---------------------------------------------------------------------------
+
+/// Whether both reference frames are drawn over the scene at the same time.
+///
+/// One switch over the whole drawing, and a switch per piece below it: the
+/// inertial triad, the Earth-fixed triad and graticule, the arc measuring the
+/// sidereal angle between them, and one satellite's path drawn in each frame at
+/// once. See `crate::gnc` for what each of those is.
+#[wasm_bindgen(js_name = setGncEnabled)]
+pub fn set_gnc_enabled(enabled: bool) {
+    api::send(GlobeCommand::SetGncEnabled(enabled));
+}
+
+#[wasm_bindgen(js_name = toggleGnc)]
+pub fn toggle_gnc() {
+    api::send(GlobeCommand::ToggleGnc);
+}
+
+/// The inertial triad: the vernal equinox, the axis 90° east of it, the
+/// celestial pole and the celestial equator.
+#[wasm_bindgen(js_name = setGncEciAxes)]
+pub fn set_gnc_eci_axes(visible: bool) {
+    api::send(GlobeCommand::SetGncEciAxes(visible));
+}
+
+/// The Earth-fixed triad: the prime meridian at the equator, 90° east of it, and
+/// both of those lines on the ground.
+#[wasm_bindgen(js_name = setGncEcefAxes)]
+pub fn set_gnc_ecef_axes(visible: bool) {
+    api::send(GlobeCommand::SetGncEcefAxes(visible));
+}
+
+#[wasm_bindgen(js_name = setGncGraticule)]
+pub fn set_gnc_graticule(visible: bool) {
+    api::send(GlobeCommand::SetGncGraticule(visible));
+}
+
+/// The graticule's spacing in degrees. Clamped to what the globe will draw.
+#[wasm_bindgen(js_name = setGncGraticuleStep)]
+pub fn set_gnc_graticule_step(degrees: f32) {
+    api::send(GlobeCommand::SetGncGraticuleStep(degrees));
+}
+
+/// The arc measuring the sidereal angle. Only drawn when both triads are, since
+/// it is the angle between them.
+#[wasm_bindgen(js_name = setGncSidereal)]
+pub fn set_gnc_sidereal(visible: bool) {
+    api::send(GlobeCommand::SetGncSidereal(visible));
+}
+
+/// The two satellite paths: the smooth closed orbit in the inertial frame and
+/// the ground track over the turning Earth, built from one propagation and drawn
+/// at the same time.
+#[wasm_bindgen(js_name = setGncTrack)]
+pub fn set_gnc_track(visible: bool) {
+    api::send(GlobeCommand::SetGncTrack(visible));
+}
+
+/// How much orbit each of them spans, each side of now, in revolutions.
+#[wasm_bindgen(js_name = setGncTrackOrbits)]
+pub fn set_gnc_track_orbits(orbits: f32) {
+    api::send(GlobeCommand::SetGncTrackOrbits(orbits));
+}
+
+/// Which satellite the two paths follow. Pass `null` for either argument to
+/// follow whichever satellite is pinned instead, which is what makes clicking
+/// one on the globe enough.
+#[wasm_bindgen(js_name = setGncFocus)]
+pub fn set_gnc_focus(layer: Option<String>, norad_id: Option<u32>) {
+    api::send(GlobeCommand::SetGncFocus(layer.zip(norad_id).map(
+        |(layer, norad_id)| SatelliteFocus {
+            layer,
+            norad_id: u64::from(norad_id),
+        },
+    )));
 }
 
 // ---------------------------------------------------------------------------

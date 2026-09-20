@@ -21,6 +21,7 @@ const HELP_TEXT: &str = "drag  orbit\n\
                          WASD / arrows  orbit\n\
                          +  -  zoom\n\
                          space  ECI / ECEF frame\n\
+                         G  draw both frames at once\n\
                          R  reset view\n\
                          P  pause sun    , .  sun speed    N  now\n\
                          I  full illumination\n\
@@ -246,6 +247,37 @@ fn format_readout(state: &GlobeState) -> String {
         None => String::new(),
     };
 
+    // The frame drawing has its own two lines, because what it has to say is the
+    // relationship between the frames rather than a fact about any one layer:
+    // the sidereal angle that separates them, and — where a satellite is being
+    // followed — the same object's speed measured in each.
+    let frames = if state.gnc.enabled {
+        let rotation = format!(
+            "\nframes    GMST {:.3}°  ·  q ({:+.4}, {:+.4}, {:+.4}, {:+.4})",
+            state.gnc.gmst_deg,
+            state.gnc.quaternion[0],
+            state.gnc.quaternion[1],
+            state.gnc.quaternion[2],
+            state.gnc.quaternion[3],
+        );
+        match state.gnc.focus.as_ref() {
+            // The two speeds on one line, because the difference between them is
+            // the entire point of measuring a velocity in a frame: they are one
+            // satellite at one moment, and they do not agree.
+            Some(focus) => format!(
+                "{rotation}\ntracked   {} · {:.3} km/s inertial · {:.3} km/s over ground\n          {} · {:.0} km up",
+                focus.name,
+                focus.speed_eci_km_s,
+                focus.speed_ecef_km_s,
+                focus.subsatellite.format(),
+                focus.altitude_km,
+            ),
+            None => format!("{rotation}\ntracked   —  (pin a satellite to draw its two paths)"),
+        }
+    } else {
+        String::new()
+    };
+
     format!(
         "TERRAMENTA\n\
          cursor    {cursor}\n\
@@ -254,7 +286,7 @@ fn format_readout(state: &GlobeState) -> String {
          sun over  {}{}\n\
          clock     {}{}\n\
          imagery   {imagery}\n\
-         vectors   {vectors}{overlays}{picked}{satellite}{placemark}",
+         vectors   {vectors}{frames}{overlays}{picked}{satellite}{placemark}",
         state.camera.altitude_km,
         state.frame.label,
         state.sun.subsolar.format(),

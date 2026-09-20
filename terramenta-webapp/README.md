@@ -41,12 +41,14 @@ value from each snapshot, so nothing has to catch up when a tab is opened.
 |  | **Satellites** | An OMM catalogue from a URL or a local file, five Celestrak groups to try, and per layer: visibility, colour, orbit trails on or off, how far ahead and behind they run, refetching, remove — plus a filterable list of every object in it, each with its own switch for being drawn and for being trailed |
 | **Other** | **Sun & clock** | Run or pause, the rate from real time to a day a second, jump to now or forward by hours or days, and whether the night side is shaded at all |
 |  | **Reference frame** | ECEF or ECI |
+|  | **Both frames at once** | The inertial triad, the Earth-fixed triad, the graticule and its spacing, the arc measuring the sidereal angle between the two, and one satellite's orbit and ground track drawn together over a window you set — plus the rotation as a quaternion, and the followed object's speed measured in each frame |
 |  | **Camera** | Altitude, latitude and longitude to fly to, nine places to try, and reading the current view back into the boxes |
 |  | **Globe chrome** | The globe's own readout, its key list, and its key bindings — each switchable |
 
 Alongside them is a telemetry panel showing every field the globe reports:
-cursor and camera coordinates, altitude, frame, subsolar point, clock, rate,
-layer, overlays, satellites, and what both tile streamers are doing — and under
+cursor and camera coordinates, altitude, frame, the sidereal angle and the
+ECI→ECEF quaternion, subsolar point, clock, rate, layer, overlays, satellites,
+and what both tile streamers are doing — and under
 it, whatever the cursor is over: a feature with its properties, a satellite with
 its elements, or the sun's or moon's placemark with where that body is in the
 sky from the middle of the view.

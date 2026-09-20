@@ -99,6 +99,10 @@ to tell that apart from a real failure.
 | `lookAt(lat, lon, altitudeKm?)` | Look straight down at a coordinate |
 | `setAltitude(km)` `zoomBy(exp)` `orbitBy(yawDeg, pitchDeg)` `resetView()` | Move the camera |
 | `setFrame("ecef" \| "eci")` `toggleFrame()` | Which frame the scene is drawn in |
+| `setGncEnabled(bool)` `toggleGnc()` | Draw *both* frames at once, over whichever one is active |
+| `setGncEciAxes(bool)` `setGncEcefAxes(bool)` `setGncSidereal(bool)` | The two triads and the angle between them |
+| `setGncGraticule(bool)` `setGncGraticuleStep(deg)` | The lat/lon grid on the ground |
+| `setGncTrack(bool)` `setGncTrackOrbits(n)` `setGncFocus(layer, noradId)` | One satellite's orbit and ground track, drawn together |
 | `setSunPaused(bool)` `setTimeScale(n)` `setClock(unixSeconds)` `snapClockToNow()` | The simulated clock |
 | `setSunShaded(bool)` | Terminator, or flat full daylight |
 | `setLayer(i)` `nextLayer()` `previousLayer()` `setImageryEnabled(bool)` | Streamed imagery |
@@ -576,7 +580,9 @@ into the active frame at the moment it belongs to, the mesh comes out already in
 world space, and the ephemeris entities carry no rotation at all. Switching
 frames rebuilds them.
 
-Press `Space` with a layer up and it is the clearest thing on the globe.
+Press `Space` with a layer up and it is the clearest thing on the globe — and
+`G` draws **both** frames at once, so the two pictures are side by side rather
+than one after the other. See [Both frames at once](#both-frames-at-once).
 
 ### Coordinates are geocentric
 
@@ -623,6 +629,64 @@ keeping.
 
 [OMM]: https://public.ccsds.org/Pubs/502x0b3e1.pdf
 [ephemerisjs]: ../terramenta-webapp/src/ephemeris.js
+
+## Both frames at once
+
+`Space` is a choice: the scene is drawn in one frame or the other, and whichever
+you pick, the other one is invisible. `G` draws both of them over whatever is
+active, so the step between them is something to look at rather than something
+to take on trust. That step is the whole of a guidance, navigation and control
+frame conversion, and there is not much to it once it is on screen:
+
+- an **inertial triad** in cyan — the vernal equinox, the axis 90° east of it in
+  right ascension, and the celestial equator as a hoop in space;
+- an **Earth-fixed triad** in amber, with the equator, the prime meridian and a
+  lat/lon graticule on the ground;
+- the **sidereal angle** between the two, drawn as the arc it is. It is the one
+  number that relates the frames, and running the clock is what opens it out;
+- and one satellite's path drawn **twice at the same time** — the smooth closed
+  ellipse it is against the stars, and the ground track the same object writes
+  across the turning Earth. Click a satellite to pick which one.
+
+The pole is drawn once rather than twice, because in this model it is the same
+axis in both frames: there is no precession, nutation or polar motion in it.
+
+### Rigid geometry gets a quaternion; a ground track cannot have one
+
+The triads and the graticule never change shape. Each is one mesh, built once in
+the coordinates of the frame it belongs to, and carried into world space by a
+quaternion on its `Transform` — `inertial_to_world` for one, `earth_to_world`
+for the other. Switching frames does not rebuild either: it swaps which of the
+two is the identity. That is the entire frame handling for everything that holds
+still, and it is about five lines.
+
+The ground track cannot work that way, for the reason the section above gives:
+every one of its points belongs to a different moment. Each sample is rotated by
+the sidereal angle of *its own* moment on the way into the mesh, and what comes
+out is then rigid in the Earth-fixed frame and rides the same quaternion as the
+grid under it. Both curves come out of **one** propagation, so they are one set
+of states seen from two frames rather than two answers to the same question.
+
+### A position rotates; a velocity rotates and transports
+
+`gnc.rs` carries the rotation in both of the forms flight software does — the
+direction cosine matrix `R3(θ)` and the unit quaternion — with tests that pin
+them to each other, to the sidereal angle the renderer actually turns the Earth
+by, and to the axis relabelling between the canonical GNC basis (`Z` the pole,
+`X` the reference direction) and Bevy's Y-up scene. The sign is the part worth
+checking: this is a *frame* rotation, so the axes turn east by `θ` and a vector's
+components go the other way.
+
+A velocity needs one term more, because the frame it is measured in is itself
+turning:
+
+```text
+v_ecef = R3(θ) · ( v_eci − ω × r_eci )
+```
+
+The readout shows both speeds for whatever is being followed, so the difference
+is a number rather than a claim: the ISS is about 7.66 km/s inertial and 7.36
+over the ground, and a geostationary satellite is 3.07 and zero.
 
 ## Placemarks
 
@@ -756,6 +820,7 @@ for an embedder that would rather bind its own.
 | `W` `A` `S` `D` or arrows | Orbit |
 | `+` `-` | Zoom |
 | `Space` | Switch between the ECEF and ECI reference frames |
+| `G` | Draw both reference frames at once |
 | `R` | Reset the view |
 | `P` | Pause the sun |
 | `,` `.` | Halve / double the sun's speed |
@@ -779,6 +844,7 @@ src/
   globe.rs     Surface, atmosphere and starfield materials and entities
   camera.rs    Altitude-scaled orbit controller (mouse, keys, touch, gestures)
   frame.rs     ECEF/ECI, and the rotation that relates them
+  gnc.rs       Both frames drawn at once: the DCM, the quaternion and the transport term
   sun.rs       Simulated clock and solar position
   moon.rs      Lunar position, as the point the moon is overhead
   imagery.rs   Layer selection and the `imagery://` asset source

@@ -117,6 +117,49 @@ export const setFrame = (mode) => required().setFrame(mode);
 
 export const toggleFrame = () => required().toggleFrame();
 
+// --- Both frames at once ---------------------------------------------------
+// The frame above is a choice; this draws both of them over the scene at the
+// same time, so the rotation between them is something to look at rather than
+// something to take on trust. State comes back as `state.gnc`, which carries
+// the sidereal angle and the same rotation as a quaternion and as a matrix.
+
+/** The master switch over the whole drawing. */
+export const setGncEnabled = (enabled) => required().setGncEnabled(enabled);
+
+export const toggleGnc = () => required().toggleGnc();
+
+/** The inertial triad: the vernal equinox, 90° east of it, the pole, the celestial equator. */
+export const setGncEciAxes = (visible) => required().setGncEciAxes(visible);
+
+/** The Earth-fixed triad: the prime meridian at the equator, 90° east, and both lines on the ground. */
+export const setGncEcefAxes = (visible) => required().setGncEcefAxes(visible);
+
+/** The lat/lon grid on the ground. */
+export const setGncGraticule = (visible) => required().setGncGraticule(visible);
+
+/** Its spacing in degrees, between `limits().minGraticuleStep` and `maxGraticuleStep`. */
+export const setGncGraticuleStep = (degrees) => required().setGncGraticuleStep(degrees);
+
+/** The arc measuring the sidereal angle. Only drawn when both triads are. */
+export const setGncSidereal = (visible) => required().setGncSidereal(visible);
+
+/**
+ * One satellite drawn in both frames at once: the smooth closed orbit it is in
+ * the inertial frame, and the ground track the same object writes across the
+ * turning Earth. Both come out of one propagation, so they are the same states
+ * seen twice rather than two answers.
+ */
+export const setGncTrack = (visible) => required().setGncTrack(visible);
+
+/** How much orbit each path spans, each side of now, in revolutions. */
+export const setGncTrackOrbits = (orbits) => required().setGncTrackOrbits(orbits);
+
+/**
+ * Which satellite the two paths follow. Pass `(null, null)` to follow whichever
+ * one is pinned, which is what makes clicking a satellite enough.
+ */
+export const setGncFocus = (layer, noradId) => required().setGncFocus(layer, noradId);
+
 // --- Sun and clock ---------------------------------------------------------
 
 export const setSunPaused = (paused) => required().setSunPaused(paused);

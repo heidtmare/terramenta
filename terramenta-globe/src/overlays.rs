@@ -1764,6 +1764,112 @@ pub(crate) fn line_mesh(
     builder.finish()
 }
 
+/// One path already worked out in world space, and what it is drawn in.
+///
+/// The other mesh builders here take a document — coordinates in degrees, on a
+/// globe that stands still — and that is the right shape for data. It is the
+/// wrong shape for geometry that *is* a reference frame: an axis is a radial
+/// ray, whose two ends share a latitude and a longitude and differ only in how
+/// far out they are, and a path whose points each belong to a different moment
+/// has no single rotation to be drawn under. See [`crate::gnc`], which is the
+/// only caller.
+///
+/// So this takes the points as they are to be drawn: scene units, world space,
+/// origin at the Earth's centre. Nothing is densified, because nothing here was
+/// stated as a great circle in the first place — whatever built the path
+/// decided how finely to sample it.
+#[derive(Debug, Clone)]
+pub(crate) struct WorldPath {
+    pub points: Vec<Vec3>,
+    /// What this path is drawn in, or `None` to follow the material — the same
+    /// per-feature override an ordinary overlay gets from simplestyle, reached
+    /// directly because there is no document to read it out of.
+    pub paint: Option<Paint>,
+}
+
+/// A ribbon along every one of a set of world-space paths, as one mesh.
+///
+/// One mesh rather than one per path, and one draw with it: a frame drawing is
+/// a dozen curves in half a dozen colours that are always on and off together,
+/// and a draw call each would be a dozen draw calls to say one thing.
+pub(crate) fn world_line_mesh(paths: &[WorldPath]) -> Option<Mesh> {
+    // Per-vertex paint the moment any path asks for a colour of its own, which
+    // for a frame drawing is always — the axes are only legible because each
+    // one is a different colour.
+    let mut builder = MeshBuilder::new(paths.iter().any(|path| path.paint.is_some()));
+    for path in paths {
+        builder.paint(path.paint);
+        push_world_ribbon(&mut builder, &path.points);
+    }
+    builder.finish()
+}
+
+/// [`push_ribbon`], for a path that is already in world space.
+///
+/// The one real difference is where the spine's direction comes from. A path on
+/// the globe lies at very nearly one radius, so the way it is running is the way
+/// its *directions* change, which is what [`push_ribbon`] measures. A radial ray
+/// has no change of direction at all — both ends are over the same point on the
+/// ground — so measuring it that way gives a zero tangent, the shader finds no
+/// side to step off to, and the axis is drawn as nothing. Here the tangent comes
+/// from the positions, which is right for both.
+fn push_world_ribbon(builder: &mut MeshBuilder, path: &[Vec3]) {
+    let count = path.len();
+    if count < 2 {
+        return;
+    }
+    let closed = path[0].abs_diff_eq(path[count - 1], 1.0e-6) && count > 2;
+
+    let base = builder.next_index();
+    for (index, point) in path.iter().enumerate() {
+        let previous = match index {
+            0 if closed => path[count - 2],
+            0 => *point,
+            _ => path[index - 1],
+        };
+        let next = if index + 1 < count {
+            path[index + 1]
+        } else if closed {
+            path[1]
+        } else {
+            *point
+        };
+
+        let mut along = next - previous;
+        if along.length_squared() < 1.0e-12 {
+            along = next - *point;
+        }
+        let along = along.normalize_or_zero();
+
+        // The mesh stores a direction and a radius, so a point at the origin
+        // would have no direction to store. Nothing draws one — an axis starts
+        // at the surface — but a degenerate normal would reach the shader as a
+        // NaN rather than as a missing vertex, so it is answered here.
+        let radius = point.length();
+        let direction = if radius > 0.0 {
+            *point / radius
+        } else {
+            Vec3::Y
+        };
+
+        for side in [-1.0_f32, 1.0] {
+            builder.push(
+                direction,
+                radius,
+                [side, 0.0],
+                [along.x, along.y, along.z, side],
+            );
+        }
+    }
+
+    for segment in 0..(count as u32 - 1) {
+        let (left, right) = (base + segment * 2, base + segment * 2 + 1);
+        builder
+            .indices
+            .extend([left, right, left + 2, right, right + 2, left + 2]);
+    }
+}
+
 /// What an extruded ring is outlined with besides itself: a post at every
 /// corner, dropped to the ground, and the footprint those posts stand on.
 ///

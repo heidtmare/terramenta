@@ -89,6 +89,19 @@ impl Satellite {
     /// stale. A satellite that cannot be placed is left out of the drawing
     /// rather than drawn somewhere wrong.
     pub fn position_teme_km(&self, unix_seconds: f64) -> Option<[f64; 3]> {
+        self.state_teme(unix_seconds).map(|state| state.0)
+    }
+
+    /// The same propagation, with the velocity SGP4 worked out on the way to
+    /// the position. Kilometres, and kilometres per second, both in TEME.
+    ///
+    /// The velocity is the half of a state vector a drawing never needs and a
+    /// frame conversion cannot do without: a position rotates between the
+    /// inertial and the Earth-fixed frames, but a velocity does not — the
+    /// frame it is measured in is itself turning, so there is a term for that
+    /// and the two speeds genuinely differ. See [`crate::gnc`], which is what
+    /// asks.
+    pub fn state_teme(&self, unix_seconds: f64) -> Option<([f64; 3], [f64; 3])> {
         let minutes = (unix_seconds - self.epoch_unix_seconds) / 60.0;
         let prediction = self
             .constants
@@ -97,8 +110,9 @@ impl Satellite {
         prediction
             .position
             .iter()
+            .chain(prediction.velocity.iter())
             .all(|component| component.is_finite())
-            .then_some(prediction.position)
+            .then_some((prediction.position, prediction.velocity))
     }
 
     /// How far the elements are from a moment, in days, signed.

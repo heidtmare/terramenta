@@ -30,6 +30,7 @@ use crate::ephemeris::{self, EphemerisSettings};
 use crate::frame::{FrameRealigned, FrameSet, ReferenceFrame};
 use crate::geo::ray_sphere_intersection;
 use crate::globe::GLOBE_RADIUS;
+use crate::gnc::{FrameReport, GncSettings};
 use crate::hud::HudSettings;
 use crate::imagery::{ImageryLayer, ImagerySettings};
 use crate::overlays::{self, OverlaySettings};
@@ -51,6 +52,11 @@ pub use crate::ephemeris::{
 // it; the module it lives in is the globe's own business.
 pub use crate::frame::FrameMode;
 pub use crate::geo::LatLon;
+pub use crate::gnc::{
+    EARTH_RATE_RAD_S, FocusState, GncState, MAX_GRATICULE_STEP, MAX_TRACK_ORBITS,
+    MIN_GRATICULE_STEP, MIN_TRACK_ORBITS, SatelliteFocus, ecef_to_eci_quat, eci_to_ecef_dcm,
+    eci_to_ecef_quat, velocity_eci_to_ecef,
+};
 pub use crate::overlays::{
     AltitudeMode, MIN_REFRESH_SECONDS, OverlayAltitude, OverlayInfo, OverlayRequest, OverlaySource,
     OverlayStyle, PickedFeature,
@@ -96,6 +102,27 @@ pub enum GlobeCommand {
 
     SetFrame(FrameMode),
     ToggleFrame,
+
+    /// Whether both frames are drawn over the scene at once — the inertial
+    /// triad, the Earth-fixed graticule, the sidereal angle between them and a
+    /// satellite's path in each. See [`crate::gnc`].
+    SetGncEnabled(bool),
+    ToggleGnc,
+    SetGncEciAxes(bool),
+    SetGncEcefAxes(bool),
+    SetGncGraticule(bool),
+    /// The graticule's spacing in degrees, clamped to what the globe will draw.
+    SetGncGraticuleStep(f32),
+    /// The arc measuring the sidereal angle. Only drawn when both triads are.
+    SetGncSidereal(bool),
+    /// The two satellite paths: the inertial orbit and the ground track, drawn
+    /// at the same time from the same propagation.
+    SetGncTrack(bool),
+    /// How much orbit each of them spans, each side of now, in revolutions.
+    SetGncTrackOrbits(f32),
+    /// Which satellite they follow, or `None` to follow whichever one is
+    /// pinned — which is what makes clicking a satellite enough.
+    SetGncFocus(Option<SatelliteFocus>),
 
     SetSunPaused(bool),
     /// Simulated seconds per real second.
@@ -279,6 +306,9 @@ fn take_queued() -> Vec<GlobeCommand> {
 pub struct GlobeState {
     pub camera: CameraState,
     pub frame: FrameState,
+    /// The drawing that puts both reference frames on screen at once, and the
+    /// rotation relating them as a quaternion and as a matrix.
+    pub gnc: GncState,
     pub sun: SunState,
     pub imagery: ImageryState,
     /// The Mapbox Vector Tile layer, and how much of it is on screen.
@@ -395,6 +425,13 @@ pub struct Limits {
     /// any tile, and an interface is better off saying so than leaving someone
     /// to wonder why the Arctic has no coastline.
     pub max_vector_tile_latitude: f32,
+    /// How finely the frame drawing's graticule may be asked for, in degrees.
+    pub min_graticule_step: f32,
+    pub max_graticule_step: f32,
+    /// How much orbit its two satellite paths may span, each side of now, in
+    /// revolutions.
+    pub min_track_orbits: f32,
+    pub max_track_orbits: f32,
 }
 
 impl Limits {
@@ -406,6 +443,10 @@ impl Limits {
             min_time_scale: sun::MIN_TIME_SCALE,
             max_time_scale: sun::MAX_TIME_SCALE,
             max_vector_tile_latitude: crate::mvt::MAX_LATITUDE,
+            min_graticule_step: MIN_GRATICULE_STEP,
+            max_graticule_step: MAX_GRATICULE_STEP,
+            min_track_orbits: MIN_TRACK_ORBITS,
+            max_track_orbits: MAX_TRACK_ORBITS,
         }
     }
 }
@@ -496,9 +537,17 @@ pub(crate) type PlacemarkDigest = (Option<Body>, Option<Body>);
 
 /// The discrete part of the state — the fields a control flips rather than the
 /// ones that drift every frame. A change here publishes immediately.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Digest {
     frame: &'static str,
+    /// The frame drawing's switches, and which satellite its paths follow — the
+    /// fields a control flips. The sidereal angle deliberately is not one of
+    /// them: it changes every tick and has no control on it, so publishing on it
+    /// would defeat the throttle entirely.
+    gnc: (bool, bool, bool, bool, bool, bool),
+    gnc_graticule_step: u32,
+    gnc_track_orbits: u32,
+    gnc_focus: Option<(String, u64)>,
     sun_paused: bool,
     sun_shaded: bool,
     imagery_enabled: bool,
@@ -554,6 +603,24 @@ fn digest(
     let (hovered_placemark, pinned_placemark) = placemarks;
     Digest {
         frame: state.frame.mode,
+        gnc: (
+            state.gnc.enabled,
+            state.gnc.eci_axes,
+            state.gnc.ecef_axes,
+            state.gnc.graticule,
+            state.gnc.sidereal,
+            state.gnc.track,
+        ),
+        // Rounded into an integer of hundredths, because these are floats a
+        // slider writes and comparing them exactly would publish on the last bit
+        // of a value nothing can see.
+        gnc_graticule_step: (state.gnc.graticule_step_deg * 100.0) as u32,
+        gnc_track_orbits: (state.gnc.track_orbits * 100.0) as u32,
+        gnc_focus: state
+            .gnc
+            .focus
+            .as_ref()
+            .map(|focus| (focus.layer.clone(), focus.norad_id)),
         sun_paused: state.sun.paused,
         sun_shaded: state.sun.shaded,
         imagery_enabled: state.imagery.enabled,
@@ -668,6 +735,7 @@ fn apply_commands(
     mut camera: Query<&mut OrbitCamera>,
     mut frame: ResMut<ReferenceFrame>,
     mut realigned: MessageWriter<FrameRealigned>,
+    mut gnc: ResMut<GncSettings>,
     mut sun: ResMut<Sun>,
     mut imagery: ResMut<ImagerySettings>,
     mut vector_tiles: ResMut<VectorTileSettings>,
@@ -725,6 +793,17 @@ fn apply_commands(
                 let toggled = frame.mode.toggled();
                 set_frame(&mut frame, &mut realigned, toggled);
             }
+
+            GlobeCommand::SetGncEnabled(enabled) => gnc.enabled = enabled,
+            GlobeCommand::ToggleGnc => gnc.enabled = !gnc.enabled,
+            GlobeCommand::SetGncEciAxes(on) => gnc.eci_axes = on,
+            GlobeCommand::SetGncEcefAxes(on) => gnc.ecef_axes = on,
+            GlobeCommand::SetGncGraticule(on) => gnc.graticule = on,
+            GlobeCommand::SetGncGraticuleStep(degrees) => gnc.set_graticule_step(degrees),
+            GlobeCommand::SetGncSidereal(on) => gnc.sidereal = on,
+            GlobeCommand::SetGncTrack(on) => gnc.track = on,
+            GlobeCommand::SetGncTrackOrbits(orbits) => gnc.set_track_orbits(orbits),
+            GlobeCommand::SetGncFocus(focus) => gnc.focus = focus,
 
             GlobeCommand::SetSunPaused(paused) => sun.paused = paused,
             GlobeCommand::SetTimeScale(scale) => sun.set_time_scale(scale),
@@ -868,7 +947,7 @@ pub(crate) fn publish_state(
     time: Res<Time>,
     camera: Query<&OrbitCamera>,
     cursor: Res<Cursor>,
-    frame: Res<ReferenceFrame>,
+    frames: FrameReport,
     sun: Res<Sun>,
     imagery: Res<ImagerySettings>,
     tiles: Res<TileCache>,
@@ -889,14 +968,15 @@ pub(crate) fn publish_state(
     let state = GlobeState {
         camera: CameraState {
             center: LatLon::from_direction(
-                frame.world_to_earth() * orbit.world_center().to_direction(),
+                frames.frame.world_to_earth() * orbit.world_center().to_direction(),
             ),
             altitude_km: orbit.altitude_km(),
         },
         frame: FrameState {
-            mode: frame.mode.id(),
-            label: frame.mode.label(),
+            mode: frames.frame.mode.id(),
+            label: frames.frame.mode.label(),
         },
+        gnc: frames.describe(&ephemerides, sun.unix_seconds),
         sun: SunState {
             paused: sun.paused,
             shaded: sun.shaded,
@@ -943,7 +1023,7 @@ pub(crate) fn publish_state(
         ephemeris::pick_digest(&ephemerides),
         placemarks.digest(),
     );
-    let changed = stream.last_digest != Some(current);
+    let changed = stream.last_digest.as_ref() != Some(&current);
     let due = stream.since_publish >= STATE_INTERVAL_SECONDS;
 
     // The HUD reads this every tick, so it is kept current even between

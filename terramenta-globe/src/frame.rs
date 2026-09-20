@@ -39,9 +39,9 @@ const SIDEREAL_EPOCH_DEGREES: f64 = 280.460_618_37;
 /// Degrees of sidereal rotation per day: a full turn plus the extra the Earth
 /// has to make up to face the sun again, which is what makes a sidereal day
 /// about four minutes short of a solar one.
-const SIDEREAL_DEGREES_PER_DAY: f64 = 360.985_647_366_29;
+pub(crate) const SIDEREAL_DEGREES_PER_DAY: f64 = 360.985_647_366_29;
 
-const SECONDS_PER_DAY: f64 = 86_400.0;
+pub(crate) const SECONDS_PER_DAY: f64 = 86_400.0;
 
 /// The two frames the globe can be shown in.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -137,6 +137,35 @@ impl ReferenceFrame {
             FrameMode::Ecef => -self.earth_rotation,
             FrameMode::Eci => 0.0,
         }
+    }
+
+    /// Takes an inertial direction or position into world space — the other
+    /// half of [`ReferenceFrame::earth_to_world`], and the one an orbit is
+    /// stated in.
+    ///
+    /// The stars are inertial and so is this, so it is exactly
+    /// [`ReferenceFrame::sky_rotation`] as a quaternion: nothing in ECI, where
+    /// world space *is* the inertial frame, and the Earth's rotation backwards
+    /// in ECEF, where an inertial direction has to be unturned by however far
+    /// Greenwich has come round.
+    ///
+    /// The two together are what lets both frames be drawn at once: geometry
+    /// that belongs to the ground goes through `earth_to_world`, geometry that
+    /// belongs to the stars goes through this, and the angle left between them
+    /// on screen is the sidereal time. See [`crate::gnc`].
+    pub fn inertial_to_world(&self) -> Quat {
+        Quat::from_rotation_y(self.sky_rotation())
+    }
+
+    /// Greenwich's angle east of the vernal equinox, in radians — the Greenwich
+    /// mean sidereal time of the simulated clock, whichever frame is being
+    /// drawn in.
+    ///
+    /// This is the single number the two frames differ by, so anything that
+    /// *reports* the relationship rather than drawing it needs it directly
+    /// rather than through one of the quaternions above.
+    pub fn earth_rotation(&self) -> f32 {
+        self.earth_rotation
     }
 
     /// Points the Earth where the given moment says it should be.
@@ -285,6 +314,27 @@ mod tests {
             "{placed:?}"
         );
         assert_eq!(frame.sky_rotation(), 0.0);
+    }
+
+    #[test]
+    fn the_two_frames_differ_by_the_earth_rotation_in_both_modes() {
+        // Whichever frame world space is, the angle left between the Earth-fixed
+        // basis and the inertial one is the sidereal time — which is the whole
+        // reason both can be drawn at once and read against each other.
+        for mode in [FrameMode::Ecef, FrameMode::Eci] {
+            let frame = ReferenceFrame {
+                mode,
+                earth_rotation: 1.2,
+            };
+            let ground = frame.earth_to_world() * Vec3::Z;
+            let inertial = frame.inertial_to_world() * Vec3::Z;
+            let between = crate::geo::LatLon::from_direction(ground).lon
+                - crate::geo::LatLon::from_direction(inertial).lon;
+            assert!(
+                (between - 1.2_f32.to_degrees()).abs() < 1.0e-2,
+                "{mode:?}: {between}"
+            );
+        }
     }
 
     #[test]

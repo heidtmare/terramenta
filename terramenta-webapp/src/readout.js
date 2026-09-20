@@ -46,6 +46,32 @@ const FIELDS = [
           `${state.imagery.visibleTiles} drawn · ${state.imagery.loadingTiles} loading`
         : "—",
   ],
+  // The sidereal angle is the whole relationship between the two frames, so it
+  // is worth a row of its own whether or not the drawing is up — it is the
+  // number every other frame conversion in the globe is built on.
+  ["sidereal", (state) => `${state.gnc.gmstDeg.toFixed(3)}°  (GMST)`],
+  [
+    "rotation",
+    (state) => {
+      const [x, y, z, w] = state.gnc.quaternion;
+      const fixed = (value) => value.toFixed(4).padStart(7);
+      return `q (${fixed(x)},${fixed(y)},${fixed(z)},${fixed(w)})`;
+    },
+  ],
+  [
+    // One satellite, one moment, two frames: the speeds do not agree, and the
+    // difference is the rotation of the frame it is measured in.
+    "tracked",
+    (state) => {
+      if (!state.gnc.enabled) return "—";
+      const focus = state.gnc.focus;
+      if (!focus) return "pin a satellite";
+      return (
+        `${focus.name} · ${focus.speedEciKmS.toFixed(3)} km/s inertial · ` +
+        `${focus.speedEcefKmS.toFixed(3)} km/s over ground`
+      );
+    },
+  ],
   ["vectors", (state) => (state.vectorTiles.enabled ? state.vectorTiles.label : "off")],
   [
     "vector tiles",
