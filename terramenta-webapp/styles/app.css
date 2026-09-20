@@ -734,6 +734,52 @@ body.panel-collapsed #panel {
   }
 }
 
+/* --- Porkchop plot --------------------------------------------------------- */
+
+.porkchop-date-range {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.porkchop-date-range .coordinate {
+  min-width: 0;
+}
+
+.porkchop-chart-wrap {
+  margin-top: 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: rgba(6, 10, 18, 0.4);
+}
+
+.porkchop-chart {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.porkchop-frame {
+  fill: none;
+  stroke: var(--line);
+}
+
+.porkchop-contour {
+  fill: none;
+  stroke: rgba(6, 10, 18, 0.65);
+  stroke-width: 0.6;
+}
+
+.porkchop-axis {
+  stroke: rgba(6, 10, 18, 0.35);
+  stroke-width: 0.5;
+}
+
+.porkchop-axis-label {
+  fill: var(--ink-faint);
+  font-size: 8px;
+  font-family: inherit;
+}
+
 /* --- Narrow screens ------------------------------------------------------- */
 
 @media (max-width: 40rem) {

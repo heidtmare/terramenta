@@ -4786,6 +4786,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "terramenta-charta"
+version = "0.1.0"
+dependencies = [
+ "js-sys",
+ "serde",
+ "serde_json",
+ "terramenta-solare",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "terramenta-globe"
 version = "0.1.0"
 dependencies = [

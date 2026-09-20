@@ -1,0 +1,21 @@
+[package]
+name = "terramenta-charta"
+description = "2D mission-planning charts, starting with the porkchop plot, compiled to WebAssembly for terramenta-webapp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Same split as `terramenta-globe`: `cdylib` for wasm-bindgen, `rlib` for the
+# native tests this crate's grid and contour math actually runs under.
+[lib]
+name = "terramenta_charta"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+terramenta-solare = { path = "../terramenta-solare" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+js-sys = "0.3"

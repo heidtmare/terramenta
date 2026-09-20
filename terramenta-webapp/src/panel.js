@@ -12,16 +12,20 @@
  * fights the pointer, so a slider says so while it is being held and `sync`
  * leaves it alone until it is let go.
  *
- * The sections are dealt out into three tabs — the imagery under everything,
- * the data drawn over it, and the view it is all seen from. Switching tabs
- * only hides panes; nothing is torn down or rebuilt, so a control in a closed
- * tab is still bound and still current when you come back to it.
+ * The sections are dealt out into four tabs — the imagery under everything,
+ * the data drawn over it, the view it is all seen from, and mission planning,
+ * which stands apart from the other three: nothing in it is bound to a globe
+ * snapshot, since a porkchop plot depends on nothing the globe is currently
+ * doing. Switching tabs only hides panes; nothing is torn down or rebuilt, so
+ * a control in a closed tab is still bound and still current when you come
+ * back to it.
  */
 
 import * as globe from "./globe.js";
 import { el, row, section, tabs } from "./dom.js";
 import { mountEphemeris } from "./ephemeris.js";
 import { altitude, timeScale } from "./format.js";
+import { mountMission } from "./mission.js";
 import { mountOverlays } from "./overlays.js";
 import { PLACES } from "./places.js";
 import { button, choice, slider, toggle } from "./widgets.js";
@@ -394,10 +398,13 @@ export function mountPanel(root) {
   // over it, vector tiles included — they are decoded features, not pixels,
   // and belong with the other two feature layers rather than with the raster
   // imagery. What is left is how the scene is viewed rather than what is in it.
+  const mission = mountMission();
+
   const { strip, panes } = tabs([
     { id: "imagery", label: "Imagery", panes: [imagery] },
     { id: "data", label: "Data layers", panes: [vectorTiles, overlays, ephemerides] },
     { id: "other", label: "Other", panes: [sun, frame, gnc, camera, chrome] },
+    { id: "mission", label: "Mission", panes: [mission] },
   ]);
 
   // The strip keeps its place while the pane below it scrolls, so the tabs are

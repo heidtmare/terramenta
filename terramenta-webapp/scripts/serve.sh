@@ -10,8 +10,8 @@ set -euo pipefail
 APP="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PORT="${1:-8080}"
 
-if [[ ! -f "$APP/globe/terramenta_globe.js" ]]; then
-  echo "No globe module yet — building one first."
+if [[ ! -f "$APP/globe/terramenta_globe.js" || ! -f "$APP/charta/terramenta_charta.js" ]]; then
+  echo "Missing a module — building them first."
   "$APP/scripts/build.sh"
 fi
 

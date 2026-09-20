@@ -9,5 +9,9 @@
 /terramenta-globe/dist
 /terramenta-webapp/globe
 
+# Same, for the porkchop-plot module.
+/terramenta-charta/dist
+/terramenta-webapp/charta
+
 # Coastline data for docs/satellites.py, downloaded on first use.
 /docs/land-110m.json
