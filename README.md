@@ -34,6 +34,16 @@ takes commands, reports state, and draws. Anything that wants a globe —
 this app, a dashboard, an analysis tool — embeds the module and builds its own
 interface, and the reference app is there to show what that takes.
 
+Two more crates sit alongside them for mission planning, outside Earth orbit:
+[`terramenta-solare`](terramenta-solare/) is the model — a frame tree running
+from the Solar System Barycentre down through the Sun, Earth and Mars, the
+two-body mechanics spacecraft propagate with, and a Lambert solver for the
+transfer between two bodies on two given dates — and
+[`terramenta-charta`](terramenta-charta/) is a 2D chart built on it: the
+porkchop plot a real interplanetary launch window is chosen from, contoured
+by its own marching-squares implementation and exposed to JavaScript the same
+way the globe is.
+
 ## What it does
 
 - **A shaded Earth.** NASA Blue Marble imagery on a unit sphere, lit by a
@@ -165,6 +175,8 @@ and key bindings, which is the quickest way to work on the renderer itself.
 Cargo.toml              Workspace: profiles and members
 terramenta-globe/       The renderer and its control surface  → its README
 terramenta-webapp/      The reference web app                 → its README
+terramenta-solare/      Solar-system frame tree and mission mechanics
+terramenta-charta/      2D mission-planning charts, e.g. the porkchop plot → its README
 ```
 
 `terramenta-webapp` is not a Cargo member — it is HTML, CSS and ES modules with
