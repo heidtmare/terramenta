@@ -8,3 +8,6 @@
 # The WebAssembly module and the assets copied next to it are build output.
 /terramenta-globe/dist
 /terramenta-webapp/globe
+
+# Coastline data for docs/satellites.py, downloaded on first use.
+/docs/land-110m.json

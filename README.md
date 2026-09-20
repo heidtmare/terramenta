@@ -12,6 +12,16 @@ A navigable 3D globe of Earth, written in Rust with [Bevy](https://bevy.org),
 rendered through WebGPU, and shipped to the browser as WebAssembly — with a web
 app around it that drives every part of it from JavaScript.
 
+![The ephemeris layer: satellites propagated from orbit mean elements, drawn over a shaded Earth with their ground tracks](docs/satellites.svg)
+
+*Not a screen capture: [`docs/satellites.py`](docs/satellites.py) propagates the
+same kinds of orbit the app does — crewed stations, a Starlink shell, GPS,
+Molniya and the geostationary ring — rotates them into the Earth-fixed frame
+and draws the result as one animated SVG. Radii are compressed so that a
+geostationary ring and a space station fit the same picture; everything else is
+to scale, including the ground tracks, the terminator and the hidden half of
+every orbit.*
+
 ## The two halves
 
 | | |
@@ -200,7 +210,8 @@ no build step at all. The only thing it builds is the globe.
 ## Credits
 
 Base Earth imagery: [NASA Visible Earth](https://visibleearth.nasa.gov) Blue
-Marble (public domain). Streamed layers: [NASA
+Marble (public domain). Coastlines in the animation above:
+[Natural Earth](https://www.naturalearthdata.com) 110m land (public domain). Streamed layers: [NASA
 GIBS](https://nasa-gibs.github.io/gibs-api-docs/). Vector tiles:
 [MapLibre demo tiles](https://demotiles.maplibre.org) and
 [OpenStreetMap](https://www.openstreetmap.org/copyright) (ODbL). Orbital
