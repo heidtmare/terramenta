@@ -13,6 +13,12 @@
 //! next one out the moment that stops being true, without its actual
 //! position ever jumping to show for it.
 //!
+//! [`lambert`] and [`mission`] are the other direction a spacecraft's
+//! trajectory comes from: not propagated forward from a known state, but
+//! solved for — given where two bodies are on two given dates, the one orbit
+//! that connects them, and the velocity change departing and arriving on it
+//! actually costs.
+//!
 //! Nothing here depends on Bevy or draws anything — this crate is the model,
 //! the same way `terramenta-globe`'s own frame and ephemeris modules are
 //! plain Rust underneath the systems that read them. Wiring a solar system
@@ -21,6 +27,8 @@
 pub mod bodies;
 pub mod ecliptic;
 pub mod frame;
+pub mod lambert;
+pub mod mission;
 pub mod orbit;
 pub mod planets;
 pub mod spacecraft;
@@ -28,6 +36,8 @@ pub mod sun;
 pub mod time;
 
 pub use frame::{Ephemeris, FrameId, FrameTree, StateVector};
+pub use lambert::{LambertSolution, TransferDirection};
+pub use mission::{HohmannTransfer, TransferPlan, hohmann_transfer, plan_transfer};
 pub use time::Epoch;
 
 /// The tree this crate exists to build: the Solar System Barycentre at the
