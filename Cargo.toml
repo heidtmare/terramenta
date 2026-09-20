@@ -6,7 +6,7 @@
 # modules with no build step. See `terramenta-webapp/README.md`.
 [workspace]
 resolver = "3"
-members = ["terramenta-globe"]
+members = ["terramenta-globe", "terramenta-solare"]
 
 [workspace.package]
 version = "0.1.0"

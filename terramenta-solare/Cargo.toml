@@ -1,0 +1,16 @@
+[package]
+name = "terramenta-solare"
+description = "A hierarchical solar-system reference frame tree, rooted at the Solar System Barycenter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "terramenta_solare"
+
+[dependencies]
+# Position and velocity vectors. `DVec3` throughout: `terramenta-globe` narrows
+# to `f32` because it draws a unit sphere a few metres across, but a
+# barycentric position is on the order of 10^8 km, where an `f32` has less
+# precision than a house.
+glam = { version = "0.32", default-features = false, features = ["std"] }
