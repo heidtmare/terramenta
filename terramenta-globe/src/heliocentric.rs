@@ -19,6 +19,8 @@
 
 use bevy::prelude::*;
 
+use crate::geo::equirectangular_sphere;
+use crate::globe::StarfieldMaterial;
 use crate::solar::{FloatingOrigin, SolarBody, SolarSystem, floating_offset};
 use crate::sun::Sun;
 use crate::view::in_heliocentric_view;
@@ -31,6 +33,9 @@ const SUN_VISUAL_RADIUS_AU: f32 = 0.02;
 /// Mars's real 1.88:1 size ratio between the two.
 const EARTH_VISUAL_RADIUS_AU: f32 = 0.006;
 const MARS_VISUAL_RADIUS_AU: f32 = 0.0032;
+/// Inside [`crate::view`]'s far plane (20 AU) but well outside anything the
+/// heliocentric camera can orbit out to ([`HELIO_MAX_DISTANCE_AU`]).
+const STARFIELD_RADIUS_AU: f32 = 15.0;
 
 /// Closest the heliocentric camera can orbit in to its anchor.
 pub(crate) const HELIO_MIN_DISTANCE_AU: f32 = 0.05;
@@ -111,16 +116,18 @@ pub struct HeliocentricPlugin;
 
 impl Plugin for HeliocentricPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_heliocentric_bodies).add_systems(
-            Update,
-            (
-                heliocentric_mouse_input.run_if(in_heliocentric_view),
-                heliocentric_keyboard_input
-                    .run_if(crate::api::keyboard_enabled)
-                    .run_if(in_heliocentric_view),
-                apply_heliocentric_orbit.run_if(in_heliocentric_view),
-            ),
-        );
+        app.add_systems(Startup, spawn_heliocentric_bodies)
+            .add_systems(
+                Update,
+                (
+                    heliocentric_mouse_input.run_if(in_heliocentric_view),
+                    heliocentric_keyboard_input
+                        .run_if(crate::api::keyboard_enabled)
+                        .run_if(in_heliocentric_view),
+                    apply_heliocentric_orbit.run_if(in_heliocentric_view),
+                    drive_heliocentric_starfield.run_if(in_heliocentric_view),
+                ),
+            );
     }
 }
 
@@ -128,8 +135,22 @@ fn spawn_heliocentric_bodies(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut starfield_materials: ResMut<Assets<StarfieldMaterial>>,
     solar_system: Res<SolarSystem>,
 ) {
+    // A second starfield at heliocentric scale, reusing `crate::globe`'s own
+    // shader and mesh helper rather than a new one: it is the same idea (a
+    // procedurally starred sphere, seen from inside) at a radius that fits
+    // this view's much larger distances instead of the globe's.
+    commands.spawn((
+        Name::new("Heliocentric Starfield"),
+        HeliocentricVisual,
+        Mesh3d(meshes.add(equirectangular_sphere(STARFIELD_RADIUS_AU, 48, 24))),
+        MeshMaterial3d(starfield_materials.add(StarfieldMaterial::default())),
+        Transform::IDENTITY,
+        Visibility::Hidden,
+    ));
+
     let sun = solar_system
         .find("Sun")
         .expect("terramenta_solare::solar_system always adds a Sun frame");
@@ -278,4 +299,27 @@ fn apply_heliocentric_orbit(
     );
 
     **transform = rig.transform(anchor_position);
+}
+
+/// Keeps the heliocentric starfield's twinkle animated. Its rotation stays
+/// zero rather than tracking [`crate::frame::ReferenceFrame`] the way the
+/// globe's own starfield does — there is no ECEF/ECI split out here, just the
+/// one fixed, ICRF-aligned orientation every heliocentric placement uses; see
+/// [`crate::solar::floating_offset`].
+///
+/// The query narrows to this view's own starfield entity by component type
+/// alone — it is the only [`HeliocentricVisual`] carrying a
+/// [`StarfieldMaterial`], since the Sun, Earth and Mars meshes carry a
+/// [`StandardMaterial`] instead — so this never touches
+/// [`crate::globe`]'s own starfield material sharing the same underlying
+/// [`Assets<StarfieldMaterial>`] collection.
+fn drive_heliocentric_starfield(
+    time: Res<Time>,
+    starfield: Single<&MeshMaterial3d<StarfieldMaterial>, With<HeliocentricVisual>>,
+    mut materials: ResMut<Assets<StarfieldMaterial>>,
+) {
+    if let Some(mut material) = materials.get_mut(&starfield.0) {
+        material.uniform.time = time.elapsed_secs();
+        material.uniform.rotation = 0.0;
+    }
 }

@@ -77,6 +77,7 @@ use crate::moon::Moon;
 use crate::overlays::PICK_SLACK_PX;
 use crate::sun::Sun;
 use crate::tiles::MAX_TILE_RADIUS;
+use crate::view::not_heliocentric_view;
 
 /// How big an icon is drawn, in device pixels — the size the images were
 /// authored at, so neither is resampled at rest.
@@ -239,6 +240,12 @@ impl Plugin for PlacemarkPlugin {
                 // that means for the halo. Each step reads the one before it
                 // within the tick, because a pick a frame stale highlights the
                 // placemark the pointer has just left.
+                // A placemark is Earth-fixed and sized to the globe's own
+                // scale (see `PLACEMARK_RADIUS`), which is meaningless once
+                // `ReferenceFrame::earth_to_world` and the globe it anchors
+                // to are no longer what the camera is looking at — so the
+                // whole chain stands down in heliocentric view, the same as
+                // `crate::tiles` and `crate::vector_tiles` do.
                 (
                     track_bodies,
                     place_placemarks,
@@ -247,6 +254,7 @@ impl Plugin for PlacemarkPlugin {
                     highlight_placemarks,
                 )
                     .chain()
+                    .run_if(not_heliocentric_view)
                     .in_set(FrameSet::Apply)
                     .after(crate::api::track_cursor),
             );

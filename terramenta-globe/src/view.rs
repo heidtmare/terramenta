@@ -29,7 +29,10 @@ use crate::frame::FrameSet;
 use crate::globe::Globe;
 use crate::globe::{AtmosphereMaterial, StarfieldMaterial};
 use crate::heliocentric::{HELIO_DEFAULT_DISTANCE_AU, HeliocentricCamera, HeliocentricVisual};
+use crate::placemark::Placemark;
 use crate::solar::{FloatingOrigin, SolarSystem};
+use crate::tiles::TileEntity;
+use crate::vector_tiles::VectorTileEntity;
 
 /// How far out the globe camera pulls back before the cut into the
 /// heliocentric view — comfortably past [`crate::camera`]'s own maximum
@@ -55,6 +58,26 @@ const GLOBE_FAR: f32 = 1000.0;
 pub enum ViewMode {
     Globe,
     Heliocentric,
+}
+
+impl ViewMode {
+    /// The stable name the control surface names this view by, on the same
+    /// terms as [`crate::frame::FrameMode::id`].
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Globe => "globe",
+            Self::Heliocentric => "heliocentric",
+        }
+    }
+
+    /// Parses [`ViewMode::id`] back, for a view named by an embedder.
+    pub fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "globe" => Some(Self::Globe),
+            "heliocentric" => Some(Self::Heliocentric),
+            _ => None,
+        }
+    }
 }
 
 /// Which view is showing, and — for the two legs of getting between
@@ -159,7 +182,7 @@ fn view_controls(
     view: Res<ViewState>,
     mut requests: MessageWriter<RequestViewChange>,
 ) {
-    if !keys.just_pressed(KeyCode::KeyV) {
+    if !keys.just_pressed(KeyCode::KeyU) {
         return;
     }
     match *view {
@@ -265,12 +288,20 @@ fn set_projection(projection: &mut Projection, near: f32, far: f32) {
 /// Shows the globe's own visuals or the heliocentric bodies' meshes,
 /// whichever [`ViewChanged`] just switched to; the other set hides.
 ///
-/// The four queries below all write [`Visibility`] on entity sets Bevy has
+/// The queries below all write [`Visibility`] on entity sets Bevy has
 /// no static way to prove disjoint from one another (different marker/material
 /// types, no shared `Without`), so they go through a [`ParamSet`] rather than
-/// four plain `Query` parameters — the same conflict [`crate::hud`] avoids
+/// plain `Query` parameters — the same conflict [`crate::hud`] avoids
 /// with paired `Without` filters, done here with a set instead since there
 /// are more than two groups.
+///
+/// Imagery tiles, vector tiles and placemarks get the one-way treatment:
+/// hidden going out to heliocentric, but left alone coming back, since
+/// [`crate::tiles`], [`crate::vector_tiles`] and [`crate::placemark`]'s own
+/// per-tick systems resume that same tick and recompute their visibility on
+/// their own — see `not_heliocentric_view`. Forcing them visible here would
+/// just be a wrong guess for that one frame, showing whatever the globe's
+/// own systems had already hidden or retired.
 #[allow(clippy::type_complexity)]
 fn toggle_body_visibility(
     mut changed: MessageReader<ViewChanged>,
@@ -279,6 +310,9 @@ fn toggle_body_visibility(
         Query<&mut Visibility, With<MeshMaterial3d<AtmosphereMaterial>>>,
         Query<&mut Visibility, With<MeshMaterial3d<StarfieldMaterial>>>,
         Query<&mut Visibility, With<HeliocentricVisual>>,
+        Query<&mut Visibility, With<TileEntity>>,
+        Query<&mut Visibility, With<VectorTileEntity>>,
+        Query<&mut Visibility, With<Placemark>>,
     )>,
 ) {
     let Some(change) = changed.read().last() else {
@@ -299,6 +333,17 @@ fn toggle_body_visibility(
     }
     for mut visibility in &mut visuals.p3() {
         *visibility = as_visibility(heliocentric_visible);
+    }
+    if heliocentric_visible {
+        for mut visibility in &mut visuals.p4() {
+            *visibility = Visibility::Hidden;
+        }
+        for mut visibility in &mut visuals.p5() {
+            *visibility = Visibility::Hidden;
+        }
+        for mut visibility in &mut visuals.p6() {
+            *visibility = Visibility::Hidden;
+        }
     }
 }
 

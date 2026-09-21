@@ -20,6 +20,7 @@ use crate::api::{
 };
 use crate::frame::FrameMode;
 use crate::geo::LatLon;
+use crate::view::ViewMode;
 
 /// Starts the globe on a canvas, by CSS selector, loading its assets from a
 /// path relative to the page.
@@ -121,6 +122,26 @@ pub fn set_frame(mode: &str) {
 #[wasm_bindgen(js_name = toggleFrame)]
 pub fn toggle_frame() {
     api::send(GlobeCommand::ToggleFrame);
+}
+
+// ---------------------------------------------------------------------------
+// Heliocentric view
+// ---------------------------------------------------------------------------
+
+/// Switches to `"globe"` or `"heliocentric"`. An unknown name is ignored.
+///
+/// A request for the view already showing, or made mid-transition, is a
+/// no-op — see [`crate::view`].
+#[wasm_bindgen(js_name = setView)]
+pub fn set_view(mode: &str) {
+    if let Some(mode) = ViewMode::from_id(mode) {
+        api::send(GlobeCommand::SetView(mode));
+    }
+}
+
+#[wasm_bindgen(js_name = toggleView)]
+pub fn toggle_view() {
+    api::send(GlobeCommand::ToggleView);
 }
 
 // ---------------------------------------------------------------------------

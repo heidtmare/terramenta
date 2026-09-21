@@ -38,6 +38,7 @@ use crate::placemark::{self, PlacemarkSettings};
 use crate::sun::{self, Sun};
 use crate::tiles::TileCache;
 use crate::vector_tiles::{self, VectorTileCache, VectorTileSettings};
+use crate::view::{RequestViewChange, ViewState};
 
 /// The types a command or a snapshot is stated in, re-exported so the control
 /// surface is nameable from one place. A native embedder sending a
@@ -51,6 +52,8 @@ pub use crate::ephemeris::{
 // `SetFrame` takes one of these, so a native embedder has to be able to name
 // it; the module it lives in is the globe's own business.
 pub use crate::frame::FrameMode;
+// `SetView` takes one of these, on the same terms as `FrameMode` above.
+pub use crate::view::ViewMode;
 pub use crate::geo::LatLon;
 pub use crate::gnc::{
     EARTH_RATE_RAD_S, FocusState, GncState, MAX_GRATICULE_STEP, MAX_TRACK_ORBITS,
@@ -102,6 +105,13 @@ pub enum GlobeCommand {
 
     SetFrame(FrameMode),
     ToggleFrame,
+
+    /// Switches between the Earth-centered globe and the heliocentric view of
+    /// the Sun, Earth and Mars around the Solar System Barycentre — see
+    /// [`crate::view`]. A request mid-transition, or for the view already
+    /// showing, is silently ignored, the same as the key it mirrors.
+    SetView(ViewMode),
+    ToggleView,
 
     /// Whether both frames are drawn over the scene at once — the inertial
     /// triad, the Earth-fixed graticule, the sidereal angle between them and a
@@ -735,6 +745,8 @@ fn apply_commands(
     mut camera: Query<&mut OrbitCamera>,
     mut frame: ResMut<ReferenceFrame>,
     mut realigned: MessageWriter<FrameRealigned>,
+    view: Res<ViewState>,
+    mut view_requests: MessageWriter<RequestViewChange>,
     mut gnc: ResMut<GncSettings>,
     mut sun: ResMut<Sun>,
     mut imagery: ResMut<ImagerySettings>,
@@ -792,6 +804,17 @@ fn apply_commands(
             GlobeCommand::ToggleFrame => {
                 let toggled = frame.mode.toggled();
                 set_frame(&mut frame, &mut realigned, toggled);
+            }
+
+            GlobeCommand::SetView(mode) => {
+                view_requests.write(RequestViewChange(mode));
+            }
+            GlobeCommand::ToggleView => {
+                let toggled = match *view {
+                    ViewState::Globe => ViewMode::Heliocentric,
+                    _ => ViewMode::Globe,
+                };
+                view_requests.write(RequestViewChange(toggled));
             }
 
             GlobeCommand::SetGncEnabled(enabled) => gnc.enabled = enabled,

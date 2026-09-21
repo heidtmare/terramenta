@@ -117,6 +117,18 @@ export const setFrame = (mode) => required().setFrame(mode);
 
 export const toggleFrame = () => required().toggleFrame();
 
+// --- Heliocentric view ------------------------------------------------------
+// A separate axis from the reference frame above: this switches which body
+// the whole scene is drawn around — the Earth-centered globe, or the
+// heliocentric view of the Sun, Earth and Mars around the Solar System
+// Barycentre. A request for the view already showing, or made mid-transition,
+// is silently ignored.
+
+/** `"globe"` or `"heliocentric"`. */
+export const setView = (mode) => required().setView(mode);
+
+export const toggleView = () => required().toggleView();
+
 // --- Both frames at once ---------------------------------------------------
 // The frame above is a choice; this draws both of them over the scene at the
 // same time, so the rotation between them is something to look at rather than

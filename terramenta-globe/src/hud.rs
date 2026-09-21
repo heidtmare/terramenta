@@ -28,6 +28,7 @@ const HELP_TEXT: &str = "drag  orbit\n\
                          T  imagery    L  /  shift L  next / previous layer\n\
                          V  vector tiles    shift V  next vector layer\n\
                          O  satellites    shift O  orbit trails\n\
+                         U  solar system view\n\
                          H  hide this";
 
 /// Whether the readout and its key list are drawn.

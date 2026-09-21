@@ -53,6 +53,7 @@ use crate::globe::GLOBE_RADIUS;
 use crate::mvt::{self, MvtError};
 use crate::overlays::{OverlayAltitude, OverlayStyle, VectorMaterial, VectorMode};
 use crate::tiles::TileId;
+use crate::view::not_heliocentric_view;
 
 /// The asset source scheme vector tiles are fetched over.
 pub const VECTOR_TILE_SOURCE: &str = "mvt";
@@ -618,9 +619,13 @@ impl Plugin for VectorTilePlugin {
                 Update,
                 (
                     vector_tile_controls.run_if(crate::api::keyboard_enabled),
-                    stream_vector_tiles,
-                    build_vector_tiles,
-                    orient_vector_tiles,
+                    // Same reasoning as `crate::tiles`' own streaming gate:
+                    // nothing vector tiles draw is visible from the
+                    // heliocentric view, so there is nothing for the walk to
+                    // usefully do.
+                    (stream_vector_tiles, build_vector_tiles, orient_vector_tiles)
+                        .chain()
+                        .run_if(not_heliocentric_view),
                 )
                     .chain()
                     .in_set(FrameSet::Apply)

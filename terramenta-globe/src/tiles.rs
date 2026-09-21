@@ -37,6 +37,7 @@ use crate::geo::{GeoBounds, LatLon};
 use crate::globe::GLOBE_RADIUS;
 use crate::imagery::{IMAGERY_SOURCE, ImagerySettings};
 use crate::sun::Sun;
+use crate::view::not_heliocentric_view;
 
 /// Tiles sit fractionally above the base globe so they never fight it for
 /// depth, and each level a fraction higher again so a child always wins over
@@ -587,9 +588,15 @@ impl Plugin for TilePlugin {
                 Update,
                 (
                     tile_controls.run_if(crate::api::keyboard_enabled),
-                    stream_tiles,
-                    orient_tiles,
-                    sync_tile_sun,
+                    // The heliocentric view draws no imagery — the globe it
+                    // would drape onto is hidden and a few Earth radii across,
+                    // invisible against a camera parked astronomical units
+                    // away — so streaming stands down rather than walking a
+                    // quadtree against a camera transform the heliocentric
+                    // rig, not this one, is now driving.
+                    (stream_tiles, orient_tiles, sync_tile_sun)
+                        .chain()
+                        .run_if(not_heliocentric_view),
                 )
                     .chain()
                     .in_set(FrameSet::Apply),
