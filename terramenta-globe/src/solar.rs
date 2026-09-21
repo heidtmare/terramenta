@@ -29,6 +29,7 @@
 //! parent just changed.
 
 use bevy::prelude::*;
+use terramenta_solare::bodies::ASTRONOMICAL_UNIT_KM;
 use terramenta_solare::spacecraft::{Primary, Spacecraft};
 use terramenta_solare::{Epoch, FrameId, FrameTree, StateVector};
 
@@ -36,6 +37,7 @@ use crate::frame::{FrameSet, ReferenceFrame};
 use crate::geo::EARTH_RADIUS_KM;
 use crate::gnc::scene_from_canonical;
 use crate::sun::Sun;
+use crate::view::ViewState;
 
 /// The solar system's frame tree, rooted at the Solar System Barycentre with
 /// the Sun, Earth and Mars as its direct children — see
@@ -51,6 +53,19 @@ impl SolarSystem {
     /// needs.
     pub fn find(&self, name: &str) -> Option<FrameId> {
         self.tree.find(name)
+    }
+
+    /// The Solar System Barycentre, the tree's root — the origin a
+    /// heliocentric view draws relative to.
+    pub fn root(&self) -> FrameId {
+        self.tree.root()
+    }
+
+    /// The frame tree itself, for callers — [`crate::heliocentric`]'s own
+    /// camera rig, in particular — that need [`floating_offset`] directly
+    /// rather than through [`place_solar_bodies`].
+    pub(crate) fn tree(&self) -> &FrameTree {
+        &self.tree
     }
 }
 
@@ -155,19 +170,25 @@ fn update_spacecraft(
 /// which is the whole reason a spacecraft near Mars can sit metres from where
 /// it belongs instead of jittering across kilometres.
 ///
-/// The result is inertial — [`FrameTree`] states everything in ICRF axes —
-/// so it goes through [`ReferenceFrame::inertial_to_world`], the same
-/// rotation an orbit computed in ECI needs before it can be drawn; see
-/// [`crate::gnc`].
+/// `orientation` and `km_per_unit` are how the two views this crate draws
+/// differ: the globe rotates the result through
+/// [`ReferenceFrame::inertial_to_world`] (the same rotation an orbit computed
+/// in ECI needs) and scales by an Earth radius, while the heliocentric view
+/// holds a fixed ICRF-aligned orientation and scales by an astronomical unit.
+/// Routing a heliocentric placement through the globe's rotation would be
+/// wrong outright, not just differently scaled — that rotation tracks Earth's
+/// own sidereal spin, which would turn the whole modeled solar system once a
+/// day.
 pub(crate) fn floating_offset(
     tree: &FrameTree,
     target: FrameId,
     origin: FrameId,
     epoch: Epoch,
-    frame: &ReferenceFrame,
+    orientation: Quat,
+    km_per_unit: f64,
 ) -> Vec3 {
     let relative_km = tree.state_of_relative_to(target, origin, epoch).position_km;
-    frame.inertial_to_world() * scene_from_canonical(relative_km / f64::from(EARTH_RADIUS_KM))
+    orientation * scene_from_canonical(relative_km / km_per_unit)
 }
 
 fn place_solar_bodies(
@@ -175,12 +196,24 @@ fn place_solar_bodies(
     origin: Res<FloatingOrigin>,
     sun: Res<Sun>,
     frame: Res<ReferenceFrame>,
+    view: Res<ViewState>,
     mut bodies: Query<(&SolarBody, &mut Transform)>,
 ) {
     let epoch = Epoch::from_unix_seconds(sun.unix_seconds);
+    let (orientation, km_per_unit) = if view.is_heliocentric() {
+        (Quat::IDENTITY, ASTRONOMICAL_UNIT_KM)
+    } else {
+        (frame.inertial_to_world(), f64::from(EARTH_RADIUS_KM))
+    };
     for (body, mut transform) in &mut bodies {
-        transform.translation =
-            floating_offset(&solar_system.tree, body.0, origin.frame, epoch, &frame);
+        transform.translation = floating_offset(
+            &solar_system.tree,
+            body.0,
+            origin.frame,
+            epoch,
+            orientation,
+            km_per_unit,
+        );
     }
 }
 
@@ -203,7 +236,14 @@ mod tests {
             FixedOffset(StateVector::new(DVec3::new(500.0, 0.0, 0.0), DVec3::ZERO)),
         );
 
-        let offset = floating_offset(&tree, probe, mars, Epoch::J2000, &ReferenceFrame::default());
+        let offset = floating_offset(
+            &tree,
+            probe,
+            mars,
+            Epoch::J2000,
+            ReferenceFrame::default().inertial_to_world(),
+            f64::from(EARTH_RADIUS_KM),
+        );
 
         let expected_units = 500.0 / f64::from(EARTH_RADIUS_KM);
         assert!(
@@ -220,10 +260,24 @@ mod tests {
         // camera actually near Mars would use as the origin, it is nothing.
         let tree = solar_system();
         let (earth, mars) = (tree.find("Earth").unwrap(), tree.find("Mars").unwrap());
-        let frame = ReferenceFrame::default();
+        let orientation = ReferenceFrame::default().inertial_to_world();
 
-        let far = floating_offset(&tree, mars, earth, Epoch::J2000, &frame);
-        let near = floating_offset(&tree, mars, mars, Epoch::J2000, &frame);
+        let far = floating_offset(
+            &tree,
+            mars,
+            earth,
+            Epoch::J2000,
+            orientation,
+            f64::from(EARTH_RADIUS_KM),
+        );
+        let near = floating_offset(
+            &tree,
+            mars,
+            mars,
+            Epoch::J2000,
+            orientation,
+            f64::from(EARTH_RADIUS_KM),
+        );
 
         assert!(far.length() > 1_000.0, "{far:?}");
         assert_eq!(near, Vec3::ZERO);
@@ -288,6 +342,7 @@ mod tests {
             .insert_resource(solar_system)
             .insert_resource(FloatingOrigin { frame: earth_frame })
             .insert_resource(ReferenceFrame::default())
+            .insert_resource(ViewState::default())
             .insert_resource(Sun {
                 unix_seconds: 946_728_000.0, // Epoch::J2000, as Unix seconds.
                 ..Sun::default()

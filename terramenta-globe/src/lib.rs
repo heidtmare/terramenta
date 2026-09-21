@@ -24,6 +24,7 @@ mod geo;
 mod geojson;
 mod globe;
 mod gnc;
+mod heliocentric;
 mod hud;
 mod imagery;
 mod moon;
@@ -38,6 +39,7 @@ mod sun;
 mod tessellate;
 mod tiles;
 mod vector_tiles;
+mod view;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
 mod wms;
@@ -53,6 +55,7 @@ use ephemeris::{EphemerisPlugin, EphemerisRequest, EphemerisSourcePlugin};
 use frame::FramePlugin;
 use globe::GlobePlugin;
 use gnc::GncPlugin;
+use heliocentric::HeliocentricPlugin;
 use hud::HudPlugin;
 use imagery::{ImageFormat, ImageryLayer, ImageryPlugin};
 use moon::MoonPlugin;
@@ -62,6 +65,7 @@ use solar::SolarSystemPlugin;
 use sun::SunPlugin;
 use tiles::TilePlugin;
 use vector_tiles::{VectorTileLayer, VectorTilePlugin, VectorTileSourcePlugin};
+use view::ViewPlugin;
 use wms::WmsConfig;
 use wmts::WmtsConfig;
 
@@ -179,6 +183,10 @@ pub fn app(config: GlobeConfig) -> App {
             FramePlugin,
             GncPlugin,
             SolarSystemPlugin,
+        ))
+        .add_plugins((
+            ViewPlugin,
+            HeliocentricPlugin,
             TilePlugin,
             VectorTilePlugin,
             OverlayPlugin,

@@ -85,7 +85,7 @@ mod tests {
                 .state_of_relative_to(earth, mars, epoch)
                 .position_km
                 .length()
-                / 1.495_978_707e8;
+                / bodies::ASTRONOMICAL_UNIT_KM;
             assert!(
                 (0.3..2.7).contains(&separation_au),
                 "{days}d: {separation_au} AU"

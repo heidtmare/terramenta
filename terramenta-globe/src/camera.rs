@@ -31,6 +31,8 @@ use crate::api::keyboard_enabled;
 use crate::frame::{FrameRealigned, FrameSet};
 use crate::geo::{EARTH_RADIUS_KM, LatLon};
 use crate::globe::GLOBE_RADIUS;
+use crate::heliocentric::HeliocentricCamera;
+use crate::view::{in_globe_view, not_heliocentric_view};
 
 /// Closest approach, ~130 km above the surface.
 const MIN_DISTANCE: f32 = GLOBE_RADIUS * 1.02;
@@ -64,14 +66,23 @@ impl Plugin for OrbitCameraPlugin {
                 Update,
                 (
                     (
-                        mouse_input,
-                        keyboard_input.run_if(keyboard_enabled),
-                        touch_input,
+                        mouse_input.run_if(in_globe_view),
+                        keyboard_input
+                            .run_if(keyboard_enabled)
+                            .run_if(in_globe_view),
+                        touch_input.run_if(in_globe_view),
                     ),
                     // Whatever the frame switch did to the globe has to reach
                     // the camera before the transform is rebuilt from it, and
                     // the finished transform is what the tile walk reads.
-                    (follow_frame, apply_orbit).chain().in_set(FrameSet::Camera),
+                    // `apply_orbit` keeps running through both legs of a
+                    // heliocentric transition — see `crate::view` — since
+                    // that's what actually performs the pull-back and the
+                    // return; it only stops once the heliocentric camera is
+                    // the one drawing the screen.
+                    (follow_frame, apply_orbit.run_if(not_heliocentric_view))
+                        .chain()
+                        .in_set(FrameSet::Camera),
                 )
                     .chain(),
             );
@@ -286,6 +297,7 @@ fn spawn_camera(mut commands: Commands) {
         },
         Transform::from_translation(Vec3::Z * orbit.distance),
         orbit,
+        HeliocentricCamera::default(),
     ));
 }
 

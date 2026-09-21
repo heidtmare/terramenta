@@ -16,6 +16,12 @@ pub const GM_MARS_KM3_S2: f64 = 42_828.375_214;
 
 pub const EARTH_MEAN_RADIUS_KM: f64 = 6_371.0;
 pub const MARS_MEAN_RADIUS_KM: f64 = 3_389.5;
+pub const SUN_MEAN_RADIUS_KM: f64 = 696_000.0;
+
+/// The IAU-defined astronomical unit, in kilometres — the unit a heliocentric
+/// view scales world space in, the way `terramenta-globe`'s Earth-centered
+/// scene scales it in Earth radii.
+pub const ASTRONOMICAL_UNIT_KM: f64 = 149_597_870.7;
 
 /// The radius of a body's sphere of influence: how far its own gravity
 /// dominates a third, much lighter object's trajectory over its parent's,

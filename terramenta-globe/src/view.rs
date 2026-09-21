@@ -1,0 +1,311 @@
+//! Which of the two views the scene is drawn in: the Earth-centered globe,
+//! or the heliocentric view of the Sun, Earth and Mars around the Solar
+//! System Barycentre.
+//!
+//! This is deliberately not folded into [`crate::frame`]'s ECEF/ECI split —
+//! that toggle picks which way Earth's own axes are drawn, and stays
+//! meaningful in either view. This one picks which body the whole scene is
+//! drawn *around*, and changes far more than an orientation: the
+//! [`crate::solar::FloatingOrigin`], the unit scale [`crate::solar::floating_offset`]
+//! converts kilometres into, the camera rig driving the screen, and the
+//! projection's near/far planes all have to land together, on the same
+//! tick, for a switch to read as one continuous motion rather than a jump
+//! cut interrupted by a stutter.
+//!
+//! The switch itself is not something anything here decides on its own —
+//! [`RequestViewChange`] is the only door in, written by [`view_controls`]'s
+//! keybind today and left open for a future automatic trigger (a camera
+//! zoomed out past some threshold, say) to write the same message without
+//! [`drive_view_transition`] changing at all. [`ViewState`] tracks the two
+//! settled views and the two legs of getting between them; [`ViewChanged`]
+//! fires once, at the tick the actual cut happens, for anything (today, just
+//! [`toggle_body_visibility`]) that needs to react at that exact moment
+//! rather than poll the state every frame.
+
+use bevy::prelude::*;
+
+use crate::camera::OrbitCamera;
+use crate::frame::FrameSet;
+use crate::globe::Globe;
+use crate::globe::{AtmosphereMaterial, StarfieldMaterial};
+use crate::heliocentric::{HELIO_DEFAULT_DISTANCE_AU, HeliocentricCamera, HeliocentricVisual};
+use crate::solar::{FloatingOrigin, SolarSystem};
+
+/// How far out the globe camera pulls back before the cut into the
+/// heliocentric view — comfortably past [`crate::camera`]'s own maximum
+/// zoomed-out distance, so the departure reads as leaving the planet behind
+/// rather than as one more zoom step.
+const DEPARTURE_DISTANCE: f32 = crate::globe::GLOBE_RADIUS * 60.0;
+const TRANSITION_OUT_SECONDS: f32 = 1.2;
+const TRANSITION_IN_SECONDS: f32 = 1.0;
+
+/// The near/far planes the camera's [`Projection`] needs once it is drawing
+/// the heliocentric scene, in astronomical units — near enough to still
+/// resolve a close pass, far enough that Mars's aphelion (~1.66 AU) is
+/// comfortably inside it.
+const HELIO_NEAR_AU: f32 = 0.0005;
+const HELIO_FAR_AU: f32 = 20.0;
+/// The globe view's own near/far planes, restored on the way back in — see
+/// [`crate::camera::spawn_camera`].
+const GLOBE_NEAR: f32 = 0.001;
+const GLOBE_FAR: f32 = 1000.0;
+
+/// The two views [`ViewState`] settles into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewMode {
+    Globe,
+    Heliocentric,
+}
+
+/// Which view is showing, and — for the two legs of getting between
+/// them — how far into the transition the scene is.
+///
+/// The transition legs carry their own elapsed time rather than reusing
+/// [`Time`] directly so [`drive_view_transition`] can tell a transition
+/// apart from having just started one this tick.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Default)]
+pub enum ViewState {
+    #[default]
+    Globe,
+    TransitioningOut { elapsed: f32 },
+    Heliocentric,
+    TransitioningIn { elapsed: f32 },
+}
+
+impl ViewState {
+    /// Whether [`crate::solar::place_solar_bodies`] should draw relative to
+    /// the Solar System Barycentre at astronomical-unit scale rather than
+    /// relative to Earth at Earth-radius scale.
+    ///
+    /// True only once [`ViewState::Heliocentric`] has actually settled: the
+    /// two transition legs keep [`crate::solar::FloatingOrigin`] and the
+    /// globe camera as they were until the cut, so every [`crate::solar::SolarBody`]
+    /// — a spacecraft included — stays correctly placed throughout the pull
+    /// back, and only jumps unit regime at the same instant the camera does.
+    pub(crate) fn is_heliocentric(&self) -> bool {
+        matches!(self, ViewState::Heliocentric)
+    }
+}
+
+/// The only way anything asks for the view to change. A keybind writes this
+/// today; a future automatic trigger — the camera crossing some distance
+/// while zoomed out, say — would be just one more writer, with no change to
+/// [`drive_view_transition`] itself.
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RequestViewChange(pub ViewMode);
+
+/// Fired once, on the tick the hard cut between the two unit regimes
+/// actually happens — the moment [`toggle_body_visibility`] and anything
+/// like it needs to react at, rather than polling [`ViewState`] every frame.
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ViewChanged {
+    pub mode: ViewMode,
+}
+
+/// Where the view's own systems run relative to [`FrameSet`]: settled before
+/// the camera is built for this tick, the same discipline [`FrameSet`]
+/// itself documents — a switch only looks seamless if the state, the camera
+/// and everything drawn from it land together.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ViewSet {
+    Settle,
+}
+
+pub struct ViewPlugin;
+
+impl Plugin for ViewPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<ViewState>()
+            .add_message::<RequestViewChange>()
+            .add_message::<ViewChanged>()
+            .configure_sets(
+                Update,
+                ViewSet::Settle
+                    .after(FrameSet::Settle)
+                    .before(FrameSet::Camera),
+            )
+            .add_systems(
+                Update,
+                (view_controls, drive_view_transition)
+                    .chain()
+                    .in_set(ViewSet::Settle),
+            )
+            .add_systems(Update, toggle_body_visibility.in_set(FrameSet::Apply));
+    }
+}
+
+/// Whether the globe's own camera and input should be live this tick — every
+/// state except the heliocentric view itself, since both transition legs are
+/// still, mechanically, the globe camera pulling back from or returning to
+/// Earth.
+pub(crate) fn not_heliocentric_view(view: Res<ViewState>) -> bool {
+    !view.is_heliocentric()
+}
+
+/// Whether the globe's own mouse/touch/keyboard input should be read —
+/// narrower than [`not_heliocentric_view`], since input during a transition
+/// would fight the pull-back or return animation driving the same fields.
+pub(crate) fn in_globe_view(view: Res<ViewState>) -> bool {
+    matches!(*view, ViewState::Globe)
+}
+
+/// Whether the heliocentric camera's own input and placement should run.
+pub(crate) fn in_heliocentric_view(view: Res<ViewState>) -> bool {
+    view.is_heliocentric()
+}
+
+fn view_controls(
+    keys: Res<ButtonInput<KeyCode>>,
+    view: Res<ViewState>,
+    mut requests: MessageWriter<RequestViewChange>,
+) {
+    if !keys.just_pressed(KeyCode::KeyV) {
+        return;
+    }
+    match *view {
+        ViewState::Globe => {
+            requests.write(RequestViewChange(ViewMode::Heliocentric));
+        }
+        ViewState::Heliocentric => {
+            requests.write(RequestViewChange(ViewMode::Globe));
+        }
+        // A request mid-transition is ignored rather than queued or
+        // reversed — the same "the switch already in flight wins" choice
+        // `frame_controls` doesn't have to make, since its switch is instant.
+        _ => {}
+    }
+}
+
+/// The transition's whole state machine.
+///
+/// Neither leg animates anything itself: entering `TransitioningOut` sets
+/// [`OrbitCamera::target_distance`] to [`DEPARTURE_DISTANCE`] and lets the
+/// globe camera's own smoothing (`apply_orbit`, still running throughout —
+/// see [`not_heliocentric_view`]) carry it there, the same way any zoom does.
+/// A fixed timer is the end condition rather than watching the distance
+/// converge, since the smoothing's rate makes the timer's length the only
+/// thing worth tuning. The hard cut — flipping [`FloatingOrigin`], the
+/// camera's projection, and firing [`ViewChanged`] — happens in the same
+/// tick the relevant timer elapses, so nothing is ever drawn half-cut.
+fn drive_view_transition(
+    time: Res<Time>,
+    mut requests: MessageReader<RequestViewChange>,
+    mut view: ResMut<ViewState>,
+    mut changed: MessageWriter<ViewChanged>,
+    mut origin: ResMut<FloatingOrigin>,
+    solar_system: Res<SolarSystem>,
+    mut camera: Single<(
+        &mut OrbitCamera,
+        &mut HeliocentricCamera,
+        &mut Projection,
+    )>,
+) {
+    let (orbit, helio, projection) = &mut *camera;
+
+    for request in requests.read() {
+        match (*view, request.0) {
+            (ViewState::Globe, ViewMode::Heliocentric) => {
+                orbit.target_distance = DEPARTURE_DISTANCE;
+                *view = ViewState::TransitioningOut { elapsed: 0.0 };
+            }
+            (ViewState::Heliocentric, ViewMode::Globe) => {
+                orbit.distance = DEPARTURE_DISTANCE;
+                orbit.target_distance = orbit.target_distance.min(DEPARTURE_DISTANCE);
+                *view = ViewState::TransitioningIn { elapsed: 0.0 };
+            }
+            _ => {}
+        }
+    }
+
+    match &mut *view {
+        ViewState::TransitioningOut { elapsed } => {
+            *elapsed += time.delta_secs();
+            if *elapsed >= TRANSITION_OUT_SECONDS {
+                origin.frame = solar_system.root();
+                set_projection(projection, HELIO_NEAR_AU, HELIO_FAR_AU);
+                helio.anchor = solar_system.find("Earth");
+                helio.yaw = orbit.yaw;
+                helio.target_yaw = orbit.yaw;
+                helio.pitch = 0.35;
+                helio.target_pitch = 0.35;
+                helio.distance = HELIO_DEFAULT_DISTANCE_AU;
+                helio.target_distance = HELIO_DEFAULT_DISTANCE_AU;
+                changed.write(ViewChanged {
+                    mode: ViewMode::Heliocentric,
+                });
+                *view = ViewState::Heliocentric;
+            }
+        }
+        ViewState::TransitioningIn { elapsed } => {
+            if *elapsed == 0.0 {
+                origin.frame = solar_system
+                    .find("Earth")
+                    .expect("terramenta_solare::solar_system always adds an Earth frame");
+                set_projection(projection, GLOBE_NEAR, GLOBE_FAR);
+                changed.write(ViewChanged {
+                    mode: ViewMode::Globe,
+                });
+            }
+            *elapsed += time.delta_secs();
+            if *elapsed >= TRANSITION_IN_SECONDS {
+                *view = ViewState::Globe;
+            }
+        }
+        ViewState::Globe | ViewState::Heliocentric => {}
+    }
+}
+
+fn set_projection(projection: &mut Projection, near: f32, far: f32) {
+    if let Projection::Perspective(perspective) = projection {
+        perspective.near = near;
+        perspective.far = far;
+    }
+}
+
+/// Shows the globe's own visuals or the heliocentric bodies' meshes,
+/// whichever [`ViewChanged`] just switched to; the other set hides.
+///
+/// The four queries below all write [`Visibility`] on entity sets Bevy has
+/// no static way to prove disjoint from one another (different marker/material
+/// types, no shared `Without`), so they go through a [`ParamSet`] rather than
+/// four plain `Query` parameters — the same conflict [`crate::hud`] avoids
+/// with paired `Without` filters, done here with a set instead since there
+/// are more than two groups.
+#[allow(clippy::type_complexity)]
+fn toggle_body_visibility(
+    mut changed: MessageReader<ViewChanged>,
+    mut visuals: ParamSet<(
+        Query<&mut Visibility, With<Globe>>,
+        Query<&mut Visibility, With<MeshMaterial3d<AtmosphereMaterial>>>,
+        Query<&mut Visibility, With<MeshMaterial3d<StarfieldMaterial>>>,
+        Query<&mut Visibility, With<HeliocentricVisual>>,
+    )>,
+) {
+    let Some(change) = changed.read().last() else {
+        return;
+    };
+    let (globe_visible, heliocentric_visible) = match change.mode {
+        ViewMode::Globe => (true, false),
+        ViewMode::Heliocentric => (false, true),
+    };
+    for mut visibility in &mut visuals.p0() {
+        *visibility = as_visibility(globe_visible);
+    }
+    for mut visibility in &mut visuals.p1() {
+        *visibility = as_visibility(globe_visible);
+    }
+    for mut visibility in &mut visuals.p2() {
+        *visibility = as_visibility(globe_visible);
+    }
+    for mut visibility in &mut visuals.p3() {
+        *visibility = as_visibility(heliocentric_visible);
+    }
+}
+
+fn as_visibility(visible: bool) -> Visibility {
+    if visible {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    }
+}
