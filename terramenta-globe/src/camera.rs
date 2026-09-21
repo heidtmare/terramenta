@@ -38,7 +38,7 @@ use crate::view::{in_globe_view, not_heliocentric_view};
 const MIN_DISTANCE: f32 = GLOBE_RADIUS * 1.02;
 /// Far enough out that the Earth is a marble.
 const MAX_DISTANCE: f32 = GLOBE_RADIUS * 14.0;
-const DEFAULT_DISTANCE: f32 = GLOBE_RADIUS * 3.2;
+pub(crate) const DEFAULT_DISTANCE: f32 = GLOBE_RADIUS * 3.2;
 /// Radians of orbit per pixel of drag, before the altitude scaling.
 const DRAG_SENSITIVITY: f32 = 0.005;
 /// Radians per pixel for the drags that turn the rig rather than the globe.

@@ -24,7 +24,7 @@
 
 use bevy::prelude::*;
 
-use crate::camera::OrbitCamera;
+use crate::camera::{DEFAULT_DISTANCE, OrbitCamera};
 use crate::frame::FrameSet;
 use crate::globe::AtmosphereMaterial;
 use crate::globe::Globe;
@@ -44,6 +44,10 @@ const DEPARTURE_DISTANCE: f32 = crate::globe::GLOBE_RADIUS * 60.0;
 /// scene — just the base globe image against black — to read as a deliberate,
 /// slow departure rather than a snap.
 const TRANSITION_OUT_SECONDS: f32 = 2.0;
+/// How long the return leg's scroll-in from [`DEPARTURE_DISTANCE`] back to
+/// [`DEFAULT_DISTANCE`] takes — shorter than [`TRANSITION_OUT_SECONDS`]
+/// since arriving has nothing left to strip down first the way
+/// [`drop_departure_clutter`] does for the departure.
 const TRANSITION_IN_SECONDS: f32 = 1.0;
 
 /// How long the screen stays faded to black once the heliocentric view has
@@ -277,17 +281,21 @@ fn view_controls(
 
 /// The transition's whole state machine.
 ///
-/// `TransitioningOut` is the one leg that animates something itself: it eases
-/// [`OrbitCamera::distance`] from wherever it was to [`DEPARTURE_DISTANCE`]
-/// over [`TRANSITION_OUT_SECONDS`], smoothstepped, and pins `target_distance`
-/// to the same value every tick so `apply_orbit`'s own exponential smoothing
-/// (still running throughout — see [`not_heliocentric_view`]) has nothing
-/// left to do — the fast snap-then-wait that smoothing produces on its own is
-/// exactly what read as an awkward fly-out. [`TransitioningIn`](ViewState::TransitioningIn)
-/// still leaves its own leg to that smoothing; only the departure needs the
-/// deliberate pace. The hard cut — flipping [`FloatingOrigin`], the camera's
-/// projection, and firing [`ViewChanged`] — happens in the same tick the
-/// relevant timer elapses, so nothing is ever drawn half-cut.
+/// Both legs animate [`OrbitCamera::distance`] themselves, smoothstepped over
+/// their own duration, and pin `target_distance` to the same value every tick
+/// so `apply_orbit`'s own exponential smoothing (still running throughout —
+/// see [`not_heliocentric_view`]) has nothing left to do: the fast
+/// snap-then-wait that smoothing produces on its own is exactly what read as
+/// an awkward fly-out leaving, and an arrival stuck past [`crate::camera`]'s
+/// own maximum zoom-out coming back. `TransitioningOut` eases from wherever
+/// the camera actually was out to [`DEPARTURE_DISTANCE`]; `TransitioningIn`
+/// eases the other way, from that same distance back to
+/// [`DEFAULT_DISTANCE`], so the globe scrolls in to fill the frame rather
+/// than just appearing there. The hard cut — flipping [`FloatingOrigin`], the
+/// camera's projection, and firing [`ViewChanged`] — happens in the same tick
+/// the relevant timer elapses (at the very start of the leg for
+/// `TransitioningIn`, at the end for `TransitioningOut`), so nothing is ever
+/// drawn half-cut.
 #[allow(clippy::too_many_arguments)]
 fn drive_view_transition(
     time: Res<Time>,
@@ -319,7 +327,7 @@ fn drive_view_transition(
             }
             (ViewState::Heliocentric, ViewMode::Globe) => {
                 orbit.distance = DEPARTURE_DISTANCE;
-                orbit.target_distance = orbit.target_distance.min(DEPARTURE_DISTANCE);
+                orbit.target_distance = DEPARTURE_DISTANCE;
                 *view = ViewState::TransitioningIn { elapsed: 0.0 };
             }
             _ => {}
@@ -365,6 +373,11 @@ fn drive_view_transition(
                 });
             }
             *elapsed += time.delta_secs();
+            let t = (*elapsed / TRANSITION_IN_SECONDS).clamp(0.0, 1.0);
+            let eased = smoothstep(t);
+            let distance = DEPARTURE_DISTANCE + (DEFAULT_DISTANCE - DEPARTURE_DISTANCE) * eased;
+            orbit.distance = distance;
+            orbit.target_distance = distance;
             if *elapsed >= TRANSITION_IN_SECONDS {
                 *view = ViewState::Globe;
             }
