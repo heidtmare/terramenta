@@ -129,6 +129,13 @@ export const setView = (mode) => required().setView(mode);
 
 export const toggleView = () => required().toggleView();
 
+/**
+ * Re-anchors the heliocentric camera on `"sun"`, `"earth"`, `"mars"` or
+ * `"barycenter"`, keeping its current yaw, pitch and distance. Ignored
+ * outside the heliocentric view.
+ */
+export const setHeliocentricAnchor = (anchor) => required().setHeliocentricAnchor(anchor);
+
 // --- Both frames at once ---------------------------------------------------
 // The frame above is a choice; this draws both of them over the scene at the
 // same time, so the rotation between them is something to look at rather than

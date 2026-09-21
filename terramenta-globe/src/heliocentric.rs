@@ -57,6 +57,61 @@ const PITCH_LIMIT: f32 = std::f32::consts::FRAC_PI_2 - 0.02;
 #[derive(Component)]
 pub(crate) struct HeliocentricVisual;
 
+/// A body the heliocentric camera can be anchored to, named the way
+/// [`crate::view::ViewMode`] names a view — a stable id a keybinding or an
+/// embedder picks one by, independent of [`FrameId`], which is only
+/// meaningful once [`SolarSystem`] has resolved it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeliocentricAnchor {
+    Sun,
+    Earth,
+    Mars,
+    /// The Solar System Barycentre itself — the tree's own root, not one of
+    /// the bodies hanging off it. It has no [`HeliocentricVisual`] of its own
+    /// to look at, since nothing is drawn at the SSB, but orbiting it is
+    /// still meaningful: unlike the Sun, which wanders a little relative to
+    /// it, the SSB is the one point in the scene that never moves.
+    Barycenter,
+}
+
+impl HeliocentricAnchor {
+    /// The stable name the control surface names this anchor by, on the same
+    /// terms as [`crate::view::ViewMode::id`].
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Sun => "sun",
+            Self::Earth => "earth",
+            Self::Mars => "mars",
+            Self::Barycenter => "barycenter",
+        }
+    }
+
+    /// Parses [`HeliocentricAnchor::id`] back, for an anchor named by an
+    /// embedder.
+    pub fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "sun" => Some(Self::Sun),
+            "earth" => Some(Self::Earth),
+            "mars" => Some(Self::Mars),
+            "barycenter" => Some(Self::Barycenter),
+            _ => None,
+        }
+    }
+
+    /// Looks this anchor up in `solar_system` — the Sun, Earth and Mars by
+    /// name, the barycentre as the tree's own root, which is always present
+    /// and so never `None` the other three are, in principle, before the
+    /// tree has been built.
+    fn resolve(self, solar_system: &SolarSystem) -> Option<FrameId> {
+        match self {
+            Self::Sun => solar_system.find("Sun"),
+            Self::Earth => solar_system.find("Earth"),
+            Self::Mars => solar_system.find("Mars"),
+            Self::Barycenter => Some(solar_system.root()),
+        }
+    }
+}
+
 /// The heliocentric camera rig: a simple orbit, in astronomical units, around
 /// whichever body it is [`HeliocentricCamera::anchor`]ed to.
 ///
@@ -100,6 +155,19 @@ impl HeliocentricCamera {
     pub(crate) fn orbit_by(&mut self, yaw: f32, pitch: f32) {
         self.target_yaw -= yaw;
         self.target_pitch = (self.target_pitch + pitch).clamp(-PITCH_LIMIT, PITCH_LIMIT);
+    }
+
+    /// Re-anchors the rig on a different body, keeping its current yaw,
+    /// pitch and distance — the same cut an orbit target change on
+    /// [`crate::camera::OrbitCamera`] makes, just around a different point
+    /// in space rather than a different point on the ground. Unresolvable —
+    /// which cannot happen for any [`HeliocentricAnchor`] today, since all
+    /// four always exist once [`SolarSystem`] does — leaves the rig anchored
+    /// where it was.
+    pub(crate) fn set_anchor(&mut self, anchor: HeliocentricAnchor, solar_system: &SolarSystem) {
+        if let Some(frame) = anchor.resolve(solar_system) {
+            self.anchor = Some(frame);
+        }
     }
 
     /// Where the camera sits and which way it looks, `distance` back from
@@ -233,8 +301,13 @@ fn heliocentric_mouse_input(
 fn heliocentric_keyboard_input(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
+    solar_system: Res<SolarSystem>,
     mut camera: Single<&mut HeliocentricCamera>,
 ) {
+    if let Some(anchor) = pressed_anchor(&keys) {
+        camera.set_anchor(anchor, &solar_system);
+    }
+
     let mut orbit = Vec2::ZERO;
     if keys.pressed(KeyCode::ArrowLeft) || keys.pressed(KeyCode::KeyA) {
         orbit.x -= 1.0;
@@ -262,6 +335,23 @@ fn heliocentric_keyboard_input(
     }
     if zoom != 0.0 {
         camera.zoom_by(zoom * ZOOM_SENSITIVITY * time.delta_secs() * 10.0);
+    }
+}
+
+/// Which [`HeliocentricAnchor`], if any, was just picked by its number key —
+/// `1` through `4` in the same order [`HeliocentricVisual`] draws them, Sun
+/// first, plus the barycentre nothing is drawn at.
+fn pressed_anchor(keys: &ButtonInput<KeyCode>) -> Option<HeliocentricAnchor> {
+    if keys.just_pressed(KeyCode::Digit1) {
+        Some(HeliocentricAnchor::Sun)
+    } else if keys.just_pressed(KeyCode::Digit2) {
+        Some(HeliocentricAnchor::Earth)
+    } else if keys.just_pressed(KeyCode::Digit3) {
+        Some(HeliocentricAnchor::Mars)
+    } else if keys.just_pressed(KeyCode::Digit4) {
+        Some(HeliocentricAnchor::Barycenter)
+    } else {
+        None
     }
 }
 

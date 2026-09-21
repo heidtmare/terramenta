@@ -20,6 +20,7 @@ use crate::api::{
 };
 use crate::frame::FrameMode;
 use crate::geo::LatLon;
+use crate::heliocentric::HeliocentricAnchor;
 use crate::view::ViewMode;
 
 /// Starts the globe on a canvas, by CSS selector, loading its assets from a
@@ -142,6 +143,16 @@ pub fn set_view(mode: &str) {
 #[wasm_bindgen(js_name = toggleView)]
 pub fn toggle_view() {
     api::send(GlobeCommand::ToggleView);
+}
+
+/// Re-anchors the heliocentric camera on `"sun"`, `"earth"`, `"mars"` or
+/// `"barycenter"`, keeping its current yaw, pitch and distance. An unknown
+/// name is ignored, and so is any name while the globe view is showing.
+#[wasm_bindgen(js_name = setHeliocentricAnchor)]
+pub fn set_heliocentric_anchor(anchor: &str) {
+    if let Some(anchor) = HeliocentricAnchor::from_id(anchor) {
+        api::send(GlobeCommand::SetHeliocentricAnchor(anchor));
+    }
 }
 
 // ---------------------------------------------------------------------------

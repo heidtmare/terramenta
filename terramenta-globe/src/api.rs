@@ -31,10 +31,12 @@ use crate::frame::{FrameRealigned, FrameSet, ReferenceFrame};
 use crate::geo::ray_sphere_intersection;
 use crate::globe::GLOBE_RADIUS;
 use crate::gnc::{FrameReport, GncSettings};
+use crate::heliocentric::HeliocentricCamera;
 use crate::hud::HudSettings;
 use crate::imagery::{ImageryLayer, ImagerySettings};
 use crate::overlays::{self, OverlaySettings};
 use crate::placemark::{self, PlacemarkSettings};
+use crate::solar::SolarSystem;
 use crate::sun::{self, Sun};
 use crate::tiles::TileCache;
 use crate::vector_tiles::{self, VectorTileCache, VectorTileSettings};
@@ -54,6 +56,9 @@ pub use crate::ephemeris::{
 pub use crate::frame::FrameMode;
 // `SetView` takes one of these, on the same terms as `FrameMode` above.
 pub use crate::view::ViewMode;
+// `SetHeliocentricAnchor` takes one of these, on the same terms as `ViewMode`
+// above.
+pub use crate::heliocentric::HeliocentricAnchor;
 pub use crate::geo::LatLon;
 pub use crate::gnc::{
     EARTH_RATE_RAD_S, FocusState, GncState, MAX_GRATICULE_STEP, MAX_TRACK_ORBITS,
@@ -112,6 +117,11 @@ pub enum GlobeCommand {
     /// showing, is silently ignored, the same as the key it mirrors.
     SetView(ViewMode),
     ToggleView,
+
+    /// Re-anchors the heliocentric camera on a different body, keeping its
+    /// current yaw, pitch and distance. A no-op outside the heliocentric
+    /// view — see [`crate::heliocentric`].
+    SetHeliocentricAnchor(HeliocentricAnchor),
 
     /// Whether both frames are drawn over the scene at once — the inertial
     /// triad, the Earth-fixed graticule, the sidereal angle between them and a
@@ -747,6 +757,8 @@ fn apply_commands(
     mut realigned: MessageWriter<FrameRealigned>,
     view: Res<ViewState>,
     mut view_requests: MessageWriter<RequestViewChange>,
+    mut helio: Query<&mut HeliocentricCamera>,
+    solar_system: Res<SolarSystem>,
     mut gnc: ResMut<GncSettings>,
     mut sun: ResMut<Sun>,
     mut imagery: ResMut<ImagerySettings>,
@@ -815,6 +827,12 @@ fn apply_commands(
                     _ => ViewMode::Globe,
                 };
                 view_requests.write(RequestViewChange(toggled));
+            }
+
+            GlobeCommand::SetHeliocentricAnchor(anchor) => {
+                if let Some(mut helio) = helio.iter_mut().next() {
+                    helio.set_anchor(anchor, &solar_system);
+                }
             }
 
             GlobeCommand::SetGncEnabled(enabled) => gnc.enabled = enabled,
