@@ -12,6 +12,7 @@ use bevy::shader::ShaderRef;
 use crate::frame::{FrameSet, ReferenceFrame};
 use crate::geo::equirectangular_sphere;
 use crate::imagery::ImagerySettings;
+use crate::starfield::{self, Starfield, StarfieldMaterial};
 use crate::sun::Sun;
 
 /// Radius of the globe in world units. Everything else is expressed in Earth radii.
@@ -34,7 +35,6 @@ impl Plugin for GlobePlugin {
         app.add_plugins((
             MaterialPlugin::<GlobeMaterial>::default(),
             MaterialPlugin::<AtmosphereMaterial>::default(),
-            MaterialPlugin::<StarfieldMaterial>::default(),
         ))
         .add_systems(Startup, spawn_globe)
         .add_systems(
@@ -169,51 +169,6 @@ impl Material for AtmosphereMaterial {
     }
 }
 
-#[derive(Clone, Copy, Debug, ShaderType, Default)]
-pub struct StarfieldUniform {
-    /// Drives the twinkle; fed from elapsed time.
-    pub time: f32,
-    /// How far the sky is turned about the poles, in radians. The stars are
-    /// inertial, so this is zero in ECI and the Earth's rotation backwards in
-    /// ECEF.
-    pub rotation: f32,
-}
-
-/// A procedurally starred sky, drawn on the inside of a very large sphere.
-#[derive(Asset, AsBindGroup, TypePath, Clone, Default)]
-pub struct StarfieldMaterial {
-    #[uniform(0)]
-    pub uniform: StarfieldUniform,
-}
-
-impl Material for StarfieldMaterial {
-    fn fragment_shader() -> ShaderRef {
-        "shaders/starfield.wgsl".into()
-    }
-
-    fn enable_shadows() -> bool {
-        false
-    }
-
-    fn enable_prepass() -> bool {
-        false
-    }
-
-    fn specialize(
-        _pipeline: &MaterialPipeline,
-        descriptor: &mut RenderPipelineDescriptor,
-        _layout: &MeshVertexBufferLayoutRef,
-        _key: MaterialPipelineKey<Self>,
-    ) -> Result<(), SpecializedMeshPipelineError> {
-        // We sit inside this sphere, so its front faces point away from us.
-        descriptor.primitive.cull_mode = Some(Face::Front);
-        if let Some(depth_stencil) = descriptor.depth_stencil.as_mut() {
-            depth_stencil.depth_write_enabled = Some(false);
-        }
-        Ok(())
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Systems
 // ---------------------------------------------------------------------------
@@ -246,11 +201,11 @@ fn spawn_globe(
         Transform::IDENTITY,
     ));
 
-    commands.spawn((
-        Name::new("Starfield"),
-        Mesh3d(meshes.add(equirectangular_sphere(STARFIELD_RADIUS, 48, 24))),
-        MeshMaterial3d(starfield_materials.add(StarfieldMaterial::default())),
-        Transform::IDENTITY,
+    commands.spawn(starfield::bundle(
+        &mut meshes,
+        &mut starfield_materials,
+        STARFIELD_RADIUS,
+        Starfield::Ecef,
     ));
 }
 
@@ -270,7 +225,6 @@ fn drive_materials(
     imagery: Res<ImagerySettings>,
     mut globe_materials: ResMut<Assets<GlobeMaterial>>,
     mut atmosphere_materials: ResMut<Assets<AtmosphereMaterial>>,
-    mut starfield_materials: ResMut<Assets<StarfieldMaterial>>,
 ) {
     let elapsed = time.elapsed_secs();
     // The shaders light everything in world space, so the Earth-fixed sun has
@@ -300,10 +254,5 @@ fn drive_materials(
     for (_, material) in atmosphere_materials.iter_mut() {
         material.uniform.sun_direction = sun_direction;
         material.uniform.sun_shading = sun_shading;
-    }
-
-    for (_, material) in starfield_materials.iter_mut() {
-        material.uniform.time = elapsed;
-        material.uniform.rotation = frame.sky_rotation();
     }
 }

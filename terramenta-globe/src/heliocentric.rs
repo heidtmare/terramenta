@@ -17,11 +17,16 @@
 //! clearly on screen, not by a formula, the same way [`crate::globe`]'s own
 //! radii are tuned constants rather than derived ones.
 
+use bevy::mesh::MeshVertexBufferLayoutRef;
+use bevy::pbr::{MaterialPipeline, MaterialPipelineKey};
 use bevy::prelude::*;
+use bevy::render::render_resource::{
+    AsBindGroup, Face, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
+};
+use bevy::shader::ShaderRef;
 
-use crate::geo::equirectangular_sphere;
-use crate::globe::StarfieldMaterial;
 use crate::solar::{FloatingOrigin, SolarBody, SolarSystem, floating_offset};
+use crate::starfield::{self, Starfield, StarfieldMaterial};
 use crate::sun::Sun;
 use crate::view::in_heliocentric_view;
 use terramenta_solare::{Epoch, FrameId};
@@ -29,6 +34,9 @@ use terramenta_solare::{Epoch, FrameId};
 /// The Sun's visual radius, wildly exaggerated from its true ~0.00465 AU so
 /// it reads as more than a point from Earth's orbit.
 const SUN_VISUAL_RADIUS_AU: f32 = 0.02;
+/// The corona shell drawn around the Sun, sized relative to its own radius
+/// the same way [`crate::globe::ATMOSPHERE_RADIUS`] is sized off the globe's.
+const SUN_CORONA_RADIUS_AU: f32 = SUN_VISUAL_RADIUS_AU * 1.9;
 /// Earth's visual radius, exaggerated the same way, keeping roughly Earth and
 /// Mars's real 1.88:1 size ratio between the two.
 const EARTH_VISUAL_RADIUS_AU: f32 = 0.006;
@@ -180,22 +188,114 @@ impl HeliocentricCamera {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Sun materials
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, Default, ShaderType)]
+pub struct SunUniform {
+    pub time: f32,
+}
+
+/// Procedural granulation and limb darkening for the Sun's surface, in place
+/// of a flat emissive [`StandardMaterial`] — unlit, the same way the Sun
+/// entity's old material was, since the Sun lights itself rather than
+/// responding to light.
+#[derive(Asset, AsBindGroup, TypePath, Clone, Default)]
+pub struct SunMaterial {
+    #[uniform(0)]
+    pub uniform: SunUniform,
+}
+
+impl Material for SunMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/sun.wgsl".into()
+    }
+
+    fn enable_shadows() -> bool {
+        false
+    }
+}
+
+#[derive(Clone, Copy, Debug, ShaderType)]
+pub struct SunCoronaUniform {
+    pub color: Vec3,
+    pub density: f32,
+    pub falloff: f32,
+    pub time: f32,
+}
+
+impl Default for SunCoronaUniform {
+    fn default() -> Self {
+        Self {
+            color: Vec3::new(1.4, 0.85, 0.35),
+            density: 1.1,
+            falloff: 2.6,
+            time: 0.0,
+        }
+    }
+}
+
+/// A thin additive glow shell around the Sun, on the same terms as
+/// [`crate::globe::AtmosphereMaterial`] — back-face-only, no depth write, so
+/// it accumulates over whatever is behind it instead of occluding it.
+#[derive(Asset, AsBindGroup, TypePath, Clone, Default)]
+pub struct SunCoronaMaterial {
+    #[uniform(0)]
+    pub uniform: SunCoronaUniform,
+}
+
+impl Material for SunCoronaMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/sun_corona.wgsl".into()
+    }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        AlphaMode::Add
+    }
+
+    fn enable_shadows() -> bool {
+        false
+    }
+
+    fn enable_prepass() -> bool {
+        false
+    }
+
+    fn specialize(
+        _pipeline: &MaterialPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        _layout: &MeshVertexBufferLayoutRef,
+        _key: MaterialPipelineKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        descriptor.primitive.cull_mode = Some(Face::Front);
+        if let Some(depth_stencil) = descriptor.depth_stencil.as_mut() {
+            depth_stencil.depth_write_enabled = Some(false);
+        }
+        Ok(())
+    }
+}
+
 pub struct HeliocentricPlugin;
 
 impl Plugin for HeliocentricPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_heliocentric_bodies)
-            .add_systems(
-                Update,
-                (
-                    heliocentric_mouse_input.run_if(in_heliocentric_view),
-                    heliocentric_keyboard_input
-                        .run_if(crate::api::keyboard_enabled)
-                        .run_if(in_heliocentric_view),
-                    apply_heliocentric_orbit.run_if(in_heliocentric_view),
-                    drive_heliocentric_starfield.run_if(in_heliocentric_view),
-                ),
-            );
+        app.add_plugins((
+            MaterialPlugin::<SunMaterial>::default(),
+            MaterialPlugin::<SunCoronaMaterial>::default(),
+        ))
+        .add_systems(Startup, spawn_heliocentric_bodies)
+        .add_systems(
+            Update,
+            (
+                heliocentric_mouse_input.run_if(in_heliocentric_view),
+                heliocentric_keyboard_input
+                    .run_if(crate::api::keyboard_enabled)
+                    .run_if(in_heliocentric_view),
+                apply_heliocentric_orbit.run_if(in_heliocentric_view),
+                drive_heliocentric_sun.run_if(in_heliocentric_view),
+            ),
+        );
     }
 }
 
@@ -204,18 +304,23 @@ fn spawn_heliocentric_bodies(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut starfield_materials: ResMut<Assets<StarfieldMaterial>>,
+    mut sun_materials: ResMut<Assets<SunMaterial>>,
+    mut corona_materials: ResMut<Assets<SunCoronaMaterial>>,
     solar_system: Res<SolarSystem>,
 ) {
-    // A second starfield at heliocentric scale, reusing `crate::globe`'s own
-    // shader and mesh helper rather than a new one: it is the same idea (a
-    // procedurally starred sphere, seen from inside) at a radius that fits
-    // this view's much larger distances instead of the globe's.
+    // A second starfield at heliocentric scale, reusing `crate::starfield`'s
+    // shared shader and mesh helper rather than a new one: it is the same
+    // idea (a procedurally starred sphere, seen from inside) at a radius that
+    // fits this view's much larger distances instead of the globe's, held
+    // fixed in the inertial frame this whole view is already drawn in.
     commands.spawn((
-        Name::new("Heliocentric Starfield"),
+        starfield::bundle(
+            &mut meshes,
+            &mut starfield_materials,
+            STARFIELD_RADIUS_AU,
+            Starfield::Inertial,
+        ),
         HeliocentricVisual,
-        Mesh3d(meshes.add(equirectangular_sphere(STARFIELD_RADIUS_AU, 48, 24))),
-        MeshMaterial3d(starfield_materials.add(StarfieldMaterial::default())),
-        Transform::IDENTITY,
         Visibility::Hidden,
     ));
 
@@ -234,12 +339,7 @@ fn spawn_heliocentric_bodies(
         HeliocentricVisual,
         SolarBody(sun),
         Mesh3d(meshes.add(Sphere::new(SUN_VISUAL_RADIUS_AU))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::BLACK,
-            emissive: LinearRgba::rgb(8.0, 6.4, 3.2),
-            unlit: true,
-            ..default()
-        })),
+        MeshMaterial3d(sun_materials.add(SunMaterial::default())),
         Transform::default(),
         Visibility::Hidden,
         PointLight {
@@ -248,6 +348,20 @@ fn spawn_heliocentric_bodies(
             shadow_maps_enabled: false,
             ..default()
         },
+    ));
+
+    // A separate, slightly larger shell for the corona glow — its own
+    // `SolarBody(sun)` keeps it tracking the Sun's position independently of
+    // the surface mesh, the same way the atmosphere shell in `crate::globe`
+    // sits just outside the globe it surrounds.
+    commands.spawn((
+        Name::new("Heliocentric Sun Corona"),
+        HeliocentricVisual,
+        SolarBody(sun),
+        Mesh3d(meshes.add(Sphere::new(SUN_CORONA_RADIUS_AU))),
+        MeshMaterial3d(corona_materials.add(SunCoronaMaterial::default())),
+        Transform::default(),
+        Visibility::Hidden,
     ));
 
     commands.spawn((
@@ -391,25 +505,21 @@ fn apply_heliocentric_orbit(
     **transform = rig.transform(anchor_position);
 }
 
-/// Keeps the heliocentric starfield's twinkle animated. Its rotation stays
-/// zero rather than tracking [`crate::frame::ReferenceFrame`] the way the
-/// globe's own starfield does — there is no ECEF/ECI split out here, just the
-/// one fixed, ICRF-aligned orientation every heliocentric placement uses; see
-/// [`crate::solar::floating_offset`].
-///
-/// The query narrows to this view's own starfield entity by component type
-/// alone — it is the only [`HeliocentricVisual`] carrying a
-/// [`StarfieldMaterial`], since the Sun, Earth and Mars meshes carry a
-/// [`StandardMaterial`] instead — so this never touches
-/// [`crate::globe`]'s own starfield material sharing the same underlying
-/// [`Assets<StarfieldMaterial>`] collection.
-fn drive_heliocentric_starfield(
+/// Animates the Sun's granulation and corona flicker. The heliocentric
+/// starfield's own twinkle is driven by [`crate::starfield`] instead, shared
+/// with the globe view's sky rather than kept as a separate system here.
+fn drive_heliocentric_sun(
     time: Res<Time>,
-    starfield: Single<&MeshMaterial3d<StarfieldMaterial>, With<HeliocentricVisual>>,
-    mut materials: ResMut<Assets<StarfieldMaterial>>,
+    sun: Single<&MeshMaterial3d<SunMaterial>, With<HeliocentricVisual>>,
+    corona: Single<&MeshMaterial3d<SunCoronaMaterial>, With<HeliocentricVisual>>,
+    mut sun_materials: ResMut<Assets<SunMaterial>>,
+    mut corona_materials: ResMut<Assets<SunCoronaMaterial>>,
 ) {
-    if let Some(mut material) = materials.get_mut(&starfield.0) {
-        material.uniform.time = time.elapsed_secs();
-        material.uniform.rotation = 0.0;
+    let elapsed = time.elapsed_secs();
+    if let Some(mut material) = sun_materials.get_mut(&sun.0) {
+        material.uniform.time = elapsed;
+    }
+    if let Some(mut material) = corona_materials.get_mut(&corona.0) {
+        material.uniform.time = elapsed;
     }
 }

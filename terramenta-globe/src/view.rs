@@ -26,11 +26,12 @@ use bevy::prelude::*;
 
 use crate::camera::OrbitCamera;
 use crate::frame::FrameSet;
+use crate::globe::AtmosphereMaterial;
 use crate::globe::Globe;
-use crate::globe::{AtmosphereMaterial, StarfieldMaterial};
 use crate::heliocentric::{HELIO_DEFAULT_DISTANCE_AU, HeliocentricCamera, HeliocentricVisual};
 use crate::placemark::Placemark;
 use crate::solar::{FloatingOrigin, SolarSystem};
+use crate::starfield::StarfieldMaterial;
 use crate::tiles::TileEntity;
 use crate::vector_tiles::VectorTileEntity;
 
