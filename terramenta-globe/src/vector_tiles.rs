@@ -53,7 +53,7 @@ use crate::globe::GLOBE_RADIUS;
 use crate::mvt::{self, MvtError};
 use crate::overlays::{OverlayAltitude, OverlayStyle, VectorMaterial, VectorMode};
 use crate::tiles::TileId;
-use crate::view::not_heliocentric_view;
+use crate::view::not_departing_view;
 
 /// The asset source scheme vector tiles are fetched over.
 pub const VECTOR_TILE_SOURCE: &str = "mvt";
@@ -625,7 +625,7 @@ impl Plugin for VectorTilePlugin {
                     // usefully do.
                     (stream_vector_tiles, build_vector_tiles, orient_vector_tiles)
                         .chain()
-                        .run_if(not_heliocentric_view),
+                        .run_if(not_departing_view),
                 )
                     .chain()
                     .in_set(FrameSet::Apply)

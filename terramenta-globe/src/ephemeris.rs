@@ -1764,14 +1764,24 @@ fn restyle_ephemerides(
 }
 
 /// Draws only what should be drawn. Each part is hidden on its own terms: the
-/// trails have a switch of their own, and the halo is there only while
-/// something is picked.
+/// trails have a switch of their own, the halo is there only while something
+/// is picked, and all of it stands down while the globe camera is departing
+/// for or settled in the heliocentric view — see [`crate::view::is_departing_view`]
+/// — since a satellite orbit is Earth-scale geometry with nothing to read
+/// against a camera an astronomical unit away. Folding that into the same
+/// [`Visibility`] this already recomputes every tick, rather than gating the
+/// whole system off, means a catalogue refresh mid-departure still lands
+/// correctly hidden instead of leaking a freshly spawned entity in at its
+/// default visibility.
 fn show_ephemerides(
     settings: Res<EphemerisSettings>,
+    view: Res<crate::view::ViewState>,
     mut parts: Query<(Entity, &EphemerisEntity, &mut Visibility)>,
 ) {
+    let departing = crate::view::is_departing_view(&view);
     for (entity, part, mut visibility) in &mut parts {
-        let shown = settings.enabled
+        let shown = !departing
+            && settings.enabled
             && settings
                 .layers
                 .iter()

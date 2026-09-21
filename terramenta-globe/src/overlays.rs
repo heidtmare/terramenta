@@ -1473,16 +1473,25 @@ fn highlight_pick(
 }
 
 /// Carries the overlays around with the globe, and draws only what should be
-/// drawn — the same job `orient_tiles` does for imagery.
+/// drawn — the same job `orient_tiles` does for imagery. Stands down while
+/// the globe camera is departing for or settled in the heliocentric view —
+/// see [`crate::view::is_departing_view`] — since `earth_to_world` is
+/// meaningless once the globe it orients these against is no longer what the
+/// camera is looking at. Folding that into the [`Visibility`] this already
+/// recomputes every tick, rather than gating the whole system off, means a
+/// layer rebuilt mid-departure still lands correctly hidden instead of
+/// leaking a freshly spawned entity in at its default visibility.
 fn orient_overlays(
     frame: Res<ReferenceFrame>,
     settings: Res<OverlaySettings>,
+    view: Res<crate::view::ViewState>,
     mut parts: Query<(&OverlayEntity, &mut Transform, &mut Visibility)>,
 ) {
     let earth_to_world = frame.earth_to_world();
+    let departing = crate::view::is_departing_view(&view);
     for (overlay, mut transform, mut visibility) in &mut parts {
         transform.rotation = earth_to_world;
-        *visibility = if settings.enabled && settings.is_visible(&overlay.0) {
+        *visibility = if !departing && settings.enabled && settings.is_visible(&overlay.0) {
             Visibility::Inherited
         } else {
             Visibility::Hidden

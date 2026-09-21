@@ -77,7 +77,7 @@ use crate::moon::Moon;
 use crate::overlays::PICK_SLACK_PX;
 use crate::sun::Sun;
 use crate::tiles::MAX_TILE_RADIUS;
-use crate::view::not_heliocentric_view;
+use crate::view::not_departing_view;
 
 /// How big an icon is drawn, in device pixels — the size the images were
 /// authored at, so neither is resampled at rest.
@@ -254,7 +254,7 @@ impl Plugin for PlacemarkPlugin {
                     highlight_placemarks,
                 )
                     .chain()
-                    .run_if(not_heliocentric_view)
+                    .run_if(not_departing_view)
                     .in_set(FrameSet::Apply)
                     .after(crate::api::track_cursor),
             );

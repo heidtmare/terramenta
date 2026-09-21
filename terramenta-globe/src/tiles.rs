@@ -37,7 +37,7 @@ use crate::geo::{GeoBounds, LatLon};
 use crate::globe::GLOBE_RADIUS;
 use crate::imagery::{IMAGERY_SOURCE, ImagerySettings};
 use crate::sun::Sun;
-use crate::view::not_heliocentric_view;
+use crate::view::not_departing_view;
 
 /// Tiles sit fractionally above the base globe so they never fight it for
 /// depth, and each level a fraction higher again so a child always wins over
@@ -593,10 +593,14 @@ impl Plugin for TilePlugin {
                     // invisible against a camera parked astronomical units
                     // away — so streaming stands down rather than walking a
                     // quadtree against a camera transform the heliocentric
-                    // rig, not this one, is now driving.
+                    // rig, not this one, is now driving. It stands down from
+                    // the moment the departure begins, not just once it has
+                    // settled, since `crate::view::drop_departure_clutter`
+                    // hides the tiles right away and would otherwise lose
+                    // that race with this system's own per-tick visibility.
                     (stream_tiles, orient_tiles, sync_tile_sun)
                         .chain()
-                        .run_if(not_heliocentric_view),
+                        .run_if(not_departing_view),
                 )
                     .chain()
                     .in_set(FrameSet::Apply),
