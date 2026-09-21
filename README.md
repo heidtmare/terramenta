@@ -151,7 +151,7 @@ bindings. Fastest iteration loop for renderer development.
 Cargo.toml              Workspace: profiles and members
 terramenta-globe/       The renderer and its control surface  → its README
 terramenta-webapp/      The reference web app                 → its README
-terramenta-solare/      Solar-system frame tree and mission mechanics
+terramenta-solare/      Solar-system frame tree and mission mechanics       → its README
 terramenta-charta/      2D mission-planning charts, e.g. the porkchop plot → its README
 ```
 
