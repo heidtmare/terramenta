@@ -33,7 +33,7 @@ mod overlays;
 mod picking;
 mod placemark;
 mod simplestyle;
-mod solar;
+pub mod solar;
 mod sun;
 mod tessellate;
 mod tiles;

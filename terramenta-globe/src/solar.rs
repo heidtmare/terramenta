@@ -16,9 +16,21 @@
 //! every [`SolarBody`] on it before narrowing the result to the `f32` a
 //! [`Transform`] takes. The large, shared part of two nearby positions never
 //! survives long enough to be rounded.
+//!
+//! [`TrackedSpacecraft`] and [`update_spacecraft`] are the ECS half of
+//! [`terramenta_solare::spacecraft`]'s patched-conics switch: the model
+//! decides, on every tick's simulated clock, whether a spacecraft has
+//! crossed a sphere of influence and which body it belongs to next;
+//! `update_spacecraft` is what runs that decision inside the running scene,
+//! reparenting the frame [`SolarSystem`]'s tree — and therefore the
+//! spacecraft's own [`SolarBody`] — swaps to. Nothing about *drawing* the
+//! result changes: a spacecraft is a [`SolarBody`] like any other, and
+//! [`place_solar_bodies`] neither knows nor needs to know that its frame's
+//! parent just changed.
 
 use bevy::prelude::*;
-use terramenta_solare::{Epoch, FrameId, FrameTree};
+use terramenta_solare::spacecraft::{Primary, Spacecraft};
+use terramenta_solare::{Epoch, FrameId, FrameTree, StateVector};
 
 use crate::frame::{FrameSet, ReferenceFrame};
 use crate::geo::EARTH_RADIUS_KM;
@@ -31,6 +43,15 @@ use crate::sun::Sun;
 #[derive(Resource)]
 pub struct SolarSystem {
     tree: FrameTree,
+}
+
+impl SolarSystem {
+    /// Looks up one of the tree's named frames — `"Sun"`, `"Earth"` or
+    /// `"Mars"` — for building the [`Primary`] chain [`spawn_spacecraft`]
+    /// needs.
+    pub fn find(&self, name: &str) -> Option<FrameId> {
+        self.tree.find(name)
+    }
 }
 
 /// Which frame world space is currently drawn relative to.
@@ -53,6 +74,16 @@ pub struct FloatingOrigin {
 #[derive(Component, Clone, Copy)]
 pub struct SolarBody(pub FrameId);
 
+/// A spacecraft on a two-body orbit around whichever body currently
+/// dominates it, per [`terramenta_solare::spacecraft::Spacecraft`].
+/// [`update_spacecraft`] advances it every tick and lets it reparent itself
+/// in [`SolarSystem`]'s tree the moment it crosses a sphere of influence;
+/// nothing else about the entity — its [`SolarBody`] frame id, in
+/// particular — ever changes, since the model's whole point is that the
+/// frame's *parent* moves while the spacecraft's own identity does not.
+#[derive(Component)]
+pub struct TrackedSpacecraft(pub Spacecraft);
+
 pub struct SolarSystemPlugin;
 
 impl Plugin for SolarSystemPlugin {
@@ -63,7 +94,55 @@ impl Plugin for SolarSystemPlugin {
             .expect("terramenta_solare::solar_system always adds an Earth frame");
         app.insert_resource(SolarSystem { tree })
             .insert_resource(FloatingOrigin { frame: earth })
-            .add_systems(Update, place_solar_bodies.in_set(FrameSet::Apply));
+            .add_systems(
+                Update,
+                // Advanced first and then drawn, so a spacecraft that
+                // reparents this tick is already read back out of its new
+                // frame rather than one tick behind it.
+                (update_spacecraft, place_solar_bodies)
+                    .chain()
+                    .in_set(FrameSet::Apply),
+            );
+    }
+}
+
+/// Builds the bundle a spacecraft needs to join the scene — a [`SolarBody`]
+/// with the [`Transform`] [`place_solar_bodies`] writes into, and the
+/// [`TrackedSpacecraft`] [`update_spacecraft`] advances and reparents every
+/// tick — and adds its frame to `solar_system`'s tree. Spawning the returned
+/// bundle (with `Commands::spawn`, alongside whatever visual components the
+/// caller wants on it) is the caller's own to do, the same way spawning any
+/// other entity is.
+pub fn spawn_spacecraft(
+    solar_system: &mut SolarSystem,
+    name: &'static str,
+    primary: Primary,
+    state: StateVector,
+    epoch: Epoch,
+) -> (SolarBody, TrackedSpacecraft, Transform) {
+    let spacecraft = Spacecraft::spawn(&mut solar_system.tree, name, primary, state, epoch);
+    let frame = spacecraft.frame;
+    (
+        SolarBody(frame),
+        TrackedSpacecraft(spacecraft),
+        Transform::default(),
+    )
+}
+
+/// Advances every [`TrackedSpacecraft`] against the simulated clock and lets
+/// it swap its gravitational parent — the Bevy half of
+/// [`terramenta_solare::spacecraft::Spacecraft::update`], run once a tick so
+/// a spacecraft escaping Earth or being captured by Mars reparents on its
+/// own, entirely inside [`SolarSystem`]'s tree, without any other system
+/// having to name which body is "current".
+fn update_spacecraft(
+    mut solar_system: ResMut<SolarSystem>,
+    sun: Res<Sun>,
+    mut spacecraft: Query<&mut TrackedSpacecraft>,
+) {
+    let epoch = Epoch::from_unix_seconds(sun.unix_seconds);
+    for mut craft in &mut spacecraft {
+        craft.0.update(&mut solar_system.tree, epoch);
     }
 }
 
@@ -168,5 +247,77 @@ mod tests {
             (naive.length() - 0.5).abs() > 1.0e-3,
             "naive f32 subtraction was accidentally precise: {naive:?}"
         );
+    }
+
+    /// The whole feature, end to end and inside a running (if renderer-less)
+    /// Bevy app rather than a bare call to the model: a spacecraft spawned
+    /// on an Earth departure hyperbola gets its frame reparented to the Sun
+    /// by nothing but ticking the app forward on the simulated clock, the
+    /// same escape [`terramenta_solare::spacecraft`]'s own tests check
+    /// directly against the tree.
+    #[test]
+    fn ticking_the_app_lets_an_escaping_spacecraft_swap_its_gravitational_parent() {
+        let mut tree = FrameTree::new();
+        let root = tree.root();
+        let sun_frame = tree.add("Sun", root, terramenta_solare::frame::FixedAtParent);
+        let earth_frame = tree.add(
+            "Earth",
+            root,
+            FixedOffset(StateVector::new(
+                DVec3::new(1.495_98e8, 0.0, 0.0),
+                DVec3::ZERO,
+            )),
+        );
+        let mut solar_system = SolarSystem { tree };
+
+        // Comfortably above local escape velocity, the same departure the
+        // model crate's own escape tests use.
+        let departure = StateVector::new(DVec3::new(7000.0, 0.0, 0.0), DVec3::new(0.0, 11.5, 2.0));
+        let bundle = spawn_spacecraft(
+            &mut solar_system,
+            "Escaper",
+            Primary::earth(earth_frame, sun_frame),
+            departure,
+            Epoch::J2000,
+        );
+        let frame = bundle.0.0;
+        assert_eq!(solar_system.tree.parent(frame), Some(earth_frame));
+
+        let mut app = App::new();
+        app.add_plugins(bevy::app::TaskPoolPlugin::default())
+            .insert_resource(solar_system)
+            .insert_resource(FloatingOrigin { frame: earth_frame })
+            .insert_resource(ReferenceFrame::default())
+            .insert_resource(Sun {
+                unix_seconds: 946_728_000.0, // Epoch::J2000, as Unix seconds.
+                ..Sun::default()
+            })
+            .add_systems(Update, (update_spacecraft, place_solar_bodies).chain());
+        app.world_mut().spawn(bundle);
+
+        let mut escaped = false;
+        for _ in 0..(60 * 24) {
+            app.world_mut().resource_mut::<Sun>().unix_seconds += 3_600.0;
+            app.update();
+            if app.world().resource::<SolarSystem>().tree.parent(frame) == Some(sun_frame) {
+                escaped = true;
+                break;
+            }
+        }
+        assert!(
+            escaped,
+            "the app never reparented the spacecraft to the Sun"
+        );
+
+        // And it is still drawn sensibly afterward — no panic, no NaN — now
+        // that it is the Sun, rather than Earth, that its frame hangs off.
+        let transform = app
+            .world_mut()
+            .query::<(&SolarBody, &Transform)>()
+            .iter(app.world())
+            .find(|(body, _)| body.0 == frame)
+            .map(|(_, transform)| *transform)
+            .expect("the spacecraft's own entity");
+        assert!(transform.translation.is_finite(), "{transform:?}");
     }
 }
