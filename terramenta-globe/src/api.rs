@@ -1,24 +1,25 @@
 //! The control surface the globe is driven through from outside.
 //!
-//! Everything the keyboard does — and everything the on-screen readout knows —
-//! is reachable from here, so an embedder can build its own interface over the
-//! globe rather than around it. `terramenta-webapp` is the reference one.
+//! Everything the keyboard does, and everything the on-screen readout knows,
+//! is reachable from here, so an embedder can build its own interface for the
+//! globe. `terramenta-webapp` is the reference implementation.
 //!
-//! It works in two directions, and both are deliberately one-way:
+//! It works in two directions, both one-way:
 //!
 //! * **In**, as [`GlobeCommand`]s. They are pushed onto a queue from wherever
 //!   the caller happens to be — a JavaScript event handler, another thread —
-//!   and drained inside the schedule by [`apply_commands`], which is the only
-//!   place that touches the `World`. Nothing is applied mid-tick, so a burst of
+//!   and drained inside the schedule by [`apply_commands`], the only place
+//!   that touches the `World`. Nothing is applied mid-tick, so a burst of
 //!   commands from one UI interaction lands together on the next frame.
 //! * **Out**, as a [`GlobeState`] snapshot. It is rebuilt from the same
 //!   resources the HUD reads, published to whoever is listening, and left in
-//!   [`LatestState`] for anything inside the app that wants it — which is how
+//!   [`LatestState`] for anything inside the app that wants it, which is how
 //!   the HUD gets its numbers without computing them twice.
 //!
-//! On the web the two ends are bound to JavaScript in [`crate::wasm`]. Natively
-//! the queue works just the same; only the outbound listener is web-only, since
-//! a native embedder can read [`LatestState`] straight out of the `World`.
+//! On the web the two ends are bound to JavaScript in [`crate::wasm`].
+//! Natively the queue works the same way; only the outbound listener is
+//! web-only, since a native embedder can read [`LatestState`] directly from
+//! the `World`.
 
 use std::sync::{LazyLock, Mutex};
 

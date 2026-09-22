@@ -1,82 +1,68 @@
-//! Satellites: where they are now, and where they have just been or are about
-//! to be.
+//! Satellite ephemeris: current, recent, and upcoming positions.
 //!
-//! An ephemeris layer is one OMM catalogue — from a URL, or handed over as text
-//! — propagated with SGP4 against the globe's own simulated clock and drawn as
-//! a marker per object with a leading and trailing arc through it. Several can
-//! be up at once, each with its own colours, its own selection and its own
-//! trail window, exactly the way [`crate::overlays`] holds several GeoJSON
-//! layers; the two share the fetch plumbing in [`crate::fetch`], the GeoArrow
-//! store in [`crate::features`] and the mesh builders and shader that turn a
+//! An ephemeris layer is one OMM catalogue — from a URL, or handed over as
+//! text — propagated with SGP4 against the globe's own simulated clock and
+//! drawn as a marker per object with a leading and trailing arc. Several
+//! layers can be up at once, each with its own colours, selection and trail
+//! window, the way [`crate::overlays`] holds several GeoJSON layers; the two
+//! share the fetch plumbing in [`crate::fetch`], the GeoArrow store in
+//! [`crate::features`], and the mesh builders and shader that turn a
 //! coordinate into a screen-sized marker or line.
 //!
-//! What is different is everything upstream of that, and it is worth reading
-//! before changing any of it.
+//! **Positions are computed, not parsed.** [`crate::omm`] turns each record
+//! into a propagator; nothing has a coordinate until this module evaluates
+//! one, against [`crate::sun::Sun::unix_seconds`] — the simulated clock, not
+//! the wall clock. Satellites follow the clock controls like everything else:
+//! pausing, time-scaling, and jumping all apply.
 //!
-//! **A catalogue holds orbits, not positions.** [`crate::omm`] turns each
-//! record into a propagator and stops. Nothing has a coordinate until this
-//! module evaluates one, which it does against
-//! [`crate::sun::Sun::unix_seconds`] — the *simulated* clock, not the wall one.
-//! So the satellites obey the clock controls like everything else: pause them,
-//! run a day every four minutes, jump forward a week, and the constellation
-//! does what it would have done.
+//! **Geometry is rebuilt every frame, not loaded once.** Other layers parse a
+//! document once and redraw it until refetched; this one propagates every
+//! drawn object every frame, since a satellite in low Earth orbit crosses the
+//! screen in seconds at the default rate. [`MAX_TRACKED`] bounds the number of
+//! markers, and [`MAX_TRAIL_POINTS`] bounds trail samples by dividing one
+//! budget among however many satellites are trailed — one trailed satellite
+//! gets a smooth arc, sixty get coarser ones, and the per-frame cost is the
+//! same either way.
 //!
-//! **Which means the geometry is rebuilt, not loaded.** Every other layer
-//! parses a document once and draws it until it is refetched. This one
-//! propagates every drawn object every frame — a satellite in low Earth orbit
-//! crosses the screen in seconds at the default rate, so there is nothing to
-//! cache. That is what the budgets below are for: [`MAX_TRACKED`] bounds the
-//! markers, and [`MAX_TRAIL_POINTS`] bounds the arcs by dividing one sample
-//! budget among however many satellites are trailed, so a single satellite gets
-//! a smooth orbit and sixty get a coarse one and neither costs more than the
-//! other.
-//!
-//! **The frame is not a rotation applied afterwards.** SGP4 works in TEME,
-//! which is inertial; the globe draws in whichever frame
-//! [`crate::frame::ReferenceFrame`] says world space *is*. A marker could be
-//! carried across that by a transform, as the overlays are — but an arc could
-//! not, because each of its points belongs to a *different moment*, and in ECEF
-//! the Earth turned underneath between them. That is the whole difference
-//! between the closed ellipse an orbit is in ECI and the corkscrew it is in
-//! ECEF, and it cannot be a rigid rotation of one mesh. So every sample is
-//! turned into the active frame at the moment it belongs to, the mesh comes out
-//! already in world space, and the entities carry no rotation at all. Switching
+//! **Frame conversion happens per sample, not as a mesh transform.** SGP4
+//! works in TEME (inertial); the globe draws in whichever frame
+//! [`crate::frame::ReferenceFrame`] says world space is. A marker can be
+//! carried across frames by a transform, as overlays are, but an arc cannot:
+//! each point belongs to a different moment, and in ECEF the Earth has turned
+//! underneath between them — an orbit is a closed ellipse in ECI and a
+//! corkscrew in ECEF, which is not a rigid rotation of one mesh. Every sample
+//! is converted to the active frame at its own moment, so the mesh is built
+//! already in world space and the entities carry no rotation; switching
 //! frames rebuilds them.
 //!
-//! Which is also the one thing about an arc that surprises people, so
-//! [`TrailPath`] makes it a choice. Turning every sample by *its own* moment
-//! draws where the satellite went over the ground — the figure of eight a
-//! navigation constellation is usually drawn as, and the stationary dot a
-//! geostationary one really is. Turning them all by the *current* moment
-//! instead draws the orbit itself, frozen into Earth-fixed space as it stands
-//! now, and that is the same curve in both frames — so switching frames leaves
-//! it exactly where it was, which is what an orbit rather than a track ought to
-//! do. The difference between the two, sample by sample, is precisely how far
-//! the Earth turned between that sample's moment and now: nothing at the
-//! satellite, and growing to a quarter of a turn at each end of a full-orbit
-//! window for anything as high as a navigation satellite. In ECI there is no
-//! difference at all, because there is nothing to turn by.
+//! [`TrailPath`] chooses which moment each sample is drawn at. Turning each
+//! sample by its own moment draws the ground track — the figure-eight a
+//! navigation constellation traces, or the stationary dot a geostationary one
+//! is. Turning every sample by the current moment instead draws the orbit
+//! itself, frozen into Earth-fixed space as it stands now; this curve is the
+//! same in both frames, so it does not move when frames switch, matching what
+//! an orbit (as opposed to a track) should do. The difference between the two
+//! modes, sample by sample, equals how far the Earth turned between that
+//! sample's moment and now: zero at the satellite's current position, growing
+//! to a quarter turn at each end of a full-orbit window for a navigation
+//! satellite. In ECI the two modes are identical.
 //!
-//! **Coordinates are geocentric, not geodetic.** A position is reduced to a
-//! declination, a right ascension and a radius, and the radius becomes a height
-//! above a sphere of [`EARTH_RADIUS_KM`]. That is not the WGS 84 ellipsoid — it
-//! is the sphere the globe actually draws, so a satellite sits over the imagery
-//! it is really over, which a geodetic latitude would not do on a mesh that has
-//! no flattening in it. The two differ by up to about a fifth of a degree of
-//! latitude, and by some twenty kilometres of height at the poles.
+//! **Coordinates are geocentric, not geodetic.** A position reduces to a
+//! declination, a right ascension and a radius; the radius becomes a height
+//! above a sphere of [`EARTH_RADIUS_KM`], not the WGS 84 ellipsoid — matching
+//! the sphere the globe actually draws, so a satellite sits over the imagery
+//! it is really over. Geocentric and geodetic latitude differ by up to about a
+//! fifth of a degree, and height differs by roughly twenty kilometres at the
+//! poles.
 //!
-//! **And they are picked in pixels, not in degrees.** [`crate::picking`]
-//! hit-tests what is on the ground where it stands, which for a layer draped on
-//! the surface is where it is drawn. Nothing here is on the ground: a marker
-//! and the point it is over are the same place only while the camera looks
-//! straight down, and hundreds of kilometres apart otherwise. So a satellite is
-//! picked where it was *drawn* — its anchor is projected into the viewport and
-//! measured against the pointer in pixels, which is the unit the marker's size
-//! was already stated in. The Earth is allowed to get in the way: an object on
-//! the far side is behind an opaque globe, and what cannot be seen cannot be
-//! grabbed. Only the markers are picked and not the arcs, because an arc is
-//! where a satellite *has been* rather than the satellite — and a sky full of
-//! grabbable orbits would leave nothing else on the globe reachable.
+//! **Picking uses screen pixels, not ground position.** [`crate::picking`]
+//! normally hit-tests the ground point a layer is drawn at; a satellite marker
+//! and its sub-point coincide only when the camera looks straight down.
+//! Instead, a satellite is picked at its projected screen anchor, measured
+//! against the pointer in pixels — the same unit the marker's size is stated
+//! in. The Earth occludes: an object on the far side of an opaque globe cannot
+//! be picked. Only markers are picked, not arcs, since an arc represents where
+//! a satellite has been rather than the satellite itself.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, LazyLock, RwLock};

@@ -1,10 +1,10 @@
 //! On-screen readout: where the cursor is pointing on the globe, how high the
 //! camera is, and what the simulated clock says.
 //!
-//! None of these numbers are worked out here. They are read from
-//! [`crate::api::LatestState`], which is the same snapshot an embedder sees, so
-//! the built-in readout and an external interface can never disagree — and an
-//! embedder that would rather draw its own can switch this one off through
+//! None of these numbers are computed here; they are read from
+//! [`crate::api::LatestState`], the same snapshot an embedder sees, so the
+//! built-in readout and an external interface can never disagree. An
+//! embedder that draws its own can switch this one off through
 //! [`HudSettings`].
 
 use bevy::prelude::*;

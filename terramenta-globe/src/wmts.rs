@@ -1,26 +1,25 @@
 //! OGC Web Map Tile Service client.
 //!
 //! WMTS ([the OGC standard](https://www.ogc.org/standards/wmts/)) is the other
-//! half of the pair [`crate::wms`] starts. Where WMS renders whatever rectangle
-//! it is asked for, WMTS only hands back tiles it has already cut, addressed by
-//! a **tile matrix set** the server publishes: a fixed pyramid of levels, each
-//! a grid of same-sized images. That is a much better fit for a globe — the
-//! server can cache every tile, so responses are quick and identical for
-//! everybody — but it costs the freedom to pick the grid. The client has to
-//! adopt the server's, which is why a [`WmtsConfig`] carries a [`TileGrid`]
-//! where a `WmsConfig` does not.
+//! half of the pair [`crate::wms`] starts. Where WMS renders whatever
+//! rectangle it is asked for, WMTS only hands back tiles it has already cut,
+//! addressed by a **tile matrix set** the server publishes: a fixed pyramid
+//! of levels, each a grid of same-sized images. The server can cache every
+//! tile, so responses are quick and identical for everybody, but the client
+//! has to adopt the server's grid rather than choose its own, which is why a
+//! [`WmtsConfig`] carries a [`TileGrid`] where a `WmsConfig` does not.
 //!
 //! That grid is not always the tidy one a globe would choose. NASA GIBS, the
 //! service wired up here, publishes `EPSG:4326` matrix sets whose level 0 is
-//! two 288°-wide tiles rather than two 180° ones, so the coarse levels hang off
-//! the edge of the world and the matrix widths run 2, 3, 5, 10, 20 rather than
-//! doubling. [`TileGrid`] is built to describe exactly that, and
-//! [`TileGrid::clipped_bounds`] is what keeps the overhang from being drawn.
+//! two 288°-wide tiles rather than two 180° ones, so the coarse levels hang
+//! off the edge of the world and the matrix widths run 2, 3, 5, 10, 20 rather
+//! than doubling. [`TileGrid`] is built to describe exactly that, and
+//! [`TileGrid::clipped_bounds`] keeps the overhang from being drawn.
 //!
-//! Requests come in two encodings, and both are supported because deployed
-//! servers are split between them: `RESTful`, where the capabilities document
-//! gives a URL template to substitute into, and `KVP`, a `GetTile` query
-//! string in the style of WMS.
+//! Requests come in two encodings, both supported because deployed servers
+//! are split between them: `RESTful`, where the capabilities document gives
+//! a URL template to substitute into, and `KVP`, a `GetTile` query string in
+//! the style of WMS.
 
 use crate::geo::LatLon;
 use crate::imagery::{ImageFormat, percent_encode};

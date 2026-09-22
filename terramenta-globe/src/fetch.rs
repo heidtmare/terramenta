@@ -1,31 +1,30 @@
 //! The asset source a layer's document is fetched over.
 //!
-//! Three kinds of layer here are the same shape: several of them may be up at
-//! once, each holds one document from a URL of its own, and each may be asked
-//! to go back for it again. [`crate::overlays`] is one, [`crate::ephemeris`] is
-//! another, and nothing about either is in this module — what is here is the
-//! plumbing they share, which is a scheme Bevy's asset server can fetch through
-//! and which resolves a *slot* rather than a path.
+//! Three kinds of layer share this shape: several may be up at once, each
+//! holds one document from its own URL, and each may be refetched.
+//! [`crate::overlays`] and [`crate::ephemeris`] are the two; this module holds
+//! the plumbing they share — a scheme Bevy's asset server fetches through,
+//! which resolves a *slot* rather than a path.
 //!
-//! **Why an asset source at all.** Fetching is asynchronous and platform-shaped
-//! — a task thread natively, `fetch()` in the browser — and Bevy already owns
-//! both. Registering a scheme buys that for free, identically on either target,
-//! and hands back a typed asset with reference counting and a load state. It is
-//! the same trick [`crate::imagery`] plays for tiles.
+//! **Asset source.** Fetching is asynchronous and platform-shaped (a task
+//! thread natively, `fetch()` in the browser), and Bevy already owns both.
+//! Registering a scheme gets this for free on both targets and returns a
+//! typed asset with reference counting and a load state — the same trick
+//! [`crate::imagery`] uses for tiles.
 //!
-//! **Why a slot rather than the URL.** A reader is built once and outlives every
-//! `World`, so it cannot be handed anything borrowed from one; and a URL is not
-//! a path — it has a scheme, a query and a fragment that an asset path would
-//! mangle. So a layer is given a slot, the slot holds the URL in a table both
-//! sides share, and the path is `{slot}/{generation}.{extension}`.
+//! **Slot rather than URL.** A reader is built once and outlives every
+//! `World`, so it cannot hold anything borrowed from one; a URL is also not a
+//! path — its scheme, query and fragment would be mangled by one. A layer is
+//! given a slot, the slot holds the URL in a table shared by both sides, and
+//! the path is `{slot}/{generation}.{extension}`.
 //!
-//! **Why the generation.** Refreshing has to defeat two caches. Bevy keys its
-//! asset cache by path and the browser keys its own by URL, so simply asking
-//! again is answered twice over from something already in hand. Both are
-//! sidestepped by the same counter: the path carries it, which the asset cache
-//! sees, and from the second fetch onward so does the request, which the HTTP
-//! cache sees. A layer that never refreshes never gets the extra parameter, so a
-//! signed or otherwise parameter-sensitive URL still works.
+//! **Generation counter.** Refreshing must defeat two caches: Bevy keys its
+//! asset cache by path, and the browser keys its own by URL, so re-requesting
+//! the same path or URL is answered from cache. Both are bypassed by the same
+//! counter — the path carries it, so the asset cache sees a new path, and from
+//! the second fetch onward the request carries it too, so the HTTP cache sees
+//! a new URL. A layer that never refreshes never gets the extra parameter, so
+//! a signed or otherwise parameter-sensitive URL still works.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

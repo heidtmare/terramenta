@@ -3,52 +3,48 @@
 //!
 //! An MVT tile is a protobuf holding several named *source layers* — `water`,
 //! `boundary`, `transportation` — each a list of features whose geometry is
-//! written in integer coordinates local to the tile, running `0..extent` across
-//! it with `y` pointing south. The protobuf is decoded by [`geozero`], whose
-//! reader walks a layer and calls back for every ring, strand and point; what
-//! this module adds is everything either side of that walk.
+//! written in integer coordinates local to the tile, running `0..extent`
+//! across it with `y` pointing south. The protobuf is decoded by [`geozero`],
+//! whose reader walks a layer and calls back for every ring, strand and
+//! point; this module adds everything on either side of that walk.
 //!
-//! **Where the projection happens.** The coordinates that come out of the
-//! decoder are in the tile's own square, and that square is a square of the Web
-//! Mercator (EPSG:3857) grid. [`unproject`] takes them back to WGS 84 latitude
-//! and longitude, which is the one coordinate system the rest of the globe
+//! **Projection.** The decoder's coordinates are in the tile's own square of
+//! the Web Mercator (EPSG:3857) grid. [`unproject`] converts them to WGS 84
+//! latitude and longitude, the one coordinate system the rest of the globe
 //! speaks — the camera, the imagery and the GeoJSON overlays all address the
-//! sphere in degrees. So the result of decoding a tile is a [`FeatureSet`], the
-//! same GeoArrow arrays a GeoJSON document collapses into, and from there
-//! [`crate::vector_tiles`] builds vertex buffers out of it with exactly the mesh
+//! sphere in degrees. Decoding a tile produces a [`FeatureSet`], the same
+//! GeoArrow arrays a GeoJSON document collapses into, and
+//! [`crate::vector_tiles`] builds vertex buffers from it with the same mesh
 //! builders an overlay uses.
 //!
-//! Worth being precise about what "WGS 84" means here, because the two halves
-//! of the round trip do not use the same Earth. Web Mercator projects *geodetic*
-//! WGS 84 latitudes through *spherical* Mercator formulas — that mismatch is
-//! the standard's own, and every tile that has ever been cut assumes it — so
-//! [`unproject`] inverts the spherical formulas and hands back a geodetic
-//! coordinate, which is what the datum a tile's data was surveyed in calls the
-//! place. Where that coordinate is finally *drawn* is a separate question, and
-//! the answer is the same sphere everything else here is drawn on: the globe is
-//! one radius in every direction, so a vector tile and the imagery under it land
-//! on the same surface. Giving this module an ellipsoid of its own would put its
-//! lines up to twenty kilometres off the imagery they annotate.
+//! The two halves of the round trip do not use the same Earth. Web Mercator
+//! projects *geodetic* WGS 84 latitudes through *spherical* Mercator formulas
+//! — a mismatch the standard itself has, which every tile ever cut assumes —
+//! so [`unproject`] inverts the spherical formulas and hands back a geodetic
+//! coordinate, matching what the datum a tile's data was surveyed in calls
+//! the place. The globe itself is drawn as one radius in every direction, so
+//! a vector tile and the imagery under it land on the same surface. Giving
+//! this module an ellipsoid of its own would put its lines up to twenty
+//! kilometres off the imagery they annotate.
 //!
-//! **Clipping is not optional, and a ring is clipped twice.** Tiles are cut
-//! with a buffer, so a road that leaves the tile is carried some way past the
-//! edge and the neighbouring tile carries the same stretch back the other way.
-//! Drawn as they arrive, every seam in the world gets two copies of everything
-//! crossing it — which on alpha-blended lines is a visible ladder of darker
-//! rungs, and on fills a darker frame around every tile. So geometry is clipped
-//! to the tile's own square before it leaves here, in tile coordinates, where
-//! the square is exact.
+//! **Clipping.** Tiles are cut with a buffer, so a road that leaves the tile
+//! is carried some way past the edge and the neighbouring tile carries the
+//! same stretch back the other way. Drawn as they arrive, every seam gets two
+//! copies of everything crossing it — a visible ladder of darker rungs on
+//! alpha-blended lines, a darker frame around every tile on fills. Geometry
+//! is clipped to the tile's own square before it leaves here, in tile
+//! coordinates, where the square is exact.
 //!
-//! A ring cannot be clipped once, though, because the two things drawn from it
-//! want opposite answers. A *fill* wants the ring closed against the tile edge,
-//! so the piece of Brazil in this tile and the piece in the next meet along the
+//! A ring is clipped two different ways, because a fill and an outline want
+//! opposite answers. A *fill* wants the ring closed against the tile edge, so
+//! the piece of Brazil in this tile and the piece in the next meet along the
 //! seam with no gap and no overlap. An *outline* wants the opposite: the tile
 //! edge is not a coastline, and closing the ring against it would draw the
-//! grid. So [`decode`] clips every ring both ways — as a ring for the polygon
-//! array, and as an open path for the line array, which is where the parts of
-//! it that are really a boundary end up. A consumer draws
-//! the fills from the first and *all* of its lines from the second; it must not
-//! also outline the polygons, or every border would be drawn twice.
+//! grid. [`decode`] clips every ring both ways — as a ring for the polygon
+//! array, and as an open path for the line array, which is where the parts
+//! of it that are really a boundary end up. A consumer draws the fills from
+//! the first array and all of its lines from the second; it must not also
+//! outline the polygons, or every border is drawn twice.
 
 use geozero::mvt::{Message, Tile, tile};
 use geozero::{ColumnValue, FeatureProcessor, GeomProcessor, PropertyProcessor};

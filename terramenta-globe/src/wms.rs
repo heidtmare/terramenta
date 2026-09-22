@@ -1,15 +1,14 @@
 //! OGC Web Map Service client.
 //!
 //! WMS ([the OGC standard](https://www.ogc.org/standards/wms/)) answers
-//! `GetMap` requests for an arbitrary bounding box, which means the server will
-//! happily render whatever rectangle we ask for. To turn that into something a
-//! globe can stream, requests are pinned to a fixed quadtree of tiles — see
-//! [`crate::tiles`] — and one square image is asked for per tile.
+//! `GetMap` requests for an arbitrary bounding box: the server renders
+//! whatever rectangle is requested. Requests are pinned to a fixed quadtree of
+//! tiles — see [`crate::tiles`] — with one square image requested per tile.
 //!
-//! Because the grid is ours to choose, it is the tidy one:
-//! [`TileGrid::GEODETIC`], two 180° tiles at level 0, quartered at every level
-//! below. [`crate::wmts`] is the other way round — there the server publishes
-//! the grid and the client has to follow it.
+//! Because the grid is chosen locally, it uses the tidy option:
+//! [`TileGrid::GEODETIC`], two 180° tiles at level 0, quartered at each level
+//! below. [`crate::wmts`] is the reverse — the server publishes the grid and
+//! the client follows it.
 //!
 //! Fetching is handled by the shared `imagery://` asset source in
 //! [`crate::imagery`]; this module only builds URLs.

@@ -5,43 +5,41 @@
 //! is underneath. Several can be up at once; each has its own colours, its own
 //! visibility, and its own refresh period.
 //!
-//! Three things here are worth reading before changing any of it.
+//! **URL sources vs. text sources.** A URL is fetched through the
+//! `geojson://` asset source below, the same trick [`crate::imagery`] uses for
+//! tiles, giving asynchronous I/O identically on native and in the browser.
+//! Text sources (a file the user picked, a document assembled in JavaScript)
+//! have nowhere to refetch from, so auto-refresh applies only to URL sources.
+//! An embedder refreshing a local file re-sends the text under the same id,
+//! replacing the layer in place.
 //!
-//! **Where the two kinds of source part company.** A URL is the globe's
-//! business: it is fetched through the `geojson://` asset source below, which
-//! is the trick [`crate::imagery`] uses for tiles and buys asynchronous I/O,
-//! identically on native and in the browser. Text is the embedder's — a file
-//! the user picked, a document assembled in JavaScript — and the globe has
-//! nowhere to fetch it from again, so auto-refresh is for URL sources. An
-//! embedder refreshing a local file re-sends the text under the same id, which
-//! replaces the layer in place.
+//! **Refreshing defeats two caches**, using the generation counter carried in
+//! every asset path. That, and the `geojson://` source itself, live in
+//! [`crate::fetch`], shared with [`crate::ephemeris`] — the same layer shape
+//! over a different document type.
 //!
-//! **Refreshing has to defeat two caches**, which is what the generation in
-//! every asset path is for. That, and the `geojson://` source itself, is
-//! [`crate::fetch`] — shared with [`crate::ephemeris`], which is the same
-//! shape of layer over a different document.
+//! **Size is in pixels, not kilometres.** Markers and lines are sized on
+//! screen so they stay legible from orbit and from a low pass without
+//! rebuilding the layer. The mesh holds anchors rather than shapes, and the
+//! corners are spread in the vertex shader — see `assets/shaders/vector.wgsl`,
+//! which decides the final size.
 //!
-//! **Size is in pixels, not in kilometres.** A marker and a line are sized on
-//! screen, so they stay legible from orbit and from a low pass without the
-//! layer being rebuilt for either. That means the mesh holds anchors rather
-//! than shapes, and the corners are spread in the vertex shader — see
-//! `assets/shaders/vector.wgsl`, which is where the size is finally decided.
-//!
-//! **A document may style itself, one feature at a time.** GeoJSON has a
-//! convention for it — [simplestyle-spec 1.1.0], read by [`crate::simplestyle`]
-//! — and where a feature carries those members they override the layer's
-//! colours and sizes for that feature alone. It stays three draws: a styled
-//! feature's paint rides in its own vertices, and everything else in the same
-//! mesh still follows the material's uniform, which is what keeps recolouring a
-//! layer from having to rebuild it. See [`FeaturePaint`], and `simple_style` on
-//! [`OverlayRequest`] for turning the whole business off.
+//! **A document may style itself, per feature.** GeoJSON's convention for
+//! this is [simplestyle-spec 1.1.0], read by [`crate::simplestyle`]; where a
+//! feature carries those members, they override the layer's colours and sizes
+//! for that feature alone. This stays three draws: a styled feature's paint
+//! rides in its own vertices, while everything else in the same mesh follows
+//! the material's uniform, so recolouring a layer doesn't require rebuilding
+//! it. See [`FeaturePaint`], and `simple_style` on [`OverlayRequest`] to
+//! disable per-feature styling.
 //!
 //! **Height is the layer's to interpret.** GeoJSON's third element is carried
 //! through parsing unread (see [`crate::geo::Position`]) and turned into a
-//! radius here, under the layer's [`OverlayAltitude`]: what unit it is in, and
-//! whether it is honoured at all. It is measured up from the drape radii below
-//! rather than from the sphere, so a position with no height, one at sea level
-//! and one on a clamped layer all draw in the same place.
+//! radius here, under the layer's [`OverlayAltitude`], which determines the
+//! unit and whether it is honoured at all. Height is measured up from the
+//! drape radii below rather than from the sphere, so a position with no
+//! height, one at sea level, and one on a clamped layer all draw at the same
+//! place.
 //!
 //! [simplestyle-spec 1.1.0]: https://github.com/mapbox/simplestyle-spec/tree/master/1.1.0
 

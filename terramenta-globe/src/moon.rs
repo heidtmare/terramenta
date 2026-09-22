@@ -1,33 +1,30 @@
 //! Where the moon is, so the sublunar point falls in the right place.
 //!
-//! The moon cannot be had as cheaply as the sun. A subsolar point is a
-//! declination and an hour angle, and [`crate::sun`] gets away with reading
-//! both off the calendar; the moon's orbit is inclined to the ecliptic, moves
-//! its own perigee round in nine years, its node round in nineteen, and is
-//! pulled about by the sun by more than a degree — so an orbit taken straight
-//! from the elements lands over a thousand kilometres from where the moon
-//! actually is. What is here is the classical low-precision series: Keplerian
-//! elements for the epoch, the handful of perturbation terms that matter
-//! (evection, variation, the annual equation and a dozen smaller ones), and no
-//! more. That holds the direction to a few arcminutes, which is inside the
-//! icon that marks it.
+//! Unlike a subsolar point — a declination and hour angle read straight off
+//! the calendar, as [`crate::sun`] does — the moon's orbit is inclined to the
+//! ecliptic, precesses its perigee in nine years and its node in nineteen, and
+//! is perturbed by the sun by more than a degree. An orbit taken straight from
+//! the elements would land over a thousand kilometres off. This module uses
+//! the classical low-precision series: Keplerian elements for the epoch plus
+//! the perturbation terms that matter (evection, variation, the annual
+//! equation, and a dozen smaller ones). This holds direction to a few
+//! arcminutes, within the icon that marks it.
 //!
-//! Two things separate this from the solar model next door.
+//! Two differences from the solar model:
 //!
 //! **It goes through the sky.** The series gives an ecliptic longitude and
-//! latitude, which become a right ascension and declination, and only the
-//! Earth's own rotation turns those into a place on the ground — so the
-//! sublunar longitude is measured against Greenwich's *sidereal* angle, which
-//! [`crate::frame::sidereal_radians`] already keeps for the ECI frame.
+//! latitude, converted to right ascension and declination; Earth's rotation
+//! then turns those into a ground position, so the sublunar longitude is
+//! measured against Greenwich's sidereal angle, kept by
+//! [`crate::frame::sidereal_radians`] for the ECI frame.
 //!
-//! **It is worked out in `f64`.** The terms are degrees accumulated over tens
-//! of thousands of days; narrowed early, the mean anomaly alone would lose more
-//! than the perturbations are worth.
+//! **It is computed in `f64`.** The terms are degrees accumulated over tens
+//! of thousands of days; narrowing early would lose more precision in the
+//! mean anomaly alone than the perturbation terms add back.
 //!
-//! Geocentric, and deliberately: this is where the moon is overhead, which is a
-//! direction from the centre of the Earth. The parallax that separates it from
-//! where an observer sees the moon is nearly a degree, and it belongs to the
-//! observer rather than to the point on the ground.
+//! The result is geocentric: the direction from Earth's centre to the moon.
+//! Parallax — nearly a degree, separating this from where a ground observer
+//! sees the moon — belongs to the observer, not to this calculation.
 
 use bevy::prelude::*;
 

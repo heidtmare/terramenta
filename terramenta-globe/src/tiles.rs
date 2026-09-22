@@ -1,25 +1,25 @@
 //! Streams imagery onto the globe as a quadtree of tiles.
 //!
 //! Both supported protocols cut the world into a pyramid of square images, but
-//! they do not agree on where the cuts fall, so the grid is described by a
-//! [`TileGrid`] rather than hard-coded. A WMS layer picks the tidy one — level
+//! disagree on where the cuts fall, so the grid is described by a
+//! [`TileGrid`] rather than hard-coded. A WMS layer uses the tidy grid — level
 //! 0 is two 180°x180° tiles covering the two halves of the world, each level
-//! quartering them — because WMS will render any rectangle asked of it. A WMTS
-//! layer has to take whatever tile matrix set the server publishes, and those
-//! are frequently untidy: NASA GIBS starts at two 288° tiles, so its coarse
-//! levels overhang the world and its matrix widths run 2, 3, 5, 10, 20 instead
-//! of doubling. [`TileGrid::clipped_bounds`] is what reconciles the two, by
-//! drawing only the part of a tile that lands on the globe.
+//! quartering them — because WMS renders any rectangle asked of it. A WMTS
+//! layer must take whatever tile matrix set the server publishes, which is
+//! often untidy: NASA GIBS starts at two 288° tiles, so its coarse levels
+//! overhang the world and its matrix widths run 2, 3, 5, 10, 20 instead of
+//! doubling. [`TileGrid::clipped_bounds`] reconciles the two by drawing only
+//! the part of a tile that lands on the globe.
 //!
 //! Every grid here is plate carrée, so a tile's bounding box is a plain
 //! latitude/longitude rectangle — the same mapping the base globe's textures
-//! already use, and no reprojection is needed.
+//! use, requiring no reprojection.
 //!
 //! Each frame the tree is walked from the roots. A tile is split when its
-//! projected size on screen exceeds the resolution of the image behind it, and
+//! projected screen size exceeds the resolution of the image behind it, and
 //! kept otherwise, so detail follows the camera. Tiles that have not arrived
-//! yet fall back to the nearest ancestor that has, and failing that to the base
-//! globe underneath, so there is never a hole.
+//! yet fall back to the nearest ancestor that has, and failing that to the
+//! base globe underneath, so there is never a hole.
 
 use std::collections::{HashMap, HashSet};
 

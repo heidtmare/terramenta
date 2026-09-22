@@ -1,10 +1,9 @@
 //! Turning a GeoJSON polygon into triangles.
 //!
-//! The work is done in the plane, in degrees of longitude and latitude, which
-//! is the same plate-carrée mapping the imagery tiles are cut in — so a ring
+//! The work is done in the plane, in degrees of longitude and latitude — the
+//! same plate-carrée mapping the imagery tiles are cut in — so a ring
 //! triangulated flat and then lifted onto the sphere lands where the imagery
-//! under it does. Two things follow from that and are worth knowing before
-//! trusting a fill:
+//! under it does. Two consequences:
 //!
 //! * **The antimeridian is not a wall.** A ring that crosses 180° arrives with
 //!   its longitudes flipping between `+179` and `-179`, which in the plane is a
@@ -15,13 +14,13 @@
 //! * **A pole is.** A ring enclosing a pole does not close in this plane at
 //!   all: it runs off one side of the map and comes back on the other with a
 //!   discontinuity no unwrapping can remove. Antarctica as a single polygon
-//!   fills wrong. Its outline, which does not go through here, is still right.
+//!   fills wrong; its outline, which does not go through here, is still right.
 //!
 //! The algorithm is ear clipping, with holes spliced into the outer ring by a
-//! bridge first. It is quadratic, which is the reason for the ceilings below:
-//! it runs once when a layer's data changes rather than per frame, but a
-//! coastline dataset would still stall a frame for a noticeable time, so past a
-//! point the fill is dropped and the outline left to carry the shape.
+//! bridge first. It is quadratic: it runs once when a layer's data changes
+//! rather than per frame, but a coastline dataset would still stall a frame
+//! for a noticeable time, so past the ceilings below the fill is dropped and
+//! the outline left to carry the shape.
 
 use bevy::math::DVec2;
 

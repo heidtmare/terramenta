@@ -11,8 +11,8 @@
 //! distances between planets rather than the distance to a horizon.
 //!
 //! At true scale a planet is a few hundred-thousandths of an astronomical
-//! unit across — an invisible dot from a vantage that can see all three
-//! bodies at once. [`SUN_VISUAL_RADIUS_AU`], [`EARTH_VISUAL_RADIUS_AU`] and
+//! unit across — invisible from a vantage that sees all three bodies at once.
+//! [`SUN_VISUAL_RADIUS_AU`], [`EARTH_VISUAL_RADIUS_AU`] and
 //! [`MARS_VISUAL_RADIUS_AU`] are art-directed instead: sized by eye to read
 //! clearly on screen, not by a formula, the same way [`crate::globe`]'s own
 //! radii are tuned constants rather than derived ones.

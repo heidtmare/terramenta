@@ -1,38 +1,35 @@
 //! Streams Mapbox Vector Tiles onto the globe as lines, rings and markers.
 //!
-//! This is [`crate::tiles`] for geometry rather than for pictures, and the two
-//! halves it is built out of already existed: a quadtree walked from the camera
-//! each frame, and the mesh builders [`crate::overlays`] turns a GeoJSON
-//! document into screen-sized vector geometry with. What sits between them is
-//! [`crate::mvt`], which decodes one tile's protobuf and unprojects it out of
-//! Web Mercator back into degrees — so by the time a tile reaches this module
-//! it is indistinguishable from a small GeoJSON document, and everything from
-//! there on is the overlay path.
-//!
-//! Three things about it are worth reading before changing any of it.
+//! This is [`crate::tiles`] for geometry rather than pictures, built from the
+//! same quadtree walked from the camera each frame and the mesh builders
+//! [`crate::overlays`] uses to turn a GeoJSON document into screen-sized
+//! vector geometry. [`crate::mvt`] sits between them: it decodes one tile's
+//! protobuf and unprojects it out of Web Mercator back into degrees, so by
+//! the time a tile reaches this module it is indistinguishable from a small
+//! GeoJSON document and follows the overlay path from there.
 //!
 //! **The grid is not the imagery's grid.** Vector tiles are cut in Web
 //! Mercator, where level `n` is a square `2^n` tiles on a side and the world
 //! stops at ±85°; the imagery here is cut in plate carrée, where level `n` is
 //! `2^(n+1)` by `2^n` and the world reaches the poles. They cannot share a
-//! [`crate::tiles::TileGrid`], which is why the walk below is its own rather
-//! than the one in `tiles`. [`crate::tiles::TileId`] is shared, because a level
-//! with a column and a row is a level with a column and a row.
+//! [`crate::tiles::TileGrid`], so the walk below is its own rather than the
+//! one in `tiles`. [`crate::tiles::TileId`] is shared, since a level, column
+//! and row mean the same thing in both grids.
 //!
 //! **Decoding happens off the schedule; meshing happens on it.** A tile is
 //! loaded through an asset source, so the protobuf is decoded in Bevy's asset
 //! pipeline — a task thread natively, a microtask in the browser — and the
 //! ECS only ever sees a finished [`VectorTileAsset`]. Turning that into
-//! vertex buffers has to happen where `Assets<Mesh>` is, which is the schedule,
-//! so it is rationed: [`MAX_BUILDS_PER_FRAME`] tiles a frame, because one
-//! zoomed-in city tile can hold several thousand rings and ear-clipping all of
-//! them at once is a visible hitch.
+//! vertex buffers has to happen where `Assets<Mesh>` is, i.e. the schedule,
+//! so it is rationed to [`MAX_BUILDS_PER_FRAME`] tiles a frame: a zoomed-in
+//! city tile can hold several thousand rings, and ear-clipping all of them
+//! in one frame is a visible hitch.
 //!
 //! **Features are drawn, not picked.** An overlay keeps its document so the
 //! cursor can hit-test it; a vector tile drops everything but the meshes. A
-//! screenful of tiles is tens of thousands of features against an overlay's
-//! tens, and the index that makes picking cheap would cost more to build, every
-//! time the camera moved, than the picking is worth on a basemap.
+//! screenful of tiles holds tens of thousands of features against an
+//! overlay's tens, and a picking index would cost more to rebuild on every
+//! camera move than the picking is worth on a basemap.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};

@@ -21,9 +21,9 @@
 //! Departure uses [`terramenta_solare::escape_injection_state`], not
 //! [`terramenta_solare::injection_state`]: the plain version only reaches
 //! its target velocity at infinite range, and the residual left at the
-//! origin's finite sphere of influence — small in isolation — is enough,
-//! given Lambert-transfer sensitivity to departure velocity, to miss the
-//! destination by many SOI radii.
+//! origin's finite sphere of influence is enough, given Lambert-transfer
+//! sensitivity to departure velocity, to miss the destination by many SOI
+//! radii.
 
 use bevy::prelude::*;
 use terramenta_solare::bodies::{GM_SUN_KM3_S2, sphere_of_influence_km};

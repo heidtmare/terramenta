@@ -1,72 +1,62 @@
 //! Both reference frames at once: the inertial triad, the Earth-fixed grid, and
 //! one satellite drawn in each of them at the same time.
 //!
-//! Everywhere else in the globe a frame is a *choice*:
-//! [`crate::frame::ReferenceFrame`] says which one world space is, and the scene
-//! is drawn in it. That is the right answer for looking at the Earth and the
-//! wrong one for understanding the relationship, because whichever frame you
-//! pick, the other one is invisible — and the whole of guidance, navigation and
-//! control lives in the step between the two.
-//!
-//! So this module draws both, in whichever frame world space happens to be, and
-//! the step between them becomes something on screen rather than something to
-//! take on trust:
+//! Elsewhere in the globe, [`crate::frame::ReferenceFrame`] says which single
+//! frame world space is drawn in, and the other frame is not represented at
+//! all. This module draws both frames together, and the relationship between
+//! them:
 //!
 //! * the **inertial triad** — the vernal equinox, the axis 90° east of it, and
 //!   the celestial equator as a hoop in space, in cyan;
 //! * the **Earth-fixed triad and graticule** — the prime meridian, 90° east, the
 //!   equator and a lat/lon grid, in amber, lying on the ground;
-//! * the **sidereal angle** between the two, drawn as the arc it is, which is
-//!   the one number that relates the frames and the only thing that changes
-//!   when the clock runs;
-//! * and one satellite's path, drawn **twice at once** — the smooth closed
-//!   ellipse it is in the inertial frame, and the ground track the same
-//!   satellite writes across the turning Earth.
+//! * the **sidereal angle** between the two, drawn as an arc — the one number
+//!   that relates the frames, and the only thing that changes as the clock
+//!   runs;
+//! * one satellite's path, drawn twice — the smooth closed ellipse it is in the
+//!   inertial frame, and the ground track the same satellite writes across the
+//!   turning Earth.
 //!
-//! ## What the drawing is actually made of
+//! ## What the drawing is made of
 //!
-//! Three transforms and nothing else, which is the point worth taking away.
+//! Three transforms.
 //!
-//! **Rigid geometry gets a quaternion.** The inertial triad never changes shape:
-//! it is one mesh, built once in inertial coordinates, carried into world space
-//! by [`ReferenceFrame::inertial_to_world`] on its `Transform`. The graticule is
-//! the same in Earth-fixed coordinates under
-//! [`ReferenceFrame::earth_to_world`]. Switching frames does not rebuild either
-//! of them — it swaps which of the two quaternions is the identity. That is
-//! [`Anchor`], and it is five lines of code for the entire frame handling of
-//! everything that holds still.
+//! **Rigid geometry gets a quaternion.** The inertial triad is one mesh, built
+//! once in inertial coordinates, carried into world space by
+//! [`ReferenceFrame::inertial_to_world`] on its `Transform`. The graticule is
+//! the same in Earth-fixed coordinates under [`ReferenceFrame::earth_to_world`].
+//! Switching frames swaps which of the two quaternions is the identity rather
+//! than rebuilding either mesh. That is [`Anchor`]: five lines of code for the
+//! frame handling of everything that holds still.
 //!
-//! **A ground track cannot have one.** Every point of it belongs to a different
-//! moment, and the Earth turned between them, so there is no single rotation
-//! that takes the inertial path to the Earth-fixed one. Each sample is
-//! transformed by the sidereal angle of *its own* moment, on the way into the
-//! mesh — and what comes out is a curve that is then rigid in the Earth-fixed
-//! frame and rides the same quaternion as the grid under it. The corkscrew is
-//! not a rendering effect: it is what a fixed inertial ellipse looks like after
-//! a per-sample rotation that grows by a degree every four minutes.
+//! **A ground track has no single rotation.** Every point of it belongs to a
+//! different moment, and the Earth turned between them, so no one rotation
+//! takes the inertial path to the Earth-fixed one. Each sample is rotated by
+//! the sidereal angle of its own moment on the way into the mesh, which is
+//! then rigid in the Earth-fixed frame and rides the same quaternion as the
+//! grid under it. The corkscrew shape is a fixed inertial ellipse after a
+//! per-sample rotation that grows by a degree every four minutes.
 //!
 //! **A velocity is not a position.** Rotating a position between frames is the
 //! rotation and nothing more. Rotating a velocity is the rotation *and* the
 //! transport term `ω × r`, because the frame it is measured in is itself
-//! turning — which is why a geostationary satellite moves at three kilometres a
-//! second in one frame and stands still in the other. [`velocity_eci_to_ecef`]
-//! is that one line, and the readout shows both speeds side by side so the
-//! difference is a number rather than a claim.
+//! turning: a geostationary satellite moves at three kilometres a second in one
+//! frame and stands still in the other. [`velocity_eci_to_ecef`] is that one
+//! line; the readout shows both speeds side by side.
 //!
-//! ## Two bases, kept apart on purpose
+//! ## Two bases
 //!
-//! The arithmetic here is done in the basis GNC software actually uses —
-//! right-handed, `Z` the celestial pole, `X` the vernal equinox for ECI and the
-//! prime meridian for ECEF — so that [`eci_to_ecef_dcm`] is the `R3(θ)` out of
-//! any astrodynamics text and can be checked against one.
+//! The arithmetic is done in the basis GNC software uses — right-handed, `Z`
+//! the celestial pole, `X` the vernal equinox for ECI and the prime meridian
+//! for ECEF — so [`eci_to_ecef_dcm`] is the `R3(θ)` of any astrodynamics text.
 //!
 //! The scene is not in that basis. Bevy is Y-up, and the globe puts `+Y` at the
-//! north pole and `+Z` on the prime meridian (see [`crate::geo`]). That is a
-//! relabelling of axes rather than a rotation, and it happens in exactly one
-//! place — [`scene_from_canonical`] — so that no other function here has to hold
-//! both conventions in its head at once. Mixing the two silently is the classic
-//! way to get a frame conversion that is right to within a rotation, and the
-//! test suite below pins the bridge between them.
+//! north pole and `+Z` on the prime meridian (see [`crate::geo`]). This is a
+//! relabelling of axes rather than a rotation, done in exactly one place —
+//! [`scene_from_canonical`] — so no other function here holds both conventions
+//! at once. Mixing the two silently produces a frame conversion that is right
+//! only to within a rotation; the test suite below pins the bridge between
+//! them.
 
 use std::sync::Arc;
 

@@ -17,11 +17,10 @@
 //! globe takes — GeoJSON, Mapbox Vector Tiles — is a document full of
 //! coordinates, so it goes through `geozero` and lands in the GeoArrow buffers
 //! of [`crate::features`] without an intermediate tree. An OMM holds no
-//! coordinates at all. It holds an *orbit*: six angles, a mean motion and a drag
-//! coefficient, from which a position can be computed at any moment and at no
-//! particular one. So there is nothing here for a geometry decoder to decode.
-//! The coordinates appear downstream, in [`crate::ephemeris`], where the
-//! propagator is evaluated — and from that point on the ephemeris is in the same
+//! coordinates: it holds an *orbit* — six angles, a mean motion and a drag
+//! coefficient — from which a position can be computed at any moment, not a
+//! fixed one. The coordinates appear downstream, in [`crate::ephemeris`], where
+//! the propagator is evaluated; from that point on the ephemeris is in the same
 //! GeoArrow arrays as every other layer, drawn by the same mesh builders and
 //! handed out through the same zero-copy view.
 //!

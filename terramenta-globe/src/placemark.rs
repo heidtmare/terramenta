@@ -1,60 +1,53 @@
 //! Placemarks: an icon pinned to a coordinate and drawn at a fixed size on
 //! screen.
 //!
-//! Two are up from the moment the globe starts, and both are the same thing
-//! seen from the ground: the point a body is directly overhead.
+//! Two exist from startup: the **subsolar** and **sublunar** points, where
+//! the sun and moon respectively are directly overhead.
 //!
-//! The **subsolar** point moves west at fifteen degrees an hour and up and down
-//! with the season. It is where the terminator is drawn *from*, so having it
-//! marked turns the lighting on the globe from something to look at into
-//! something to read: the bright spot under the icon is local noon, and the
-//! ring of twilight is a quarter of the planet away.
+//! The subsolar point moves west at fifteen degrees an hour and shifts in
+//! latitude with the season. It is where the terminator is drawn from, so
+//! its icon marks local noon (the bright spot under it) and puts the
+//! twilight ring a quarter of the planet away.
 //!
-//! The **sublunar** point is the moon's, and it moves differently enough to be
-//! worth watching — a little over twelve degrees further west each day, and
-//! wandering as far as 28° from the equator over the nineteen years its orbit's
-//! nodes take to come round. How far it is from the sun's icon is the phase:
-//! together is new, opposite is full, and a quarter of the planet apart is a
-//! half moon.
+//! The sublunar point moves a little over twelve degrees further west each
+//! day, and wanders as far as 28° from the equator over the nineteen years
+//! its orbit's nodes take to come round. Its angular distance from the sun's
+//! icon is the phase: together is new, opposite is full, a quarter of the
+//! planet apart is a half moon.
 //!
-//! Neither coordinate is worked out here. They come from [`crate::sun::Sun`]
-//! and [`crate::moon::Moon`], which are the only places that know — so the
-//! shading, the HUD's `sun over` line and these icons can never disagree about
-//! where either body is.
+//! Neither coordinate is computed here; both come from [`crate::sun::Sun`]
+//! and [`crate::moon::Moon`], so the shading, the HUD's `sun over` line, and
+//! these icons cannot disagree about where either body is.
 //!
-//! Like an overlay marker, a placemark is **sized in pixels rather than in
-//! kilometres**: the mesh is one quad with all four corners on the anchor, and
-//! `assets/shaders/icon.wgsl` spreads them across the screen. It hangs *above*
-//! the anchor rather than around it, the way a pin stands on the point it
-//! marks. And like everything else geographic, the anchor is Earth-fixed and
-//! rotated into world space by
-//! [`crate::frame::ReferenceFrame::earth_to_world`], so the icon stays over its
-//! ground in either frame.
+//! A placemark is sized in pixels rather than kilometres: the mesh is one
+//! quad with all four corners on the anchor, and `assets/shaders/icon.wgsl`
+//! spreads them across the screen. It is drawn above the anchor rather than
+//! around it. The anchor is Earth-fixed and rotated into world space by
+//! [`crate::frame::ReferenceFrame::earth_to_world`], so the icon stays over
+//! its ground point in either frame.
 //!
-//! **An icon is never cut by the ground it stands on.** That is the one thing
-//! here that is not like an overlay, and it takes two halves to arrange. A flat
-//! quad held up to the camera at a point on a sphere is always partly inside
-//! that sphere — the surface curves away from the quad, so from anything but a
-//! view straight down on the point, the globe rises through the icon and the
-//! depth buffer eats whatever is behind it. Standing the icon on its anchor
-//! rather than centring it buys the common case and no more: as the view
-//! flattens toward the limb there is no height that clears the ground, because
-//! the ground rises to meet the camera faster than the icon can be raised.
+//! **An icon is never occluded by the ground it stands on.** A flat quad
+//! held up to the camera at a point on a sphere is always partly inside that
+//! sphere, since the surface curves away from the quad; from any but a
+//! straight-down view, the globe would otherwise pass through the icon and
+//! the depth buffer would hide part of it. Standing the icon on its anchor
+//! rather than centring it fixes the common case, but not near the limb,
+//! where the ground rises to meet the camera faster than the icon can be
+//! raised clear of it.
 //!
 //! So a placemark ignores the depth buffer entirely (see
-//! [`IconMaterial::specialize`]) and is drawn whole over the scene, and the one
-//! thing that could legitimately hide it — the planet — hides it explicitly in
-//! [`hide_over_the_horizon`]. The icon is either all there or not there at all,
-//! which is also the only behaviour that reads correctly at a glance: half an
-//! icon looks like a different icon.
+//! [`IconMaterial::specialize`]) and is always drawn whole over the scene;
+//! the one thing that legitimately hides it — the planet itself — does so
+//! explicitly in [`hide_over_the_horizon`]. The icon is either fully visible
+//! or not drawn at all, since a partial icon would read as a different icon.
 //!
-//! **Picking is in pixels too**, and for the same reason [`crate::ephemeris`]
+//! **Picking is also in pixels**, for the same reason [`crate::ephemeris`]
 //! picks its satellites that way rather than through [`crate::picking`]: an
-//! icon is not where its coordinate is. It stands above the anchor by its own
-//! height, so the pointer is over the *icon* well before it is over the point
-//! the icon marks — further as the view flattens. So the anchor is projected
-//! into the viewport and the pointer measured against the rectangle the icon
-//! occupies there, which is the only test that agrees with what is on screen.
+//! icon's screen position is not its coordinate's. It stands above the
+//! anchor by its own height, so the pointer is over the icon before it is
+//! over the point the icon marks — more so as the view flattens. The anchor
+//! is projected into the viewport and the pointer tested against the
+//! rectangle the icon occupies there, matching what is drawn on screen.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::NoFrustumCulling;

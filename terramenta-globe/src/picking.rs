@@ -1,54 +1,52 @@
 //! Working out which feature is under the cursor.
 //!
 //! The cursor is already a latitude and longitude by the time it gets here —
-//! [`crate::api::Cursor`] has done the ray-sphere intersection — so picking is
-//! a two-dimensional problem: which shape of a [`FeatureSet`] is within a
+//! [`crate::api::Cursor`] does the ray-sphere intersection — so picking is a
+//! two-dimensional problem: which shape of a [`FeatureSet`] is within
 //! tolerance of a coordinate, and which feature that shape belongs to.
 //!
-//! Four things decide how it is done.
+//! Four rules govern it.
 //!
-//! **The tolerance is in pixels, because the geometry is.** A marker is nine
-//! pixels across whatever the altitude, so what counts as "on it" has to be
-//! nine pixels too — the caller converts that into degrees at the cursor's
+//! **Tolerance is in pixels, because the geometry is.** A marker is nine
+//! pixels across regardless of altitude, so "on it" is defined as nine
+//! pixels too: the caller converts that into degrees at the cursor's
 //! distance and hands it over, and everything below works in degrees.
 //!
-//! **Degrees are made comparable by scaling longitude.** A degree of longitude
-//! is a degree of arc only at the equator, so every distance here scales it by
-//! the cosine of the latitude. That makes a tolerance mean the same thing in
-//! Norway as in Kenya, at the cost of meaning progressively less at the poles,
-//! where nothing round stays round on this projection anyway.
+//! **Degrees are made comparable by scaling longitude.** A degree of
+//! longitude is a degree of arc only at the equator, so every distance here
+//! scales it by the cosine of the latitude. That keeps a tolerance meaning
+//! the same thing at any latitude, though it degrades near the poles, where
+//! this projection distorts everything anyway.
 //!
-//! **Lines are measured the way they are drawn.** The renderer interpolates a
-//! segment in latitude and longitude rather than along a great circle (see
-//! `crate::overlays::densify`), so the hit test does too. Measuring the chord
-//! in three dimensions instead would quietly disagree with the line on screen
-//! for any segment long enough to matter.
+//! **Lines are measured the way they are drawn.** The renderer interpolates
+//! a segment in latitude and longitude rather than along a great circle (see
+//! `crate::overlays::densify`), and the hit test does the same; measuring
+//! the chord in three dimensions would disagree with the rendered line for
+//! any sufficiently long segment.
 //!
-//! **The arithmetic is `f64`, and it reads the store's coordinates directly.**
-//! Every vertex comes out of the GeoArrow buffers exactly as the document wrote
-//! it — see [`crate::features`] — so nothing is narrowed on the way in and no
-//! shape is copied to be measured. The tolerances and the distance handed back
-//! stay `f32`, because both are pixel counts that came from the camera.
+//! **The arithmetic is `f64`, and reads the store's coordinates directly.**
+//! Every vertex comes from the GeoArrow buffers exactly as the document
+//! wrote it (see [`crate::features`]), unmodified and uncopied. Tolerances
+//! and the returned distance stay `f32`, since both are pixel counts from
+//! the camera.
 //!
-//! What this is not is a depth test. The topmost thing wins by *kind* — a
-//! marker over a line over a polygon — which is the order they are drawn in and
-//! the order that makes a marker on top of a country selectable at all.
+//! This is not a depth test: the topmost shape wins by *kind* — marker over
+//! line over polygon — matching draw order, which is what makes a marker on
+//! top of a polygon selectable.
 //!
-//! Nor does it read heights. A shape placed at altitude is picked where it
-//! stands on the ground rather than where it is drawn — the same place while
-//! the camera looks straight down, and further apart the more the view is
-//! tilted. Following the drawn geometry instead would mean casting the cursor
-//! ray against it in three dimensions, which is a different piece of machinery
-//! from the one below.
+//! It also does not read heights: an elevated shape is picked where it
+//! stands on the ground rather than where it is drawn. The two coincide
+//! when the camera looks straight down and diverge as the view tilts.
+//! Following the drawn geometry would require casting the cursor ray against
+//! it in three dimensions, a different mechanism from this one.
 //!
-//! Which is why the satellites are not picked here. Nothing an ephemeris draws
-//! is on the ground, and for something hundreds of kilometres up the two places
-//! are not near each other at all — so [`crate::ephemeris`] projects its
-//! markers into the viewport and measures the pointer against them in pixels
-//! instead. That is the other piece of machinery, and it is deliberately not
-//! this one: it works on points alone, it needs the camera every frame, and it
-//! cannot dismiss anything in advance, because everything it holds has moved
-//! since the last frame.
+//! Satellites are not picked here for the same reason: nothing an ephemeris
+//! draws is on the ground, and at altitudes of hundreds of kilometres the two
+//! positions are far apart. [`crate::ephemeris`] instead projects its markers
+//! into the viewport and measures the pointer against them in pixels — a
+//! separate mechanism that works on points only, needs the camera every
+//! frame, and cannot cull anything in advance since everything it holds
+//! moves each frame.
 
 use bevy::math::DVec2;
 

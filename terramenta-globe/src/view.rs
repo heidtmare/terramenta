@@ -5,22 +5,20 @@
 //! This is deliberately not folded into [`crate::frame`]'s ECEF/ECI split —
 //! that toggle picks which way Earth's own axes are drawn, and stays
 //! meaningful in either view. This one picks which body the whole scene is
-//! drawn *around*, and changes far more than an orientation: the
-//! [`crate::solar::FloatingOrigin`], the unit scale [`crate::solar::floating_offset`]
-//! converts kilometres into, the camera rig driving the screen, and the
-//! projection's near/far planes all have to land together, on the same
-//! tick, for a switch to read as one continuous motion rather than a jump
-//! cut interrupted by a stutter.
+//! drawn around: the [`crate::solar::FloatingOrigin`], the unit scale
+//! [`crate::solar::floating_offset`] converts kilometres into, the camera rig
+//! driving the screen, and the projection's near/far planes all have to land
+//! together on the same tick, so a switch reads as one continuous motion
+//! rather than a jump cut.
 //!
-//! The switch itself is not something anything here decides on its own —
-//! [`RequestViewChange`] is the only door in, written by [`view_controls`]'s
-//! keybind today and left open for a future automatic trigger (a camera
-//! zoomed out past some threshold, say) to write the same message without
-//! [`drive_view_transition`] changing at all. [`ViewState`] tracks the two
-//! settled views and the two legs of getting between them; [`ViewChanged`]
-//! fires once, at the tick the actual cut happens, for anything (today, just
-//! [`toggle_body_visibility`]) that needs to react at that exact moment
-//! rather than poll the state every frame.
+//! [`RequestViewChange`] is the only way to request the switch — written by
+//! [`view_controls`]'s keybind today, and open to a future automatic trigger
+//! (a camera zoomed out past some threshold, say) writing the same message
+//! without [`drive_view_transition`] changing at all. [`ViewState`] tracks the
+//! two settled views and the two legs of getting between them; [`ViewChanged`]
+//! fires once, on the tick the actual cut happens, for anything (today, just
+//! [`toggle_body_visibility`]) that needs to react at that exact moment rather
+//! than poll the state every frame.
 
 use bevy::prelude::*;
 

@@ -1,31 +1,28 @@
 //! Which reference frame the scene is drawn in.
 //!
-//! World space is one frame or the other, never a mix of the two:
+//! World space is one frame or the other, never a mix:
 //!
-//! * **ECEF** — Earth-centred, Earth-fixed. The globe stands still, so the
-//!   camera keeps looking at the same place on the ground. The sun sweeps
-//!   around the planet once a day and the stars turn with it.
-//! * **ECI** — Earth-centred inertial. The stars stand still and the sun with
-//!   them, give or take the degree a day the Earth's orbit moves it; the globe
-//!   turns underneath at the sidereal rate. This is the frame orbits are flown
-//!   in, and the one where a satellite track is a closed ellipse.
+//! * **ECEF** — Earth-centred, Earth-fixed. The globe stands still; the
+//!   camera keeps looking at the same ground point. The sun and stars sweep
+//!   around the planet once a day.
+//! * **ECI** — Earth-centred inertial. The stars and sun stand still (aside
+//!   from the ~1°/day of Earth's orbital motion); the globe turns underneath
+//!   at the sidereal rate. Orbits are flown in this frame, where a satellite
+//!   track is a closed ellipse.
 //!
-//! Everything Earth-fixed — the globe mesh, the imagery tiles, the subsolar
-//! point — is stored in ECEF and rotated into world space by
-//! [`ReferenceFrame::earth_to_world`]. Anything reading a world-space direction
-//! back out as a latitude and longitude has to undo that with
-//! [`ReferenceFrame::world_to_earth`].
+//! Earth-fixed geometry — the globe mesh, imagery tiles, subsolar point — is
+//! stored in ECEF and rotated into world space by
+//! [`ReferenceFrame::earth_to_world`]. Converting a world-space direction back
+//! to latitude/longitude requires [`ReferenceFrame::world_to_earth`].
 //!
-//! Switching frames turns the globe through most of a full rotation at once,
-//! so the switch announces itself with a [`FrameRealigned`] message: whatever
-//! is looking at the ground adds that angle to stay where it was, instead of
-//! being left staring at the other side of the planet.
+//! Switching frames rotates the globe by up to a full turn, so the switch
+//! emits a [`FrameRealigned`] message; anything looking at the ground adds
+//! that angle to stay pointed at the same place.
 //!
-//! That single step is also why [`FrameSet`] exists. A switch only looks
-//! seamless if the frame, the camera and everything drawn from the two land on
-//! the same tick; read the frame half a tick early and the globe is drawn where
-//! it used to be, or the tile walk asks which tiles are in view of a camera
-//! that has not caught up yet and blinks the imagery out for a frame.
+//! [`FrameSet`] orders the frame update, camera update, and drawing on the
+//! same tick. Reading the frame a tick early draws the globe at its old
+//! orientation, or has the tile walk query visibility against a camera that
+//! hasn't caught up, dropping imagery for a frame.
 
 use bevy::prelude::*;
 

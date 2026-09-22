@@ -6,8 +6,7 @@
 //! to, and two columns of per-feature attributes. It is the single shape the
 //! mesh builders, the hit test and the control surface all read.
 //!
-//! Three properties are the whole reason for it, and each is worth stating
-//! plainly because each one costs something elsewhere.
+//! Three properties of that layout matter elsewhere in the globe.
 //!
 //! **The coordinates are contiguous and they are `f64`.** A GeoArrow polygon
 //! array is three buffers — a flat run of interleaved `x, y, z` doubles, an
@@ -34,12 +33,11 @@
 //! carrying a whole coordinate beats three streams carrying a third of one
 //! each. It is also the layout that hands out as a single typed array.
 //!
-//! What this is *not* is a general geometry library. There is no
-//! `MultiLineString` and no `GeometryCollection` here: a globe draws points,
-//! lines and filled rings, and the readers flatten everything else into those
-//! three on the way in — a `MultiPolygon` of forty islands becomes forty
-//! polygons that all name the same feature. That is what makes picking one
-//! island highlight the whole country.
+//! Not a general geometry library: there is no `MultiLineString` and no
+//! `GeometryCollection` here. A globe draws points, lines and filled rings, and
+//! the readers flatten everything else into those three on the way in — a
+//! `MultiPolygon` of forty islands becomes forty polygons that all name the
+//! same feature, so picking one island highlights the whole country.
 //!
 //! Attributes are two `StringArray`s rather than a parsed tree: the `id`
 //! member, and the `properties` object as the JSON text it arrived as. Nothing

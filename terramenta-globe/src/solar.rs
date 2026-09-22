@@ -4,16 +4,14 @@
 //!
 //! World space here is `f32`, and a `Transform` a few hundred million
 //! kilometres from its origin has already lost more precision than the
-//! distance between two nearby objects — which is exactly backwards for a
-//! scene where what matters is how close together things are, not how far
-//! from an arbitrary point they all happen to be. [`FrameTree::
-//! state_of_relative_to`] already does the fix in the model: it walks two
+//! distance between two nearby objects.
+//! [`FrameTree::state_of_relative_to`] fixes this in the model: it walks two
 //! frames up only as far as their nearest common ancestor and subtracts
-//! there, in `f64`, before anything is asked to fit in fewer bits. This
-//! module is what makes that reach the screen: every tick, [`FloatingOrigin`]
-//! names the frame world space is currently centred on — ordinarily whichever
-//! body the camera is closest to — and [`place_solar_bodies`] re-centres
-//! every [`SolarBody`] on it before narrowing the result to the `f32` a
+//! there, in `f64`, before anything is narrowed to fewer bits. This module
+//! carries that fix to the screen: every tick, [`FloatingOrigin`] names the
+//! frame world space is currently centred on — ordinarily whichever body the
+//! camera is closest to — and [`place_solar_bodies`] re-centres every
+//! [`SolarBody`] on it before narrowing the result to the `f32` a
 //! [`Transform`] takes. The large, shared part of two nearby positions never
 //! survives long enough to be rounded.
 //!
@@ -21,12 +19,11 @@
 //! [`terramenta_solare::spacecraft`]'s patched-conics switch: the model
 //! decides, on every tick's simulated clock, whether a spacecraft has
 //! crossed a sphere of influence and which body it belongs to next;
-//! `update_spacecraft` is what runs that decision inside the running scene,
+//! `update_spacecraft` applies that decision inside the running scene,
 //! reparenting the frame [`SolarSystem`]'s tree — and therefore the
-//! spacecraft's own [`SolarBody`] — swaps to. Nothing about *drawing* the
-//! result changes: a spacecraft is a [`SolarBody`] like any other, and
-//! [`place_solar_bodies`] neither knows nor needs to know that its frame's
-//! parent just changed.
+//! spacecraft's own [`SolarBody`] — swaps to. Drawing is unaffected: a
+//! spacecraft is a [`SolarBody`] like any other, and [`place_solar_bodies`]
+//! does not need to know that its frame's parent just changed.
 
 use bevy::prelude::*;
 use terramenta_solare::bodies::ASTRONOMICAL_UNIT_KM;

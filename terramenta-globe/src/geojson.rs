@@ -1,59 +1,52 @@
 //! GeoJSON, as much of [RFC 7946](https://datatracker.ietf.org/doc/html/rfc7946)
 //! as a globe has anything to draw with.
 //!
-//! The document is read by [`geozero`], the same decoder [`crate::mvt`] runs a
-//! vector tile through, and for the same reason: a reader that walks a document
-//! and calls back for every ring, strand and point can write straight into the
-//! GeoArrow buffers of a [`FeatureSet`] without building an intermediate tree of
-//! `Vec`s on the way. What this module adds is the sink — [`Collector`] — and
-//! everything a globe wants that a general-purpose decoder has no opinion on.
+//! The document is read by [`geozero`], the same decoder [`crate::mvt`] uses
+//! for vector tiles: it walks the document and calls back for every ring,
+//! strand and point, writing straight into the GeoArrow buffers of a
+//! [`FeatureSet`] without building an intermediate tree of `Vec`s.
+//! [`Collector`] is the sink this module adds, plus everything a globe needs
+//! that a general-purpose decoder has no opinion on.
 //!
-//! **The document is flattened as it is walked.** A globe draws points, lines
-//! and filled rings; it does not care whether a line arrived as a `LineString`,
-//! as one strand of a `MultiLineString`, or nested three deep inside a
-//! `GeometryCollection` inside a `Feature`. So the whole tree collapses into
-//! three arrays, which is exactly what [`crate::overlays`] builds meshes from.
+//! **Flattening.** The document collapses into three arrays regardless of
+//! whether a line arrived as a `LineString`, as one strand of a
+//! `MultiLineString`, or nested three deep inside a `GeometryCollection`
+//! inside a `Feature`; [`crate::overlays`] builds meshes from the same three
+//! arrays. Each shape keeps an index into the feature columns, which is what
+//! makes it pickable: hit-testing a shape returns the feature behind it,
+//! properties and all, so a `MultiPolygon` of forty islands highlights as one
+//! country rather than as the island under the cursor.
 //!
-//! What the flattening does *not* throw away is which feature each shape came
-//! from. Every shape carries an index into the feature columns, and that is
-//! what makes it pickable: the globe hit-tests the geometry, and the feature
-//! behind the shape it hits is what an interface is handed, properties and all.
-//! It is also why a `MultiPolygon` of forty islands highlights as one country
-//! rather than as the island under the cursor.
+//! **Identifiers are read twice.** `geozero`'s feature callbacks carry a
+//! feature's properties and its position in the collection, but there is no
+//! hook for a GeoJSON `id`. Identifiers are scanned off the text up front and
+//! matched to features by position — the same approach [`crate::mvt`] uses
+//! for a tile layer's ids. The scan deserialises two members and skips the
+//! rest of the document: one pass over the bytes, no allocation.
 //!
-//! **Why the identifiers are read twice.** `geozero`'s feature callbacks carry
-//! a feature's properties and its position in the collection, and nothing else
-//! — there is no hook for a GeoJSON `id`. So the identifiers are scanned off
-//! the text up front and matched to features by position, which is exactly what
-//! [`crate::mvt`] does with the ids of a tile layer for exactly the same reason.
-//! The scan deserialises two members and skips the rest of the document, so it
-//! costs a pass over the bytes and no allocation to speak of.
+//! **Tolerance.** A ring with fewer than three distinct corners, a line with
+//! fewer than two positions, or a polygon that lost its outer ring is
+//! dropped; the rest of the feed is still drawn. Everything else follows the
+//! specification strictly: a position with fewer than two numbers, a
+//! coordinate array nested to the wrong depth, a `type` that is not a
+//! GeoJSON type, or an `id` that is neither a string nor a number rejects the
+//! whole document.
 //!
-//! **What is tolerated and what is not.** A ring with fewer than three distinct
-//! corners is dropped, a line left with fewer than two positions is dropped,
-//! and a polygon that lost its outer ring goes with them — a feed with one
-//! unusable shape is still worth drawing. Everything else is the decoder's
-//! judgement, and the decoder holds to the specification: a position of fewer
-//! than two numbers, a coordinate array nested to the wrong depth, a `type`
-//! that is not a GeoJSON type, or an `id` that is neither a string nor a number
-//! is a document that was never GeoJSON, and the whole of it is refused.
+//! Properties are kept as the JSON text the store holds them in, rebuilt
+//! from the values the decoder reports, and handed back out unchanged when a
+//! feature is picked. What a `mag` or a `place` means is the feed's business
+//! and the interface's, not the globe's. A property whose value is `null` is
+//! not reported by the decoder, so it does not survive into the store — the
+//! same thing the store already does with a feature whose whole `properties`
+//! member is `null`.
 //!
-//! Properties are kept as the JSON text the store holds them in, rebuilt from
-//! the values the decoder reports, and handed back out untouched when a feature
-//! is picked. What a `mag` or a `place` means is the feed's business and the
-//! interface's, not the globe's. One detail of the round trip is the decoder's:
-//! a property whose value is `null` is not reported, so it does not survive
-//! into the store — which is the same thing the store already does with a
-//! feature whose whole `properties` member is `null`.
-//!
-//! **Ten of those properties are read on the way past.** A document is allowed
-//! to say how it wants to look, in the members of [simplestyle-spec 1.1.0], and
-//! those are picked out as each feature's properties arrive — see
-//! [`crate::simplestyle`] for what they are and what is done with them. They
-//! are read off the values the decoder has already produced, and left in the
-//! properties as well, so a feed that styles itself is neither parsed twice nor
-//! handed to an interface with members missing. Nothing else in `properties` is
-//! looked at, here or anywhere else.
+//! **Styling.** Ten [simplestyle-spec 1.1.0] properties are picked out as
+//! each feature's properties arrive — see [`crate::simplestyle`] for what
+//! they are and what is done with them. They are read off the values the
+//! decoder has already produced, and left in the properties as well, so a
+//! feed that styles itself is parsed once and an interface is never handed
+//! missing members. Nothing else in `properties` is looked at, here or
+//! anywhere else.
 //!
 //! [simplestyle-spec 1.1.0]: https://github.com/mapbox/simplestyle-spec/tree/master/1.1.0
 

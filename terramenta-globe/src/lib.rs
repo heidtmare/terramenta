@@ -1,18 +1,18 @@
 //! Terramenta — a navigable 3D globe of Earth, built on Bevy and rendered
-//! through WebGPU in the browser or the native backend on the desktop.
+//! through WebGPU in the browser or on the native desktop backend.
 //!
-//! The crate is the globe and nothing else: it draws the Earth, streams imagery
-//! onto it and lets it be flown around, and it exposes all of that through
-//! [`api`] so an embedder can put its own interface on top. `terramenta-webapp`
-//! in this workspace is the reference one, and [`crate::wasm`] is the binding
-//! it reaches the globe through.
+//! The crate draws the Earth, streams imagery onto it, and lets it be flown
+//! around, exposing all of that through [`api`] for an embedder to build an
+//! interface on top of. `terramenta-webapp` in this workspace is the
+//! reference interface; [`crate::wasm`] is the binding it uses to reach the
+//! globe.
 //!
-//! There are two ways in:
+//! Two entry points:
 //!
-//! * [`run`], which starts the globe and does not return. That is what the
-//!   native binary calls and what [`wasm::start`] calls in the browser.
-//! * [`app`], which builds the same `App` without running it, for a host that
-//!   wants to add plugins of its own first.
+//! * [`run`] starts the globe and does not return. The native binary calls
+//!   it, as does [`wasm::start`] in the browser.
+//! * [`app`] builds the same `App` without running it, for a host that wants
+//!   to add its own plugins first.
 
 pub mod api;
 mod camera;

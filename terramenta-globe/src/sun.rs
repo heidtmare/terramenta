@@ -1,14 +1,14 @@
 //! Where the sun is, so the terminator falls in the right place.
 //!
-//! This is a low-precision solar position model — declination from the day of
-//! year, hour angle from UTC, no equation of time — which puts the terminator
-//! within roughly a degree of the real one. That is plenty for a globe you look
-//! at, and it avoids pulling in an ephemeris.
+//! Low-precision solar position model: declination from day of year, hour
+//! angle from UTC, no equation of time. Accurate to within roughly a degree,
+//! which is sufficient for the terminator and avoids pulling in a full
+//! ephemeris.
 //!
 //! Everything here is Earth-fixed: the subsolar point is a latitude and
-//! longitude, and the direction that falls out of it points at the sun in ECEF.
-//! Rotating that into whichever frame the scene is drawn in is the job of
-//! [`crate::frame::ReferenceFrame`].
+//! longitude, and the direction derived from it points at the sun in ECEF.
+//! [`crate::frame::ReferenceFrame`] rotates that into whichever frame the
+//! scene is drawn in.
 
 use bevy::prelude::*;
 

@@ -1,15 +1,14 @@
-//! A procedurally starred sky, shared by the Earth-centered globe view and
-//! the heliocentric view — same shader, same mesh helper, just a different
-//! radius and a different idea of which way "still" is.
+//! A procedurally starred sky, shared by the Earth-centered globe view and the
+//! heliocentric view — same shader, same mesh helper, different radius and
+//! different rotation convention for "still".
 //!
-//! The two views used to keep their own copy of this material and their own
-//! system driving its rotation uniform. Those two systems raced:
-//! `crate::globe`'s iterated every [`StarfieldMaterial`] asset regardless of
-//! which view it belonged to, so on any given frame it could stomp on the
-//! heliocentric sky's rotation, or lose that race to it, alternating between
-//! the two and reading as a heavy wobble. One shared component and a single
-//! system driving it, gated per-entity by which frame it was spawned in, is
-//! the fix — there is only ever one writer per material now.
+//! Previously each view kept its own copy of this material and its own system
+//! driving the rotation uniform. `crate::globe`'s system iterated every
+//! [`StarfieldMaterial`] asset regardless of which view it belonged to, so the
+//! two systems raced over the same material, producing a visible wobble. Now
+//! one shared component and a single system drive it, gated per-entity by
+//! which frame the entity was spawned in — there is only ever one writer per
+//! material.
 
 use bevy::mesh::MeshVertexBufferLayoutRef;
 use bevy::pbr::{MaterialPipeline, MaterialPipelineKey};

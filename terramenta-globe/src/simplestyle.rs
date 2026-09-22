@@ -1,37 +1,38 @@
 //! [simplestyle-spec 1.1.0]: the ten `properties` members a GeoJSON document
 //! is allowed to style itself with.
 //!
-//! Everywhere else the globe treats `properties` as opaque — what a `mag` or a
-//! `place` means is the feed's business, and [`crate::features`] holds the
-//! whole object as the JSON text it arrived as. This module is the one
-//! exception, and it is a narrow one: ten names, fixed by a specification,
-//! whose whole purpose is to tell a renderer how the feature should look.
+//! Everywhere else the globe treats `properties` as opaque — what a `mag` or
+//! a `place` means is the feed's business, and [`crate::features`] holds the
+//! whole object as the JSON text it arrived as. This module is the exception:
+//! ten names, fixed by the specification, whose purpose is to tell a
+//! renderer how the feature should look.
 //!
-//! **Only what a document states is honoured.** The specification lists a
-//! default for every member — grey markers, a `#555555` stroke, a fill at 0.6
-//! opacity — and none of those are applied here. A layer already has a colour,
-//! chosen by whoever put the layer up, and a document that says nothing about
-//! its appearance should come out in it rather than in the specification's
-//! grey. So each member overrides exactly the one thing it names and nothing
-//! else: `fill` replaces the layer's fill colour and leaves its opacity alone,
+//! **Only what a document states is honoured.** The specification defines a
+//! default for every member — grey markers, a `#555555` stroke, a fill at
+//! 0.6 opacity — none of which are applied here. A layer already has its own
+//! colour, chosen by whoever put the layer up; a document that says nothing
+//! about appearance is drawn in that colour rather than the specification's
+//! grey. Each member overrides exactly the one thing it names: `fill`
+//! replaces the layer's fill colour and leaves its opacity alone,
 //! `fill-opacity` replaces the opacity and leaves the colour alone, and a
-//! document with no style members at all is drawn exactly as it was before any
-//! of this existed. That is also what makes the two compose — an interface can
-//! recolour a layer and only the features that did not ask for a colour move.
+//! document with no style members is drawn exactly as it was before styling
+//! existed. This is also what lets the two compose: an interface can
+//! recolour a layer and only the features that did not request a colour
+//! move.
 //!
-//! **What is drawn and what is handed on.** Five of the members are paint, and
-//! the globe draws them: `marker-size`, `marker-color`, `stroke`,
+//! **What is drawn and what is handed on.** Five of the members are paint,
+//! and the globe draws them: `marker-size`, `marker-color`, `stroke`,
 //! `stroke-opacity`, `stroke-width`, `fill` and `fill-opacity`. Three are not
 //! paint — `title`, `description` and `marker-symbol` — and the globe has no
-//! label engine and no icon atlas to render them with. They are parsed and
-//! carried anyway, and handed out with a picked feature, because an interface
-//! that wants to put a title in a readout should not have to re-implement this
-//! module to find one.
+//! label engine or icon atlas to render them with; they are parsed and
+//! carried anyway, handed out with a picked feature, so an interface that
+//! wants a title in a readout does not need to reimplement this module to
+//! find one.
 //!
 //! **A member that cannot be read is ignored, never fatal.** A colour that is
-//! not a colour, a width that is not a number, a `marker-size` that is not one
-//! of the three: the member is dropped and the layer's own value stands. A
-//! document should not lose its geometry over a typo in its styling.
+//! not a colour, a width that is not a number, a `marker-size` that is not
+//! one of the three: the member is dropped and the layer's own value stands.
+//! A document does not lose its geometry over a typo in its styling.
 //!
 //! [simplestyle-spec 1.1.0]: https://github.com/mapbox/simplestyle-spec/tree/master/1.1.0
 

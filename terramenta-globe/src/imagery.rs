@@ -1,18 +1,19 @@
-//! The imagery layer a tile is fetched from, and the asset source that fetches it.
+//! The imagery layer a tile is fetched from, and the asset source that
+//! fetches it.
 //!
-//! Two protocols are supported and they differ in where the tiling comes from.
+//! Two protocols are supported, differing in where the tiling comes from.
 //! WMS ([`crate::wms`]) renders an arbitrary bounding box on demand, so the
 //! client chooses the grid; WMTS ([`crate::wmts`]) serves a fixed pyramid that
 //! the server publishes, so the client has to adopt the server's grid. Both
 //! end up addressing one square image per [`TileId`], which is all
 //! [`crate::tiles`] needs to stream either of them.
 //!
-//! The fetching itself is handed to Bevy: this module registers an `imagery://`
-//! asset source whose reader rewrites a tile path such as `0/4/9/3.jpg` into
-//! whatever URL the active layer wants, and delegates to Bevy's HTTP reader.
-//! That buys asynchronous loading, image decoding, GPU upload and reference
-//! counting on both native and web, and it means a tile is loaded with a plain
-//! `asset_server.load`.
+//! The fetching itself is handed to Bevy: this module registers an
+//! `imagery://` asset source whose reader rewrites a tile path such as
+//! `0/4/9/3.jpg` into whatever URL the active layer wants, and delegates to
+//! Bevy's HTTP reader. That gives asynchronous loading, image decoding, GPU
+//! upload and reference counting on both native and web, and a tile is
+//! loaded with a plain `asset_server.load`.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};

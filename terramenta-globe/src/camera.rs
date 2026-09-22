@@ -1,22 +1,21 @@
 //! A globe-flavoured orbit camera: drag to spin the Earth, scroll to close in.
 //!
-//! The camera orbits in world space, so what it is fixed relative to is
-//! whichever reference frame the scene is drawn in: the ground in ECEF, the
-//! stars in ECI, where the globe turns underneath it.
+//! The camera orbits in world space, fixed relative to whichever reference
+//! frame the scene is drawn in: the ground in ECEF, the stars in ECI, with
+//! the globe turning underneath it.
 //!
-//! The one thing that separates this from a generic orbit rig is that the
-//! rotation rate scales with altitude. From far away a drag sweeps whole
-//! continents; a hundred kilometres up the same drag nudges a city block, which
-//! is what makes the globe feel navigable instead of twitchy.
+//! Rotation rate scales with altitude, unlike a generic orbit rig: from far
+//! away a drag sweeps whole continents, while a hundred kilometres up the
+//! same drag nudges a city block.
 //!
-//! On top of that orbit sit two rig angles that leave the ground alone.
-//! `heading` and `tilt` (ctrl + drag) swing the camera around the place it is
-//! looking at, from straight down to a grazing view across the horizon, without
-//! that place ever leaving the centre of the screen. `gaze` (shift + drag)
-//! turns the camera where it stands, so the view swings off the anchor without
-//! the camera moving at all. Everything else — panning, the tile walk, the
-//! readout — is written in terms of the anchor, so those two are the only
-//! places the distinction matters.
+//! Two rig angles sit on top of that orbit and leave the ground alone.
+//! `heading` and `tilt` (ctrl + drag) swing the camera around the point it is
+//! looking at, from straight down to a grazing view across the horizon,
+//! without that point leaving the centre of the screen. `gaze` (shift + drag)
+//! rotates the camera in place, swinging the view off the anchor without
+//! moving the camera. Panning, the tile walk, and the readout are all written
+//! in terms of the anchor; `heading`/`tilt` and `gaze` are the only places
+//! the anchor/camera-position distinction matters.
 
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
