@@ -2,11 +2,12 @@
 //! followed the way [`terramenta_solare::spacecraft::Spacecraft::update`]
 //! actually flies one — a heliocentric cruise on a Lambert-solved transfer
 //! ellipse from Earth's position at departure, propagated day by day until
-//! it crosses into Mars' own sphere of influence and is captured, with no
-//! jump in position at the hand-off. The departure burn itself is treated as
-//! instantaneous, the same simplification [`terramenta_solare::mission::plan_transfer`]
-//! documents: this is a heliocentric-only trip, silent about escaping
-//! Earth's own gravity well, same as that function's own delta-v. Run with:
+//! it crosses into Mars' sphere of influence and is captured, with no jump
+//! in position at the hand-off. The departure burn is treated as
+//! instantaneous, the same simplification
+//! [`terramenta_solare::mission::plan_transfer`] documents: a
+//! heliocentric-only trip, silent about escaping Earth's own gravity well,
+//! same as that function's delta-v. Run with:
 //!
 //! ```sh
 //! cargo run --example earth_to_mars -p terramenta-solare
@@ -41,9 +42,9 @@ fn main() {
         tree.find("Mars").unwrap(),
     );
 
-    // The same near-optimal Earth-Mars window this crate's own
-    // `mission::plan_transfer` test uses — Earth and Mars only line up for a
-    // cheap transfer roughly once a synodic period (~780 days).
+    // The same near-optimal Earth-Mars window `mission::plan_transfer`'s
+    // own test uses — Earth and Mars only line up for a cheap transfer
+    // roughly once a synodic period (~780 days).
     let departure = Epoch::J2000.advanced_by_seconds(1_253.0 * DAY_SECONDS);
     let arrival = departure.advanced_by_seconds(204.0 * DAY_SECONDS);
 
@@ -64,10 +65,10 @@ fn main() {
     let arrival_delta_v_km_s =
         (mars_at_arrival.velocity_km_s - transfer.velocity_at_arrival_km_s).length();
 
-    // Heliocentric from the start — [`Primary::sun`] has nothing to escape to
-    // ([`Primary::orbits`] is `None`), so the only hand-off
-    // [`Spacecraft::update`] can make from here is inward, into Mars' sphere
-    // of influence.
+    // Heliocentric from the start — [`Primary::sun`] has nothing to escape
+    // to ([`Primary::orbits`] is `None`), so the only hand-off
+    // [`Spacecraft::update`] can make from here is inward, into Mars'
+    // sphere of influence.
     let sun_with_mars_capture =
         Primary::sun(sun).with_capture_candidates(vec![Primary::mars(mars, sun)]);
 

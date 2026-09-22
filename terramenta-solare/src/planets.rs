@@ -2,21 +2,18 @@
 //!
 //! Each is stated the way the JPL low-precision planetary theory publishes
 //! it: mean orbital elements at J2000.0 and their rate per Julian century,
-//! valid from 1800 to 2050 to a few arcseconds — plenty for a scene, not
-//! enough for a real mission — the same approach `terramenta-globe`'s own sun
-//! and moon already take. A planet's own gravity
-//! perturbs the others' orbits at a level these linear rates already fold in
-//! as an average; what they do not capture is the day-to-day wobble that
-//! comes from *where* the perturbing planets currently are, which is why this
-//! is good for "where is Mars this year" and not for targeting a specific
-//! transfer window down to the day.
+//! valid from 1800 to 2050 to a few arcseconds — the same approach
+//! `terramenta-globe`'s own sun and moon take. This is plenty for a scene,
+//! not for a real mission: the linear rates fold in planet-on-planet
+//! perturbation as an average, but not the day-to-day wobble from where the
+//! perturbing planets currently are. Good for "where is Mars this year", not
+//! for targeting a transfer window down to the day.
 //!
 //! A planet's state relative to the SSB — the frame tree's actual root — is
-//! its heliocentric state plus [`crate::sun::ssb_relative_state`]: exactly
-//! the vector sum the tree would compute anyway by walking Earth or Mars up
-//! through a Sun node and out to the root, done once here instead so that
-//! Earth and Mars can sit as the SSB's direct children the way
-//! [`crate::frame`] describes, rather than needing the Sun as an
+//! its heliocentric state plus [`crate::sun::ssb_relative_state`]: the same
+//! vector sum the tree would compute by walking Earth or Mars up through a
+//! Sun node to the root, done once here so Earth and Mars can sit as the
+//! SSB's direct children per [`crate::frame`], without the Sun as an
 //! intermediate hop.
 
 use crate::ecliptic::to_equatorial;
@@ -49,13 +46,13 @@ struct KeplerianSeries {
     semi_major_axis_au: Rate,
     eccentricity: Rate,
     inclination_deg: Rate,
-    /// `L`: the mean longitude, measured all the way from the equinox
-    /// through the ascending node and the periapsis to the planet itself —
-    /// not the mean anomaly, which is `L` less the longitude of periapsis.
+    /// `L`: the mean longitude, measured from the equinox through the
+    /// ascending node and the periapsis to the planet itself. Not the mean
+    /// anomaly, which is `L` less the longitude of periapsis.
     mean_longitude_deg: Rate,
-    /// `ϖ` (variously "longitude of periapsis" or "long. peri."): the
-    /// periapsis's own longitude, measured the same way — not the argument of
-    /// periapsis, which is `ϖ` less the longitude of the ascending node.
+    /// `ϖ` (also "longitude of periapsis" or "long. peri."): the periapsis's
+    /// own longitude, measured the same way. Not the argument of periapsis,
+    /// which is `ϖ` less the longitude of the ascending node.
     longitude_of_periapsis_deg: Rate,
     longitude_of_ascending_node_deg: Rate,
 }
@@ -81,9 +78,9 @@ impl KeplerianSeries {
     }
 }
 
-/// The Earth-Moon barycentre's elements — Earth's own centre wanders from
-/// this by up to about 4,700 km as the Moon orbits it, which is the Moon's
-/// business (`terramenta_globe::moon`) and not this crate's; this is Earth's
+/// The Earth-Moon barycentre's elements. Earth's own centre wanders from
+/// this by up to about 4,700 km as the Moon orbits it — that wander is
+/// `terramenta_globe::moon`'s concern, not this crate's; this is Earth's
 /// position to the precision everything else here is stated at.
 const EARTH_ELEMENTS: KeplerianSeries = KeplerianSeries {
     semi_major_axis_au: Rate {

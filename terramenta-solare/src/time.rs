@@ -1,11 +1,11 @@
 //! When a state vector is evaluated at.
 //!
-//! Every ephemeris here is a function of time since J2000.0, so that is the
-//! only clock this crate knows about — no leap seconds, no time scales beyond
-//! what a low-precision orbit model can tell apart anyway. An embedder hands
-//! in Unix seconds, the same clock `terramenta-globe`'s `Sun` resource runs
-//! on, so the two crates can be driven from one wall clock without a
-//! conversion at the boundary.
+//! Every ephemeris here is a function of time since J2000.0, the only clock
+//! this crate knows about — no leap seconds, no time scales beyond what a
+//! low-precision orbit model can tell apart. An embedder hands in Unix
+//! seconds, the same clock `terramenta-globe`'s `Sun` resource runs on, so
+//! both crates can be driven from one wall clock without a conversion at
+//! the boundary.
 
 /// Seconds from the Unix epoch to J2000.0 — noon, 1 January 2000, Terrestrial
 /// Time. Matches the constant `terramenta-globe` measures sidereal time from,
@@ -17,9 +17,10 @@ const DAYS_PER_JULIAN_CENTURY: f64 = 36_525.0;
 /// A moment in time, as Julian centuries since J2000.0.
 ///
 /// Orbital elements are conventionally stated at an epoch and a rate per
-/// century, so this is the unit every ephemeris in this crate wants; wrapping
-/// it in a type keeps a raw `f64` of days from being handed in where centuries
-/// are expected, which is an easy mixup with a rate table this shape.
+/// century, so this is the unit every ephemeris in this crate wants.
+/// Wrapping it in a type keeps a raw `f64` of days from being handed in
+/// where centuries are expected — an easy mixup with a rate table this
+/// shape.
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct Epoch(f64);
 

@@ -1,28 +1,26 @@
-//! Solar-system mission planning, starting from the one thing that makes it a
-//! different problem from a globe of just the Earth: there is no single
-//! origin a spacecraft's position can be usefully measured from all the way
-//! from launch to arrival.
+//! Solar-system mission planning. Unlike a globe of just the Earth, there is
+//! no single origin a spacecraft's position can be usefully measured from
+//! all the way from launch to arrival.
 //!
 //! [`frame`] has the reasoning and the tree itself — the Solar System
 //! Barycentre at the root, [`sun::Sun`], [`planets::EARTH`] and
-//! [`planets::MARS`] as its direct children, each reporting its own position
-//! the low-precision way `terramenta-globe`'s sun and moon models already do.
-//! [`orbit`] is the two-body mechanics everything propagates with, and
-//! [`spacecraft`] is where the tree earns its keep: a [`spacecraft::Spacecraft`]
-//! orbits whichever body currently dominates it and hands itself off to the
-//! next one out the moment that stops being true, without its actual
-//! position ever jumping to show for it.
+//! [`planets::MARS`] as its direct children, each reporting its own
+//! position the low-precision way `terramenta-globe`'s sun and moon models
+//! do. [`orbit`] is the two-body mechanics everything propagates with.
+//! [`spacecraft`] is where the tree earns its keep: a
+//! [`spacecraft::Spacecraft`] orbits whichever body currently dominates it
+//! and hands itself off to the next one out the moment that stops being
+//! true, without its actual position jumping.
 //!
-//! [`lambert`] and [`mission`] are the other direction a spacecraft's
-//! trajectory comes from: not propagated forward from a known state, but
-//! solved for — given where two bodies are on two given dates, the one orbit
-//! that connects them, and the velocity change departing and arriving on it
-//! actually costs.
+//! [`lambert`] and [`mission`] give a spacecraft's trajectory the other
+//! way: not propagated forward from a known state, but solved for — given
+//! where two bodies are on two given dates, the one orbit that connects
+//! them, and the velocity change departing and arriving on it costs.
 //!
-//! Nothing here depends on Bevy or draws anything — this crate is the model,
-//! the same way `terramenta-globe`'s own frame and ephemeris modules are
-//! plain Rust underneath the systems that read them. Wiring a solar system
-//! scene up to this tree is future work for whatever embeds it.
+//! Nothing here depends on Bevy or draws anything — this crate is the
+//! model, the same way `terramenta-globe`'s own frame and ephemeris modules
+//! are plain Rust underneath the systems that read them. Wiring a solar
+//! system scene up to this tree is future work for whatever embeds it.
 
 pub mod bodies;
 pub mod departure;
@@ -46,9 +44,9 @@ pub use time::Epoch;
 
 /// The tree this crate exists to build: the Solar System Barycentre at the
 /// root, with the Sun, Earth and Mars hanging off it as direct children —
-/// exactly the top-level shape described in [`frame`]'s module docs, and the
-/// one starting point every embedder needs rather than three separate calls
-/// to [`FrameTree::add`] with the right [`Ephemeris`] for each.
+/// the top-level shape described in [`frame`]'s module docs, as one call
+/// rather than three separate [`FrameTree::add`] calls with the right
+/// [`Ephemeris`] for each.
 ///
 /// The frames are reachable afterward by [`FrameTree::find`], under the names
 /// `"Sun"`, `"Earth"` and `"Mars"`.
@@ -100,8 +98,8 @@ mod tests {
     /// The scenario from this crate's own module docs, worked end to end: a
     /// spacecraft leaves Earth orbit, is described relative to Earth's
     /// centre for as long as that is the useful description, and hands
-    /// itself off to a heliocentric frame the moment it isn't — all against
-    /// the real (if low-precision) Earth ephemeris, not a fixed stand-in.
+    /// itself off to a heliocentric frame the moment it isn't — against the
+    /// real (if low-precision) Earth ephemeris, not a fixed stand-in.
     #[test]
     fn a_spacecraft_escaping_earth_ends_up_heliocentric() {
         let mut tree = solar_system();

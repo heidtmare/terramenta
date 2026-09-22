@@ -1,16 +1,14 @@
 //! Physical constants for the bodies the tree knows about.
 //!
-//! Just enough per body to place it and to tell whether something is still
-//! inside its gravitational grip: a standard gravitational parameter (`GM`,
-//! kilometres cubed per second squared — mass alone is useless to an orbit
-//! equation, and `GM` is both what every propagator here actually wants and
-//! the one of the two that is known to far more digits) and a mean radius,
-//! for turning an altitude into a distance from centre.
+//! Per body: a standard gravitational parameter (`GM`, km³/s²) and a mean
+//! radius. `GM` is what every propagator here uses directly and is known to
+//! more digits than mass alone; mean radius converts an altitude to a
+//! distance from centre.
 
 /// The Sun's standard gravitational parameter.
 pub const GM_SUN_KM3_S2: f64 = 1.327_124_400_18e11;
-/// Earth's, including its atmosphere — the value the ephemerides here and
-/// `terramenta-globe`'s propagator both assume.
+/// Earth's, including its atmosphere. Matches the value the ephemerides here
+/// and `terramenta-globe`'s propagator both assume.
 pub const GM_EARTH_KM3_S2: f64 = 398_600.435_507;
 pub const GM_MARS_KM3_S2: f64 = 42_828.375_214;
 
@@ -18,22 +16,20 @@ pub const EARTH_MEAN_RADIUS_KM: f64 = 6_371.0;
 pub const MARS_MEAN_RADIUS_KM: f64 = 3_389.5;
 pub const SUN_MEAN_RADIUS_KM: f64 = 696_000.0;
 
-/// The IAU-defined astronomical unit, in kilometres — the unit a heliocentric
-/// view scales world space in, the way `terramenta-globe`'s Earth-centered
-/// scene scales it in Earth radii.
+/// The IAU-defined astronomical unit, in kilometres. Scales heliocentric
+/// world space the way `terramenta-globe`'s Earth-centered scene scales in
+/// Earth radii.
 pub const ASTRONOMICAL_UNIT_KM: f64 = 149_597_870.7;
 
-/// The radius of a body's sphere of influence: how far its own gravity
-/// dominates a third, much lighter object's trajectory over its parent's,
-/// against a parent it sits `distance_from_parent_km` from.
+/// The radius of a body's sphere of influence: the distance from a parent
+/// (`distance_from_parent_km` away) within which the body's own gravity,
+/// rather than the parent's, dominates a third, much lighter object's
+/// trajectory.
 ///
-/// This is Laplace's approximation, `r * (m / M)^(2/5)`, restated in `GM`
-/// since that is what this crate already has on hand for every body — the
-/// mass ratio and the `GM` ratio are the same number. It is a boundary of
-/// convenience rather than a hard wall (real gravity doesn't end at a
-/// sphere). [`crate::spacecraft`] uses it as a place to decide which body's
-/// frame is the *more useful* one to describe the spacecraft in, not the
-/// moment Earth's pull "switches off".
+/// Laplace's approximation, `r * (m / M)^(2/5)`, restated in `GM` since mass
+/// ratio and `GM` ratio are the same number. A boundary of convenience, not
+/// a hard wall. [`crate::spacecraft`] uses it to decide which body's frame
+/// best describes a spacecraft's trajectory.
 pub fn sphere_of_influence_km(
     gm_body_km3_s2: f64,
     gm_parent_km3_s2: f64,

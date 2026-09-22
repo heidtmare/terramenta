@@ -1,23 +1,18 @@
 //! Where the Sun is relative to the Solar System Barycentre.
 //!
-//! The SSB is defined as the whole system's centre of mass, and the Sun holds
-//! more than 99.8% of that mass — but it is not a point, and Jupiter and
-//! Saturn are heavy enough that the Sun's own centre traces a small loop
-//! around the point their combined pull balances against it, a few tenths of
-//! a percent of an AU across. That loop is the reason the Sun is a node with
-//! its own ephemeris in this tree rather than sitting fixed at the root: a
-//! spacecraft on a multi-year interplanetary transfer, planned relative to
-//! the SSB, would otherwise be planned against a Sun that is up to a solar
-//! diameter from where the model puts it.
+//! The SSB is the system's centre of mass. The Sun holds more than 99.8% of
+//! that mass, but Jupiter and Saturn are heavy enough that the Sun's own
+//! centre traces a small loop around the SSB, a few tenths of a percent of
+//! an AU across. That is why the Sun is a node with its own ephemeris here
+//! rather than fixed at the root: a multi-year interplanetary transfer
+//! planned relative to the SSB would otherwise be planned against a Sun up
+//! to a solar diameter from where the model puts it.
 //!
-//! This models only the two terms worth modelling: Jupiter and Saturn, each
-//! treated as if on a circular, unperturbed, ecliptic-plane orbit of its own
-//! — which is a coarse enough stand-in for *their* motion that this is a
-//! two-term approximation of a many-term effect, not a barycentre. It holds
-//! the Sun within a few percent of its actual distance from the SSB, and gets
-//! the dominant ~11.86-year Jovian period right, which is enough for the
-//! frame tree to demonstrate what tracking the Sun relative to the SSB rather
-//! than defining the SSB as the Sun actually buys.
+//! Models Jupiter and Saturn only, each treated as on a circular,
+//! unperturbed, ecliptic-plane orbit — a two-term approximation of a
+//! many-term effect, not a full barycentre solution. Holds the Sun within a
+//! few percent of its actual distance from the SSB, and reproduces the
+//! dominant ~11.86-year Jovian period.
 
 use glam::DVec3;
 
@@ -29,10 +24,8 @@ const AU_KM: f64 = 1.495_978_707e8;
 const SECONDS_PER_DAY: f64 = 86_400.0;
 
 /// One giant planet's contribution to the Sun's displacement from the SSB:
-/// its own (circularised) heliocentric orbit, and how much of that displaces
-/// the Sun the other way — the ratio of its `GM` to the Sun's, which to first
-/// order (the Sun vastly outweighing the rest of the system combined) is also
-/// the ratio the Sun is pulled by.
+/// its own circularised heliocentric orbit, scaled by the ratio of its `GM`
+/// to the Sun's — to first order, also the ratio the Sun is pulled by.
 #[derive(Clone, Copy)]
 struct GiantPlanet {
     semi_major_axis_au: f64,
@@ -125,11 +118,10 @@ mod tests {
 
     #[test]
     fn saturn_keeps_the_wobble_from_repeating_on_jupiters_period_alone() {
-        // An integer number of Jupiter periods brings Jupiter's own
-        // contribution back to exactly where it started; Saturn, on its own
-        // much longer period, has moved on to a different point in its
-        // orbit, so the combined offset has moved too. A wobble that
-        // repeated here would mean Saturn's term had silently dropped out.
+        // One Jupiter period returns Jupiter's own contribution to its
+        // start, but Saturn's much longer period has moved on, so the
+        // combined offset differs. A repeat here would mean Saturn's term
+        // had silently dropped out.
         let start = ssb_relative_state(Epoch::J2000);
         let one_jupiter_period_later = ssb_relative_state(
             Epoch::J2000.advanced_by_seconds(JUPITER.orbital_period_days * SECONDS_PER_DAY),

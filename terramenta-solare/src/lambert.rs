@@ -2,41 +2,39 @@
 //! how long it has to get there, the one two-body orbit that connects them —
 //! and, with it, the velocity that orbit needs at each end.
 //!
-//! This is what turns "leave Earth on this date, arrive at Mars on that one"
-//! into a spacecraft's actual required velocity: two position vectors and a
-//! transfer time are geometry alone, silent about how fast anything moves,
-//! and [`solve`] is the one two-body orbit consistent with the gravity in
-//! play and the time actually available — as opposed to
+//! Two position vectors and a transfer time are geometry alone, silent about
+//! how fast anything moves; [`solve`] is the one two-body orbit consistent
+//! with the gravity in play and the time available. This is what turns
+//! "leave Earth on this date, arrive at Mars on that one" into a
+//! spacecraft's required velocity, as opposed to
 //! [`crate::mission::hohmann_transfer`]'s always-optimal, always-181-degree
 //! ellipse, which asks nothing about *when*, only about how far apart two
 //! circular orbits are.
 //!
 //! Two positions alone are ambiguous about which way around the focus a
-//! transfer sweeps; [`TransferDirection`] is how that ambiguity is resolved
-//! rather than guessed at.
+//! transfer sweeps; [`TransferDirection`] resolves that ambiguity explicitly.
 //!
-//! This solves the zero-revolution case only — one arc from departure to
-//! arrival, the shortest or longest way round depending on
-//! [`TransferDirection`], never one that laps the focus first. Every
-//! interplanetary transfer this crate's own [`crate::mission`] module plans
-//! is exactly that shape, so multi-revolution solutions (more fuel-efficient
-//! for some very slow transfers, and a second free parameter besides) are
-//! left for whoever needs one.
+//! Solves the zero-revolution case only — one arc from departure to arrival,
+//! shortest or longest way round depending on [`TransferDirection`], never
+//! one that laps the focus first. Every interplanetary transfer
+//! [`crate::mission`] plans is exactly that shape; multi-revolution
+//! solutions (more fuel-efficient for some very slow transfers, with a
+//! second free parameter) are left for whoever needs one.
 
 use glam::DVec3;
 
 /// Which way a transfer sweeps around its focus.
 ///
 /// Two position vectors describe a chord, not a direction of travel — the
-/// short way round (less than a half-turn) and the long way round (more than
-/// one) are both orbits through the same two points, and nothing about the
-/// points themselves says which one a spacecraft should fly. This is that
-/// choice, made explicit rather than defaulted.
+/// short way round (less than a half-turn) and the long way round (more
+/// than one) are both orbits through the same two points, and nothing about
+/// the points themselves says which one a spacecraft should fly. This makes
+/// that choice explicit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransferDirection {
     /// Counterclockwise viewed from the north ecliptic pole — the sense
-    /// every planet in this crate orbits the Sun in, and so the right choice
-    /// for essentially any real interplanetary transfer.
+    /// every planet in this crate orbits the Sun in, and so the right
+    /// choice for essentially any real interplanetary transfer.
     Prograde,
     Retrograde,
 }
@@ -45,7 +43,7 @@ pub enum TransferDirection {
 ///
 /// Neither vector is a velocity *change* by itself — that is the difference
 /// between this and whatever the departing or arriving body was already
-/// doing, which [`crate::mission::plan_transfer`] takes care of.
+/// doing, handled by [`crate::mission::plan_transfer`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LambertSolution {
     pub velocity_at_departure_km_s: DVec3,
@@ -76,10 +74,10 @@ pub fn solve(
     let r2_mag = r2.length();
     let cos_delta_nu = (r1.dot(r2) / (r1_mag * r2_mag)).clamp(-1.0, 1.0);
 
-    // The short way (< π) if the transfer's own sense of rotation matches
-    // `direction`; the long way (> π) otherwise. `r1 × r2`'s `z` component is
-    // positive exactly when going from `r1` to `r2` the short way is
-    // counterclockwise about `+z` — i.e. prograde.
+    // The short way (< π) if the transfer's sense of rotation matches
+    // `direction`; the long way (> π) otherwise. `r1 × r2`'s `z` component
+    // is positive exactly when going from `r1` to `r2` the short way is
+    // counterclockwise about `+z`, i.e. prograde.
     let short_way = match direction {
         TransferDirection::Prograde => r1.cross(r2).z >= 0.0,
         TransferDirection::Retrograde => r1.cross(r2).z < 0.0,
@@ -152,10 +150,8 @@ fn stumpff_s(z: f64) -> f64 {
 /// `y(z)`: the universal-variable stand-in for how far apart `r1` and `r2`
 /// end up being explained by the same transfer orbit at parameter `z`.
 ///
-/// Only meaningful where it comes out non-negative — [`solve`] treats a
-/// negative `y` as this `z` not describing a real transfer, the same way
-/// [`crate::orbit`] treats a hyperbolic mean anomaly outside `-1..1` cosine
-/// range as not describing a real point on an ellipse.
+/// Only meaningful where non-negative — [`solve`] treats a negative `y` as
+/// this `z` not describing a real transfer.
 fn universal_y(z: f64, r1_mag: f64, r2_mag: f64, a: f64) -> f64 {
     r1_mag + r2_mag + a * (z * stumpff_s(z) - 1.0) / stumpff_c(z).sqrt()
 }
@@ -169,15 +165,15 @@ fn universal_time_of_flight(z: f64, r1_mag: f64, r2_mag: f64, a: f64, sqrt_gm: f
 
 /// Solves `universal_time_of_flight(z) == time_of_flight_s` for `z`, by
 /// Newton's method against a numerical derivative — the time-of-flight
-/// equation has no simple closed-form derivative worth hand-deriving here,
-/// and this is not called often enough for that to matter.
+/// equation has no simple closed-form derivative, and this is not called
+/// often enough for one to be worth deriving.
 ///
-/// `z`'s valid domain runs from very negative (a sharply hyperbolic transfer)
-/// up to `4π²` exclusive, where the implied transfer orbit's period goes to
-/// infinity; past it is a second revolution, which this module does not
-/// solve for. When `a > 0` (a short-way transfer) [`universal_y`] can start
-/// out negative for `z` near zero on a wide transfer angle, which is what the
-/// walk-forward loop below is for — Vallado's own fix for the same problem.
+/// `z`'s valid domain runs from very negative (a sharply hyperbolic
+/// transfer) up to `4π²` exclusive, where the implied transfer orbit's
+/// period goes to infinity; past it is a second revolution, not solved for
+/// here. When `a > 0` (a short-way transfer), [`universal_y`] can start out
+/// negative for `z` near zero on a wide transfer angle — the walk-forward
+/// loop below, Vallado's own fix, handles that.
 fn solve_universal_anomaly(
     time_of_flight_s: f64,
     r1_mag: f64,
@@ -210,9 +206,9 @@ fn solve_universal_anomaly(
 
         let step = 1.0e-6 * z.abs().max(1.0);
         let mut probe = (z + step).min(MAX_Z - 1.0e-6);
-        // Keep the derivative's probe point inside the domain `y` is defined
-        // on, halving back toward `z` — which is always valid by this point —
-        // rather than ever evaluating the Stumpff functions past it.
+        // Keep the derivative's probe point inside the domain `y` is
+        // defined on, halving back toward `z` (always valid by this point)
+        // rather than evaluating the Stumpff functions past it.
         let mut halvings = 0;
         while !y_is_valid(probe) && halvings < 60 {
             probe = (z + probe) / 2.0;
@@ -246,9 +242,9 @@ mod tests {
     const GM_EARTH_KM3_S2: f64 = 398_600.441_8;
 
     /// An eccentric, equatorial (in this test's own axes — the solver knows
-    /// nothing of the ecliptic) heliocentric-ish orbit, just eccentric enough
-    /// that a wrong `z` would show up as a wrong answer rather than
-    /// accidentally the right one.
+    /// nothing of the ecliptic) heliocentric-ish orbit, eccentric enough
+    /// that a wrong `z` shows up as a wrong answer rather than an
+    /// accidentally correct one.
     fn sample_orbit() -> OrbitalElements {
         OrbitalElements {
             semi_major_axis_km: 1.496e8,
@@ -267,8 +263,8 @@ mod tests {
         let departure = elements.state_at(GM_SUN_KM3_S2, 0.0);
         // Two months: comfortably under half this orbit's roughly one-year
         // period, so the transfer angle stays under half a turn and
-        // `TransferDirection::Prograde` (this orbit's own sense of motion,
-        // per `orbit::state_at`'s always-positive angular momentum) is the
+        // `TransferDirection::Prograde` (this orbit's sense of motion, per
+        // `orbit::state_at`'s always-positive angular momentum) is the
         // short way round.
         let time_of_flight = 60.0 * 86_400.0;
         let arrival = elements.state_at(GM_SUN_KM3_S2, time_of_flight);
@@ -298,9 +294,9 @@ mod tests {
 
     #[test]
     fn also_recovers_a_short_earth_orbit_transfer() {
-        // A different regime entirely — an Earth-orbit arc a few thousand
-        // kilometres out rather than a heliocentric one — so this isn't
-        // secretly a test of one magnitude of number working out.
+        // A different regime — an Earth-orbit arc a few thousand kilometres
+        // out rather than a heliocentric one — so this isn't just a test of
+        // one magnitude of number working out.
         let elements = OrbitalElements {
             semi_major_axis_km: 8_000.0,
             eccentricity: 0.1,

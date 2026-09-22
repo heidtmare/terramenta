@@ -1,37 +1,37 @@
 //! The hierarchical reference frame tree.
 //!
-//! A globe of just the Earth can put the planet's centre at the origin and
-//! never think about it again. A solar system cannot: Mars is a couple of
-//! hundred million kilometres from that origin, and an `f32` — or even an
-//! `f64` doing arithmetic *relative to a distant origin* — starts losing
-//! metres of precision at that range, right when a spacecraft needs metres to
-//! rendezvous with something. The fix is the one every mission-planning tool
-//! uses: nothing is stored relative to a single universal origin. Instead,
-//! each body keeps its position relative to *its own parent*, and a position
-//! far from home is only ever reached by summing a short chain of short
-//! vectors, each one accurate where it is taken.
+//! A globe of just the Earth can put the planet's centre at the origin.
+//! A solar system cannot: Mars is a couple of hundred million kilometres
+//! from that origin, and an `f32` — or even an `f64` doing arithmetic
+//! *relative to a distant origin* — starts losing metres of precision at
+//! that range, right when a spacecraft needs metres to rendezvous with
+//! something. The fix, standard in mission-planning tools: nothing is
+//! stored relative to a single universal origin. Each body keeps its
+//! position relative to *its own parent*, and a position far from home is
+//! reached by summing a short chain of short vectors, each accurate where
+//! it is taken.
 //!
-//! The tree's root is the Solar System Barycentre (SSB) — the solar system's
-//! actual centre of mass, which is a few solar radii from the Sun's centre
-//! because Jupiter and Saturn are heavy enough to pull it off-centre. Sun,
-//! Earth and Mars hang off it as direct children, each an [`Ephemeris`] that
+//! The tree's root is the Solar System Barycentre (SSB), the solar system's
+//! actual centre of mass, a few solar radii from the Sun's centre because
+//! Jupiter and Saturn are heavy enough to pull it off-centre. Sun, Earth
+//! and Mars hang off it as direct children, each an [`Ephemeris`] that
 //! reports its own position relative to the SSB. A spacecraft hangs off
-//! *whichever body's gravity currently dominates it* — Earth while it is
-//! bound to Earth orbit, the Sun once it is far enough out that Earth's pull
-//! is no longer what is shaping its path — and is free to change parents at
-//! run time as that changes; see [`crate::spacecraft`].
+//! *whichever body's gravity currently dominates it* — Earth while bound to
+//! Earth orbit, the Sun once far enough out that Earth's pull no longer
+//! shapes its path — and is free to change parents at run time as that
+//! changes; see [`crate::spacecraft`].
 //!
 //! Every vector in the tree is stated in the same, fixed orientation: the
 //! ICRF (International Celestial Reference Frame), the inertial axes the
-//! whole solar system's ephemerides are conventionally published in. Because
-//! every node shares that orientation, reparenting or comparing two frames is
-//! nothing but vector addition and subtraction — there is no rotation to
-//! carry along, which is what makes walking the tree cheap. (This is
-//! deliberately not `terramenta-globe`'s ECEF/ECI split: those are two
-//! *orientations* of one origin, Earth's centre. This tree is one orientation
-//! and many origins. A body's own spin — ECEF, or the Martian equivalent — is
-//! a rotation applied on top of the position this tree gives its centre, and
-//! stays that crate's concern.)
+//! solar system's ephemerides are conventionally published in. Because
+//! every node shares that orientation, reparenting or comparing two frames
+//! is nothing but vector addition and subtraction, with no rotation to
+//! carry along — what makes walking the tree cheap. (This is not
+//! `terramenta-globe`'s ECEF/ECI split: those are two *orientations* of one
+//! origin, Earth's centre. This tree is one orientation and many origins.
+//! A body's own spin — ECEF, or the Martian equivalent — is a rotation
+//! applied on top of the position this tree gives its centre, and stays
+//! that crate's concern.)
 
 use std::collections::HashMap;
 
@@ -42,9 +42,9 @@ use crate::time::Epoch;
 /// A position and velocity, in ICRF axes, in kilometres and kilometres per
 /// second.
 ///
-/// Always relative to *something* — a parent frame, another frame, or the SSB
-/// — which is why this carries no origin of its own. What it is relative to
-/// is the caller's business, tracked by which [`FrameTree`] method produced
+/// Always relative to *something* — a parent frame, another frame, or the
+/// SSB — so this carries no origin of its own. What it is relative to is
+/// the caller's business, tracked by which [`FrameTree`] method produced
 /// it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StateVector {
@@ -93,8 +93,8 @@ impl std::ops::Sub for StateVector {
 ///
 /// Implemented by the low-precision planetary series in [`crate::planets`]
 /// for the tree's top-level bodies, and by a two-body propagator for a
-/// spacecraft between the moments its trajectory is re-planned; either way,
-/// the tree itself only ever needs the state this returns, never how it was
+/// spacecraft between the moments its trajectory is re-planned. Either way,
+/// the tree itself only needs the state this returns, never how it was
 /// worked out.
 pub trait Ephemeris: std::fmt::Debug + Send + Sync {
     /// This body's state relative to its parent frame, at the given epoch.
@@ -232,9 +232,9 @@ impl FrameTree {
     /// needs: see [`crate::spacecraft::Spacecraft::retarget`], which computes
     /// the state relative to the *new* parent before calling this, so the
     /// body's actual position in space — its state relative to the SSB —
-    /// does not jump at the moment the parent changes. `FrameTree` itself
-    /// does not enforce that continuity; it only stores whatever ephemeris it
-    /// is handed.
+    /// does not jump when the parent changes. `FrameTree` itself does not
+    /// enforce that continuity; it only stores whatever ephemeris it is
+    /// handed.
     pub fn reparent(
         &mut self,
         frame: FrameId,
@@ -258,13 +258,12 @@ impl FrameTree {
     /// This frame's state relative to the root (the SSB) — the sum of every
     /// local state from here up the chain of parents.
     ///
-    /// This lets two frames anywhere in the tree be compared: walk each to a
+    /// Lets two frames anywhere in the tree be compared: walk each to a
     /// shared, fixed reference and difference there. Comparing two things
     /// that are actually close together this way reintroduces the precision
     /// loss the tree exists to avoid — prefer
-    /// [`FrameTree::state_of_relative_to`] for that, which never sums a chain
-    /// longer than the distance between the two frames' nearest common
-    /// ancestor requires.
+    /// [`FrameTree::state_of_relative_to`], which never sums a chain longer
+    /// than the two frames' nearest common ancestor requires.
     pub fn state_relative_to_root(&self, frame: FrameId, epoch: Epoch) -> StateVector {
         let mut state = StateVector::ZERO;
         let mut current = frame;
@@ -279,13 +278,13 @@ impl FrameTree {
     /// nearest common ancestor rather than all the way to the SSB.
     ///
     /// A spacecraft in Earth orbit asking where it is relative to Earth, or
-    /// Earth asking where it is relative to Mars, only ever needs to look as
-    /// far up the tree as the two frames' lowest common ancestor — for a
+    /// Earth asking where it is relative to Mars, only needs to look as far
+    /// up the tree as the two frames' lowest common ancestor — for a
     /// spacecraft that is its parent directly, at zero hops. Going by way of
-    /// the SSB would add Earth's and Mars's own multi-hundred-million-
-    /// kilometre states into a subtraction meant to land on a distance of a
-    /// few hundred kilometres, reintroducing the very precision loss the tree
-    /// is for.
+    /// the SSB would add Earth's and Mars's own
+    /// multi-hundred-million-kilometre states into a subtraction meant to
+    /// land on a distance of a few hundred kilometres, reintroducing the
+    /// precision loss the tree is for.
     pub fn state_of_relative_to(
         &self,
         frame: FrameId,
@@ -395,9 +394,8 @@ mod tests {
     #[test]
     fn state_between_siblings_does_not_go_through_the_root() {
         let (tree, sun, earth, _spacecraft) = sample_tree();
-        // Sun at (1, 0, 0), Earth at (0, 2, 0): Earth relative to Sun is their
-        // difference, not a value that happens to also be reachable by
-        // summing both all the way to the root and subtracting there.
+        // Sun at (1, 0, 0), Earth at (0, 2, 0): Earth relative to Sun is
+        // their difference.
         let earth_from_sun = tree.state_of_relative_to(earth, sun, Epoch::J2000);
         assert_eq!(earth_from_sun.position_km, DVec3::new(-1.0, 2.0, 0.0));
     }

@@ -1,15 +1,16 @@
 //! Converts a target hyperbolic excess velocity (v∞) into a state vector a
 //! spacecraft can be spawned on.
 //!
-//! [`crate::mission::plan_transfer`] gives the velocity a spacecraft needs at
-//! the departure body's location — a v∞ relative to that body, not a state
-//! near its surface. [`injection_state`] builds the close-in hyperbola that
-//! reaches that v∞ asymptotically; [`escape_injection_state`] corrects for
-//! the sphere of influence being finite, not infinite (see its own docs).
+//! [`crate::mission::plan_transfer`] gives the velocity a spacecraft needs
+//! at the departure body's location — a v∞ relative to that body, not a
+//! state near its surface. [`injection_state`] builds the close-in
+//! hyperbola that reaches that v∞ asymptotically; [`escape_injection_state`]
+//! corrects for the sphere of influence being finite, not infinite (see its
+//! own docs).
 //!
 //! The departure plane (which side of the body the hyperbola swings past) is
 //! picked arbitrarily: any plane containing v∞ gives the same asymptotic
-//! velocity, and nothing downstream cares which one was chosen.
+//! velocity, and nothing downstream depends on which one was chosen.
 
 use glam::DVec3;
 
@@ -20,15 +21,13 @@ use crate::frame::StateVector;
 /// actually reparents to the next body — rather than at infinity.
 ///
 /// [`injection_state`] only reaches its target speed in the limit of
-/// infinite range. At any finite radius, `v(r)² = v∞² + 2GM/r` (true for any
-/// hyperbola of this energy, independent of periapsis) leaves a real speed
-/// excess — direction has already converged by then, but the speed error
-/// alone matters: a Lambert transfer is sensitive enough to departure
-/// velocity that a percent-level error here compounds into a miss many
-/// times the destination's own sphere of influence over an interplanetary
-/// transfer. This solves for the v∞ whose speed at
-/// `sphere_of_influence_radius_km`, not at infinity, equals
-/// `escape_velocity_km_s`.
+/// infinite range. At any finite radius, `v(r)² = v∞² + 2GM/r` (true for
+/// any hyperbola of this energy, independent of periapsis) leaves a real
+/// speed excess: direction has already converged by then, but a
+/// percent-level speed error here compounds, over an interplanetary
+/// transfer, into a miss many times the destination's sphere of influence.
+/// This solves for the v∞ whose speed at `sphere_of_influence_radius_km`,
+/// not at infinity, equals `escape_velocity_km_s`.
 pub fn escape_injection_state(
     escape_velocity_km_s: DVec3,
     sphere_of_influence_radius_km: f64,
@@ -54,7 +53,7 @@ pub fn escape_injection_state(
 /// `v_infinity_km_s`'s magnitude alone), which fixes the true anomaly of the
 /// outgoing asymptote; periapsis sits that many degrees ahead of it, in
 /// whichever plane contains `v_infinity_km_s`. Undefined for
-/// `v_infinity_km_s == 0` (parabolic case) — not handled specially, same as
+/// `v_infinity_km_s == 0` (parabolic case), not handled specially, same as
 /// the rest of this crate's orbits.
 pub fn injection_state(
     v_infinity_km_s: DVec3,

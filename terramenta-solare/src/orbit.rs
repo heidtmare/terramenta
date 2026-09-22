@@ -2,14 +2,13 @@
 //! between the moments its trajectory is re-planned, and the model every
 //! planet's own heliocentric position is stated in.
 //!
-//! This is deliberately the restricted two-body problem — one central mass,
-//! one massless body, no perturbation from anything else — which is exact for
-//! a planet's motion around the Sun to the precision the tables in
-//! [`crate::planets`] bother with, and exact for a spacecraft for as long as
-//! one body's gravity dominates it — the premise
-//! [`crate::spacecraft`]'s sphere-of-influence switch relies on. Outside of
-//! that switch, nothing here needs a perturbation term because nothing here
-//! is claiming to model a transfer under two bodies' gravity at once.
+//! This is the restricted two-body problem — one central mass, one massless
+//! body, no perturbation from anything else. Exact for a planet's motion
+//! around the Sun to the precision the tables in [`crate::planets`] use, and
+//! exact for a spacecraft for as long as one body's gravity dominates it —
+//! the premise [`crate::spacecraft`]'s sphere-of-influence switch relies on.
+//! No perturbation term is needed because nothing here models a transfer
+//! under two bodies' gravity at once.
 
 use glam::DVec3;
 
@@ -20,11 +19,10 @@ use crate::frame::StateVector;
 ///
 /// Angles are radians throughout. `eccentricity < 1.0` is an ellipse and
 /// `> 1.0` a hyperbola; `== 1.0` (a parabola) is a measure-zero case this
-/// does not handle specially and will misbehave on, the same way it does not
-/// specially handle a circular (`eccentricity == 0.0`) or equatorial
-/// (`inclination == 0.0`) orbit, where the argument of periapsis and the
-/// ascending node stop being well-defined. None of the orbits this crate
-/// constructs land exactly on those cases.
+/// does not handle specially and will misbehave on. Same for a circular
+/// (`eccentricity == 0.0`) or equatorial (`inclination == 0.0`) orbit, where
+/// the argument of periapsis and the ascending node stop being well-defined.
+/// None of the orbits this crate constructs land exactly on those cases.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OrbitalElements {
     pub semi_major_axis_km: f64,
@@ -69,12 +67,13 @@ impl OrbitalElements {
         self.state_at_true_anomaly(gm_km3_s2, true_anomaly)
     }
 
-    /// This orbit's state at a given true anomaly, sidestepping time and Kepler's
-    /// equation entirely — the shape of the orbit, evaluated at a point on it.
+    /// This orbit's state at a given true anomaly, sidestepping time and
+    /// Kepler's equation entirely — the shape of the orbit, evaluated at a
+    /// point on it.
     ///
     /// Used to place a body the moment its elements are set (`dt == 0` would
-    /// do the same through [`OrbitalElements::state_at`], but this is also
-    /// what [`OrbitalElements::from_state`]'s round trip is checked against).
+    /// do the same through [`OrbitalElements::state_at`]), and to check
+    /// [`OrbitalElements::from_state`]'s round trip.
     fn state_at_true_anomaly(&self, gm_km3_s2: f64, true_anomaly: f64) -> StateVector {
         let p = self.semi_latus_rectum_km();
         let r = p / (1.0 + self.eccentricity * true_anomaly.cos());
@@ -101,10 +100,10 @@ impl OrbitalElements {
     }
 
     /// Derives the elements a state vector is instantaneously on, at the
-    /// epoch that state was measured — the conversion a spacecraft crossing a
-    /// sphere of influence needs, since [`crate::frame::FrameTree::reparent`]
-    /// gives it a state relative to its new parent but no elements to keep
-    /// propagating with.
+    /// epoch that state was measured. Needed when a spacecraft crosses a
+    /// sphere of influence: [`crate::frame::FrameTree::reparent`] gives it a
+    /// state relative to its new parent but no elements to keep propagating
+    /// with.
     pub fn from_state(state: StateVector, gm_km3_s2: f64, epoch_seconds: f64) -> Self {
         let (r, v) = (state.position_km, state.velocity_km_s);
         let r_mag = r.length();
@@ -364,8 +363,8 @@ mod tests {
         assert!((derived.arg_periapsis_rad - original.arg_periapsis_rad).abs() < 1.0e-9);
 
         // Propagating the derived elements from their own epoch should land
-        // on the same state, which is the only thing that actually matters —
-        // the mean anomaly itself is checked indirectly through it.
+        // on the same state; the mean anomaly itself is checked indirectly
+        // through it.
         let replayed = derived.state_at(GM_EARTH_KM3_S2, 1_000.0);
         assert!((replayed.position_km - state.position_km).length() < 1.0e-6);
         assert!((replayed.velocity_km_s - state.velocity_km_s).length() < 1.0e-9);

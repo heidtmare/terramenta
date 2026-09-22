@@ -1,40 +1,35 @@
 //! A spacecraft, tracked relative to whichever body's gravity currently
 //! dominates its trajectory.
 //!
-//! This is the case the whole tree exists for. A spacecraft leaving Earth
-//! starts out described the cheap, precise way any Earth-orbiting thing is:
-//! a two-body orbit relative to Earth's centre, in kilometres, with Earth's
-//! own multi-hundred-million-kilometre wander around the Sun nowhere in the
+//! A spacecraft leaving Earth starts out described as a two-body orbit
+//! relative to Earth's centre, in kilometres, with Earth's own
+//! multi-hundred-million-kilometre wander around the Sun nowhere in the
 //! numbers to lose precision to. Far enough out, Earth stops being the
-//! dominant pull and the same description stops being the useful one — not
-//! because the physics changed at a sharp boundary, but because a two-body
-//! approximation centred on Earth is a worse fit to what is actually shaping
-//! the trajectory than one centred on the Sun. [`Spacecraft::update`] is that
-//! judgement call, made the same way real mission design makes it: by
-//! comparing distance from the current primary against its sphere of
-//! influence ([`crate::bodies::sphere_of_influence_km`]), and re-expressing
-//! the spacecraft's state relative to the next body up the moment it crosses.
+//! dominant pull, and a two-body approximation centred on Earth becomes a
+//! worse fit than one centred on the Sun. [`Spacecraft::update`] makes that
+//! call by comparing distance from the current primary against its sphere
+//! of influence ([`crate::bodies::sphere_of_influence_km`]), and
+//! re-expresses the spacecraft's state relative to the next body up the
+//! moment it crosses.
 //!
-//! That re-expression is the one step that has to be careful.
-//! [`crate::frame::FrameTree::reparent`] will cheerfully accept any ephemeris
-//! it's handed, jump included — the continuity is [`Spacecraft::update`]'s
-//! job, done by computing the state relative to the *new* primary from the
-//! state relative to the old one plus the old primary's own state relative to
-//! the new one, all at the same instant, before the swap ever reaches the
-//! tree.
+//! That re-expression has to preserve continuity.
+//! [`crate::frame::FrameTree::reparent`] accepts any ephemeris it's handed,
+//! jump included — [`Spacecraft::update`] keeps continuity by computing the
+//! state relative to the *new* primary from the state relative to the old
+//! one plus the old primary's own state relative to the new one, all at the
+//! same instant, before the swap reaches the tree.
 //!
-//! Escaping Earth is only half the trip a real interplanetary mission makes.
-//! The other half is arriving: a spacecraft heliocentric under the Sun has
-//! nothing further to escape *from*, but it can still be captured *by*
-//! whatever it flies close enough to — which is why [`Primary`] carries
-//! [`Primary::capture_candidates`] as well as [`Primary::orbits`], and
-//! [`Spacecraft::update`] checks both directions every tick. The two checks
-//! together are the whole of the patched-conics approximation this crate
-//! implements: a hyperbolic departure relative to the origin, a Keplerian
-//! ellipse relative to the Sun, and a hyperbolic arrival relative to the
-//! destination, each just the ordinary two-body orbit [`crate::orbit`]
-//! already propagates, stitched together only at the moments a sphere of
-//! influence is crossed.
+//! Escaping Earth is only half the trip. The other half is arriving: a
+//! spacecraft heliocentric under the Sun has nothing further to escape
+//! *from*, but can still be captured *by* whatever it flies close enough to
+//! — so [`Primary`] carries [`Primary::capture_candidates`] as well as
+//! [`Primary::orbits`], and [`Spacecraft::update`] checks both directions
+//! every tick. Together the two checks form the patched-conics
+//! approximation this crate implements: a hyperbolic departure relative to
+//! the origin, a Keplerian ellipse relative to the Sun, and a hyperbolic
+//! arrival relative to the destination, each the ordinary two-body orbit
+//! [`crate::orbit`] already propagates, stitched together only at the
+//! moments a sphere of influence is crossed.
 
 use crate::bodies;
 use crate::frame::{Ephemeris, FrameId, FrameTree, StateVector};
@@ -49,26 +44,23 @@ pub struct Primary {
     pub frame: FrameId,
     pub gm_km3_s2: f64,
     /// What this primary itself orbits, boxed because the chain is
-    /// self-referential in type only, never in practice: Earth points at the
-    /// Sun, and the Sun — the last stop this crate models — points at
-    /// nothing, which is what tells [`Spacecraft::update`] to stop checking
-    /// for an escape.
+    /// self-referential in type only: Earth points at the Sun, and the Sun
+    /// — the last stop this crate models — points at nothing, which tells
+    /// [`Spacecraft::update`] to stop checking for an escape.
     pub orbits: Option<Box<Primary>>,
     /// The bodies a spacecraft on *this* primary should be checked against
-    /// for capture — the inward half of the same patched-conics switch, and
-    /// the mirror image of `orbits`: a spacecraft heliocentric under the Sun
-    /// escapes nothing further, but it can still fall into whichever of
-    /// these it comes within the sphere of influence of, the way a real
-    /// Earth-Mars trip is captured at its destination rather than merely
-    /// escaping its origin. Empty for Earth and Mars themselves in this
-    /// crate's own bodies, since neither is a candidate to be captured *by*.
+    /// for capture: the inward half of the patched-conics switch, mirroring
+    /// `orbits`. A spacecraft heliocentric under the Sun escapes nothing
+    /// further, but can fall into whichever of these it enters the sphere
+    /// of influence of. Empty for Earth and Mars in this crate's own
+    /// bodies, since neither is a capture candidate.
     pub capture_candidates: Vec<Primary>,
 }
 
 impl Primary {
     /// The last stop this crate models: a primary with nothing left to
-    /// escape to, which is what tells [`Spacecraft::update`] to stop checking
-    /// for an escape.
+    /// escape to, which tells [`Spacecraft::update`] to stop checking for an
+    /// escape.
     pub fn sun(frame: FrameId) -> Self {
         Self {
             frame,
@@ -79,9 +71,9 @@ impl Primary {
     }
 
     /// A primary that itself orbits `parent` — the general case every body
-    /// but the Sun is: [`Primary::earth`] and [`Primary::mars`] are both just
-    /// this with their own `gm_km3_s2`, and any body this crate adds later
-    /// gets the same one-liner rather than its own hand-written constructor.
+    /// but the Sun is. [`Primary::earth`] and [`Primary::mars`] are both just
+    /// this with their own `gm_km3_s2`; any body added later gets the same
+    /// one-liner rather than its own constructor.
     pub fn orbiting(frame: FrameId, gm_km3_s2: f64, parent: Primary) -> Self {
         Self {
             frame,
@@ -100,9 +92,9 @@ impl Primary {
     }
 
     /// Attaches the bodies a spacecraft on this primary should be checked
-    /// against for capture — giving the Sun a [`Primary::mars`], say, is what
-    /// lets [`Spacecraft::update`] notice a heliocentric approach entering
-    /// Mars' sphere of influence and hand the spacecraft off to it.
+    /// against for capture — giving the Sun a [`Primary::mars`], for
+    /// example, lets [`Spacecraft::update`] notice a heliocentric approach
+    /// entering Mars' sphere of influence and hand the spacecraft off to it.
     pub fn with_capture_candidates(mut self, candidates: Vec<Primary>) -> Self {
         self.capture_candidates = candidates;
         self
@@ -179,23 +171,19 @@ impl Spacecraft {
     /// arriving) — and reparents it the moment either happens. Returns
     /// whether a transition happened.
     ///
-    /// A spacecraft already on its outermost primary has nothing further to
-    /// escape to, and one whose primary names no capture candidates has
-    /// nothing to be captured by, so either check alone can leave this
-    /// returning `false` forever; a real Earth-to-Mars trip needs one of
-    /// each, which is also why a single call only ever crosses one boundary:
-    /// a trajectory extreme enough to leap two spheres of influence in one
-    /// update still only advances one level per call, catching up over
-    /// however many calls follow, the same way a fast-moving object can only
-    /// cross one tile boundary at a time in a tile-based system without that
-    /// being a bug.
+    /// A spacecraft on its outermost primary has nothing further to escape
+    /// to, and one whose primary names no capture candidates has nothing to
+    /// be captured by; a real Earth-to-Mars trip needs one of each. A single
+    /// call only ever crosses one boundary — a trajectory extreme enough to
+    /// leap two spheres of influence in one update still only advances one
+    /// level per call, catching up over subsequent calls.
     pub fn update(&mut self, tree: &mut FrameTree, epoch: Epoch) -> bool {
         self.try_escape(tree, epoch) || self.try_capture(tree, epoch)
     }
 
     /// The outward half of [`Spacecraft::update`]: whether this spacecraft
-    /// has left its primary's own sphere of influence, bound for whatever
-    /// that primary orbits.
+    /// has left its primary's sphere of influence, bound for whatever that
+    /// primary orbits.
     fn try_escape(&mut self, tree: &mut FrameTree, epoch: Epoch) -> bool {
         let Some(next_primary) = self.primary.orbits.as_deref() else {
             return false;
@@ -216,9 +204,9 @@ impl Spacecraft {
             return false;
         }
 
-        // The state relative to the next primary up, at the same instant —
-        // this is what keeps the spacecraft's actual position from jumping
-        // at the moment its parent changes.
+        // The state relative to the next primary up, at the same instant:
+        // keeps the spacecraft's actual position from jumping when its
+        // parent changes.
         let state_relative_to_next = state_relative_to_primary + primary_relative_to_next;
         let new_elements = OrbitalElements::from_state(
             state_relative_to_next,
@@ -242,8 +230,8 @@ impl Spacecraft {
 
     /// The inward half: whether this spacecraft has come within the sphere
     /// of influence of one of its primary's [`Primary::capture_candidates`]
-    /// — Mars, say, while still described relative to the Sun — and, if so,
-    /// reparents to the nearest one it has entered, the same
+    /// — Mars, for example, while still described relative to the Sun — and
+    /// if so, reparents to the one it has entered, the same
     /// continuity-preserving way [`Spacecraft::try_escape`] does.
     fn try_capture(&mut self, tree: &mut FrameTree, epoch: Epoch) -> bool {
         if self.primary.capture_candidates.is_empty() {
@@ -306,8 +294,7 @@ mod tests {
 
     /// A minimal tree — SSB, Sun, Earth — with Earth held at a fixed offset
     /// rather than propagated, since these tests are about the spacecraft's
-    /// own transition and not about how well Earth's ephemeris matches the
-    /// real planet.
+    /// transition, not Earth's ephemeris accuracy.
     fn earth_sun_tree() -> (FrameTree, Primary) {
         let mut tree = FrameTree::new();
         let root = tree.root();
@@ -322,7 +309,7 @@ mod tests {
         let (mut tree, earth) = earth_sun_tree();
         // Slightly inclined rather than dead equatorial: an orbit exactly in
         // the reference plane is the degenerate case `OrbitalElements`
-        // documents itself as not handling (an undefined ascending node).
+        // does not handle (an undefined ascending node).
         let leo = StateVector::new(DVec3::new(7000.0, 0.0, 0.0), DVec3::new(0.0, 7.3, 1.0));
         let mut spacecraft =
             Spacecraft::spawn(&mut tree, "ISS-like", earth.clone(), leo, Epoch::J2000);
@@ -372,15 +359,15 @@ mod tests {
         assert!(!spacecraft.update(&mut tree, epoch.advanced_by_seconds(3_600.0)));
     }
 
-    /// A minimal tree with Mars added too, and the Sun told to check for
-    /// capture by it — the inward half of the same switch
+    /// A minimal tree with Mars added, and the Sun told to check for capture
+    /// by it: the inward half of the switch
     /// `an_escape_trajectory_hands_the_spacecraft_off_to_the_sun_without_a_jump`
     /// exercises outward.
     fn earth_sun_mars_tree() -> (FrameTree, Primary, FrameId) {
         let (mut tree, earth) = earth_sun_tree();
         let sun_frame = earth.orbits.as_ref().unwrap().frame;
-        // Farther than Earth and on the far side, so its own position is
-        // never mistaken for Earth's.
+        // Farther than Earth and on the far side, so its position is never
+        // mistaken for Earth's.
         let mars_state = StateVector::new(DVec3::new(-2.279e8, 0.0, 0.0), DVec3::ZERO);
         let mars_frame = tree.add("Mars", tree.root(), FixedOffset(mars_state));
 
@@ -400,12 +387,11 @@ mod tests {
         let mars_state = tree.local_state(mars_frame, Epoch::J2000);
 
         // Already heliocentric, on a hyperbolic approach aimed at Mars from
-        // just inside its own sphere of influence (a few hundred thousand
+        // just inside its sphere of influence (a few hundred thousand
         // kilometres, not the ~228 million between Mars and the Sun).
-        // Slightly out of the reference plane rather than dead equatorial,
-        // the same way every other orbit in this crate's tests is: exactly
-        // in the plane is the degenerate case `OrbitalElements` documents
-        // itself as not handling.
+        // Slightly out of the reference plane rather than dead equatorial:
+        // exactly in the plane is the degenerate case `OrbitalElements`
+        // does not handle.
         let approach = StateVector::new(
             mars_state.position_km + DVec3::new(100_000.0, 0.0, 0.0),
             DVec3::new(-3.0, 1.0, 0.4),
@@ -469,9 +455,9 @@ mod tests {
             sun_frame,
             "should be heliocentric well before day 80"
         );
-        // Where that same, unperturbed trip has reached by day 80 — the point
-        // this test puts Mars exactly on, so the real run below is captured
-        // by construction rather than by luck.
+        // Where that unperturbed trip has reached by day 80 — the point this
+        // test puts Mars exactly on, so the run below is captured by
+        // construction, not luck.
         let waypoint = probe_tree.state_relative_to_root(probe.frame, epoch);
 
         let (mut tree, earth) = earth_sun_tree();

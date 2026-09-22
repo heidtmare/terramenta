@@ -1,19 +1,18 @@
 //! Interplanetary mission planning: turning "leave here on this date, arrive
 //! there on that one" into the velocity changes a spacecraft actually needs.
 //!
-//! Two ways to ask the question, because they answer two different things.
-//! [`hohmann_transfer`] takes two orbit radii and nothing about *when* —
-//! it is the always-optimal, always-coplanar, always-circular transfer
-//! textbooks lead with, and it exists here mostly as the number a real plan
-//! should be judged against. [`plan_transfer`] takes the two bodies and the
-//! actual departure and arrival dates, and runs [`crate::lambert::solve`]
-//! against wherever they really are on those dates — eccentric, inclined,
-//! and on whatever schedule the caller asked for rather than the one
-//! Hohmann's ellipse would have chosen. The two agree to within a percent or
-//! so exactly when the dates given to the second happen to land on the
-//! transfer the first describes; asking for a much shorter transfer than
-//! Hohmann's optimal time is what a "fast transfer, more fuel" mission
-//! profile actually costs, made concrete in the delta-v this returns.
+//! Two functions answer two different questions. [`hohmann_transfer`] takes
+//! two orbit radii and nothing about *when* — the always-optimal,
+//! always-coplanar, always-circular transfer textbooks lead with, and here
+//! mostly the number a real plan should be judged against. [`plan_transfer`]
+//! takes the two bodies and actual departure and arrival dates, and runs
+//! [`crate::lambert::solve`] against wherever they really are on those dates
+//! — eccentric, inclined, on whatever schedule the caller asked for rather
+//! than the one Hohmann's ellipse would choose. The two agree to within a
+//! percent or so when the dates given to the second land on the transfer
+//! the first describes; a much shorter transfer than Hohmann's optimal time
+//! is what a "fast transfer, more fuel" mission profile costs, made
+//! concrete in the delta-v this returns.
 
 use glam::DVec3;
 
@@ -28,7 +27,7 @@ pub struct HohmannTransfer {
     /// The burn at the inner orbit, raising a circular orbit onto the
     /// transfer ellipse (or lowering it, leaving one — the same manoeuvre
     /// either way, just signed oppositely, which is why this and
-    /// `arrival_delta_v_km_s` are both plain magnitudes).
+    /// `arrival_delta_v_km_s` are plain magnitudes).
     pub departure_delta_v_km_s: f64,
     /// The burn at the outer orbit, circularizing out of the transfer
     /// ellipse.
@@ -43,15 +42,15 @@ pub struct HohmannTransfer {
 /// The minimum-energy transfer between two circular orbits of radius
 /// `departure_radius_km` and `arrival_radius_km` around a body of
 /// `gm_km3_s2` — Earth and Mars's own mean solar distances and
-/// [`crate::bodies::GM_SUN_KM3_S2`], for the interplanetary case this module
+/// [`crate::bodies::GM_SUN_KM3_S2`] for the interplanetary case this module
 /// exists for, though nothing here is specific to the Sun.
 ///
-/// This is an approximation on two counts a real mission plan cannot always
-/// take: real planetary orbits are eccentric and mutually inclined rather
-/// than perfectly circular and coplanar, and this says nothing about
-/// escaping the departure planet's own gravity well or being captured by the
-/// destination's — both, like [`crate::lambert::solve`] itself, are stated
-/// purely in the heliocentric frame.
+/// An approximation on two counts: real planetary orbits are eccentric and
+/// mutually inclined rather than perfectly circular and coplanar, and this
+/// says nothing about escaping the departure planet's own gravity well or
+/// being captured by the destination's — both, like
+/// [`crate::lambert::solve`] itself, are stated purely in the heliocentric
+/// frame.
 pub fn hohmann_transfer(
     departure_radius_km: f64,
     arrival_radius_km: f64,
@@ -87,14 +86,14 @@ pub struct TransferPlan {
     pub departure: Epoch,
     pub arrival: Epoch,
     pub time_of_flight_seconds: f64,
-    /// The transfer orbit's velocity at departure, less the departing body's
-    /// own — the burn a spacecraft already moving with that body needs to
-    /// get onto the transfer orbit at all.
+    /// The transfer orbit's velocity at departure, less the departing
+    /// body's own — the burn a spacecraft already moving with that body
+    /// needs to get onto the transfer orbit.
     pub departure_delta_v_km_s: DVec3,
     /// The arriving body's own velocity, less the transfer orbit's — the
     /// burn needed to match it, ignoring whatever capture manoeuvre the
-    /// destination's own gravity well demands, which is outside what a
-    /// heliocentric Lambert solution knows about.
+    /// destination's gravity well demands, which a heliocentric Lambert
+    /// solution does not account for.
     pub arrival_delta_v_km_s: DVec3,
 }
 
@@ -113,26 +112,25 @@ impl TransferPlan {
 }
 
 /// Plans a transfer from `origin` to `destination` — frames anywhere in
-/// `tree`, though in practice the planets [`crate::planets`] adds — departing
-/// at `departure` and arriving at `arrival`.
+/// `tree`, though in practice the planets [`crate::planets`] adds —
+/// departing at `departure` and arriving at `arrival`.
 ///
-/// Both bodies' positions are taken relative to `central_body`, the mass the
-/// transfer orbit is shaped by, with `central_body_gm_km3_s2` its `GM` —
+/// Both bodies' positions are taken relative to `central_body`, the mass
+/// the transfer orbit is shaped by, with `central_body_gm_km3_s2` its `GM`.
 /// [`crate::lambert::solve`] needs only the number, not which body it
 /// belongs to, so this is as generic over the central body as
-/// [`hohmann_transfer`] already is over its own `gm_km3_s2`. In practice
+/// [`hohmann_transfer`] is over its own `gm_km3_s2`. In practice
 /// `central_body` is the Sun and `central_body_gm_km3_s2` is
-/// [`crate::bodies::GM_SUN_KM3_S2`] for any transfer between this crate's own
-/// [`crate::planets`] bodies. `direction` resolves the same short-way/long-way
-/// ambiguity [`crate::lambert::solve`] documents —
+/// [`crate::bodies::GM_SUN_KM3_S2`] for any transfer between this crate's
+/// own [`crate::planets`] bodies. `direction` resolves the same
+/// short-way/long-way ambiguity [`crate::lambert::solve`] documents —
 /// [`TransferDirection::Prograde`] for essentially any real interplanetary
 /// transfer, since every planet this crate models orbits the Sun that way.
 ///
-/// Returns `None` for whatever [`crate::lambert::solve`] would: `arrival` at
-/// or before `departure`, or a transfer this simplified two-body geometry
-/// cannot resolve — occasionally a genuine launch-window dead zone, more
-/// often a transfer time too short for the distance involved to be geometry
-/// a real orbit could cover, however hard it burned.
+/// Returns `None` for whatever [`crate::lambert::solve`] would: `arrival`
+/// at or before `departure`, or a transfer this simplified two-body
+/// geometry cannot resolve — occasionally a genuine launch-window dead
+/// zone, more often a transfer time too short for the distance involved.
 #[allow(clippy::too_many_arguments)]
 pub fn plan_transfer(
     tree: &FrameTree,
@@ -184,7 +182,7 @@ fn linspace_epochs(start: Epoch, end: Epoch, steps: usize) -> Vec<Epoch> {
 
 /// Scans a grid of candidate departure/arrival dates for the single cheapest
 /// [`plan_transfer`] solution — for an automated caller that needs one
-/// number rather than the whole grid `terramenta-charta` draws a porkchop
+/// number, rather than the whole grid `terramenta-charta` draws a porkchop
 /// plot from.
 ///
 /// Cost is `O(departure_steps * arrival_steps)` Lambert solves; keep the
@@ -277,11 +275,9 @@ mod tests {
         );
 
         // Earth and Mars only line up for an efficient transfer roughly once
-        // a synodic period (~780 days) — this pair, found by scanning for the
-        // window nearest J2000, is one of those, not an arbitrary date. A
-        // transfer at a random phase can easily cost several times this: the
-        // delta-v is a real function of where the planets actually are on
-        // the dates asked for, not a constant a mission planner can assume.
+        // a synodic period (~780 days) — this pair, found by scanning for
+        // the window nearest J2000, is one of those, not an arbitrary date.
+        // A transfer at a random phase can cost several times this.
         let departure = Epoch::J2000.advanced_by_seconds(1_253.0 * 86_400.0);
         let arrival = departure.advanced_by_seconds(204.0 * 86_400.0);
 
@@ -297,9 +293,8 @@ mod tests {
         )
         .expect("a real Earth-Mars launch window should solve");
 
-        // Close to the heliocentric Hohmann figure for this pair (about
-        // 5.6 km/s combined) — the ballpark a transfer timed to a real
-        // launch window should land near.
+        // Close to the heliocentric Hohmann figure for this pair
+        // (about 5.6 km/s combined).
         assert!((4.0..8.0).contains(&plan.total_delta_v_km_s()), "{plan:?}");
     }
 

@@ -1,18 +1,18 @@
 //! The one rotation shared by every heliocentric model in this crate.
 //!
 //! Planetary orbital elements are conventionally published relative to the
-//! ecliptic — the plane of Earth's own orbit — because that is the plane
-//! nearly everything in the solar system roughly shares. The frame tree, like
+//! ecliptic — the plane of Earth's own orbit, which nearly everything in
+//! the solar system roughly shares. The frame tree, like
 //! `terramenta-globe`'s ECI, is stated relative to the equator instead. A
-//! fixed rotation by the obliquity of the ecliptic — the ~23.4° tilt between
-//! the two — is all that separates them, the same rotation
-//! `terramenta_globe`'s lunar series applies to go from an ecliptic longitude
-//! and latitude to a right ascension and declination.
+//! fixed rotation by the obliquity of the ecliptic (the ~23.4° tilt between
+//! the two) is all that separates them — the same rotation
+//! `terramenta_globe`'s lunar series applies to convert an ecliptic
+//! longitude and latitude to a right ascension and declination.
 //!
-//! This crate does not model precession, so the obliquity used everywhere
-//! here is pinned to its J2000 value rather than tracked as a function of
-//! time — consistent with treating every top-level frame as non-rotating
-//! ICRF axes rather than a frame *of date*.
+//! This crate does not model precession, so the obliquity used here is
+//! pinned to its J2000 value rather than tracked as a function of time —
+//! consistent with treating every top-level frame as non-rotating ICRF axes
+//! rather than a frame *of date*.
 
 use glam::DVec3;
 
