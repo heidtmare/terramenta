@@ -7,7 +7,7 @@ for transfers between two bodies on two given dates, and a patched-conics
 whichever body's gravity currently dominates it, without its position ever
 jumping to show for it.
 
-![A heliocentric plot of a spacecraft's trajectory from Earth to Mars: a yellow dashed transfer arc leaving a blue ring (Earth's orbit) and closing on an orange ring (Mars' orbit), where a Mars marker sits right at the end of the arc](docs/earth_to_mars.svg)
+![A heliocentric plot animating a spacecraft's flight from Earth to Mars: a yellow marker rides a Lambert-solved transfer arc from a launch flash at Earth to a landing flash at Mars, while Earth and Mars markers crawl along their own orbit rings at the pace the cruise actually took](docs/earth_to_mars.svg)
 
 *Not drawn by hand: [`examples/earth_to_mars.rs`](examples/earth_to_mars.rs)
 solves [`mission::plan_transfer`](src/mission.rs)'s underlying
@@ -18,7 +18,9 @@ whole cruise — the same call a real mission clock would make — until it
 crosses into Mars' sphere of influence and is captured. The departure burn
 itself is treated as instantaneous, the same simplification `plan_transfer`'s
 own delta-v already makes; this is a heliocentric-only trip, silent about
-escaping Earth's gravity well.*
+escaping Earth's gravity well. The launch and landing flashes and the moving
+Earth, Mars, and spacecraft markers are animated from that same sampled
+flight data, on a loop.*
 
 ## What it computes
 
