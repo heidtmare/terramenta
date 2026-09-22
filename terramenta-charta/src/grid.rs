@@ -126,6 +126,7 @@ pub fn porkchop_grid(
                 terramenta_solare::mission::plan_transfer(
                     tree,
                     sun,
+                    terramenta_solare::bodies::GM_SUN_KM3_S2,
                     origin,
                     destination,
                     departure,

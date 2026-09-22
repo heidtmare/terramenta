@@ -183,7 +183,10 @@ impl FrameTree {
     ///
     /// # Panics
     ///
-    /// If `parent` is not a frame in this tree.
+    /// If `parent` is not a frame in this tree, or `name` is already taken by
+    /// another frame in it — [`FrameTree::find`] can only ever return one
+    /// [`FrameId`] per name, so a silent second write here would leave the
+    /// first frame in the tree but unreachable by name.
     pub fn add(
         &mut self,
         name: &'static str,
@@ -193,6 +196,10 @@ impl FrameTree {
         assert!(
             (parent.0 as usize) < self.nodes.len(),
             "parent frame {parent:?} is not in this tree"
+        );
+        assert!(
+            !self.by_name.contains_key(name),
+            "a frame named {name:?} already exists in this tree"
         );
         let id = FrameId(self.nodes.len() as u32);
         self.nodes.push(Node {
@@ -251,10 +258,10 @@ impl FrameTree {
     /// This frame's state relative to the root (the SSB) — the sum of every
     /// local state from here up the chain of parents.
     ///
-    /// This is what lets two frames anywhere in the tree be compared at all:
-    /// walking to a shared, fixed reference and differencing there. It is
-    /// also exactly the loss of precision the tree exists to avoid if it is
-    /// used to compare two things that are actually close together — prefer
+    /// This lets two frames anywhere in the tree be compared: walk each to a
+    /// shared, fixed reference and difference there. Comparing two things
+    /// that are actually close together this way reintroduces the precision
+    /// loss the tree exists to avoid — prefer
     /// [`FrameTree::state_of_relative_to`] for that, which never sums a chain
     /// longer than the distance between the two frames' nearest common
     /// ancestor requires.
@@ -437,5 +444,13 @@ mod tests {
         assert_eq!(tree.find("Earth"), Some(earth));
         assert_eq!(tree.find(FrameTree::SSB), Some(tree.root()));
         assert_eq!(tree.find("Pluto"), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "a frame named \"Earth\" already exists")]
+    fn adding_a_second_frame_under_a_taken_name_panics() {
+        let mut tree = FrameTree::new();
+        tree.add("Earth", tree.root(), FixedAtParent);
+        tree.add("Earth", tree.root(), FixedAtParent);
     }
 }

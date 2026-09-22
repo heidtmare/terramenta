@@ -31,9 +31,9 @@ pub const ASTRONOMICAL_UNIT_KM: f64 = 149_597_870.7;
 /// since that is what this crate already has on hand for every body — the
 /// mass ratio and the `GM` ratio are the same number. It is a boundary of
 /// convenience rather than a hard wall (real gravity doesn't end at a
-/// sphere), which is exactly the sense [`crate::spacecraft`] uses it in: a
-/// place to decide which body's frame is the *more useful* one to describe
-/// the spacecraft in, not the moment Earth's pull "switches off".
+/// sphere). [`crate::spacecraft`] uses it as a place to decide which body's
+/// frame is the *more useful* one to describe the spacecraft in, not the
+/// moment Earth's pull "switches off".
 pub fn sphere_of_influence_km(
     gm_body_km3_s2: f64,
     gm_parent_km3_s2: f64,

@@ -17,7 +17,6 @@
 
 use glam::DVec3;
 
-use crate::bodies::GM_SUN_KM3_S2;
 use crate::frame::{FrameId, FrameTree};
 use crate::lambert::{self, TransferDirection};
 use crate::time::Epoch;
@@ -117,22 +116,28 @@ impl TransferPlan {
 /// `tree`, though in practice the planets [`crate::planets`] adds — departing
 /// at `departure` and arriving at `arrival`.
 ///
-/// Both bodies' positions are taken relative to `sun`, since that is the mass
-/// the transfer orbit is actually shaped by; [`crate::lambert::solve`] itself
-/// does not need to know it is the Sun; only [`GM_SUN_KM3_S2`], passed in
-/// here, says so. `direction` resolves the same short-way/long-way ambiguity
-/// [`crate::lambert::solve`] documents — [`TransferDirection::Prograde`] for
-/// essentially any real interplanetary transfer, since every planet this
-/// crate models orbits the Sun that way.
+/// Both bodies' positions are taken relative to `central_body`, the mass the
+/// transfer orbit is shaped by, with `central_body_gm_km3_s2` its `GM` —
+/// [`crate::lambert::solve`] needs only the number, not which body it
+/// belongs to, so this is as generic over the central body as
+/// [`hohmann_transfer`] already is over its own `gm_km3_s2`. In practice
+/// `central_body` is the Sun and `central_body_gm_km3_s2` is
+/// [`crate::bodies::GM_SUN_KM3_S2`] for any transfer between this crate's own
+/// [`crate::planets`] bodies. `direction` resolves the same short-way/long-way
+/// ambiguity [`crate::lambert::solve`] documents —
+/// [`TransferDirection::Prograde`] for essentially any real interplanetary
+/// transfer, since every planet this crate models orbits the Sun that way.
 ///
 /// Returns `None` for whatever [`crate::lambert::solve`] would: `arrival` at
 /// or before `departure`, or a transfer this simplified two-body geometry
 /// cannot resolve — occasionally a genuine launch-window dead zone, more
 /// often a transfer time too short for the distance involved to be geometry
 /// a real orbit could cover, however hard it burned.
+#[allow(clippy::too_many_arguments)]
 pub fn plan_transfer(
     tree: &FrameTree,
-    sun: FrameId,
+    central_body: FrameId,
+    central_body_gm_km3_s2: f64,
     origin: FrameId,
     destination: FrameId,
     departure: Epoch,
@@ -141,14 +146,14 @@ pub fn plan_transfer(
 ) -> Option<TransferPlan> {
     let time_of_flight_seconds = arrival.to_unix_seconds() - departure.to_unix_seconds();
 
-    let departure_state = tree.state_of_relative_to(origin, sun, departure);
-    let arrival_state = tree.state_of_relative_to(destination, sun, arrival);
+    let departure_state = tree.state_of_relative_to(origin, central_body, departure);
+    let arrival_state = tree.state_of_relative_to(destination, central_body, arrival);
 
     let solution = lambert::solve(
         departure_state.position_km,
         arrival_state.position_km,
         time_of_flight_seconds,
-        GM_SUN_KM3_S2,
+        central_body_gm_km3_s2,
         direction,
     )?;
 
@@ -186,9 +191,11 @@ fn linspace_epochs(start: Epoch, end: Epoch, steps: usize) -> Vec<Epoch> {
 /// axes coarse for a caller on a tight startup budget. Returns `None` only
 /// if nothing on the grid solves, which shouldn't happen for an Earth-Mars
 /// grid spanning a full synodic period (~780 days) of departure dates.
+#[allow(clippy::too_many_arguments)]
 pub fn find_best_transfer_window(
     tree: &FrameTree,
-    sun: FrameId,
+    central_body: FrameId,
+    central_body_gm_km3_s2: f64,
     origin: FrameId,
     destination: FrameId,
     departure_start: Epoch,
@@ -206,7 +213,16 @@ pub fn find_best_transfer_window(
         .iter()
         .flat_map(|&departure| arrivals.iter().map(move |&arrival| (departure, arrival)))
         .filter_map(|(departure, arrival)| {
-            plan_transfer(tree, sun, origin, destination, departure, arrival, direction)
+            plan_transfer(
+                tree,
+                central_body,
+                central_body_gm_km3_s2,
+                origin,
+                destination,
+                departure,
+                arrival,
+                direction,
+            )
         })
         .min_by(|a, b| {
             a.total_delta_v_km_s()
@@ -218,6 +234,7 @@ pub fn find_best_transfer_window(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bodies::GM_SUN_KM3_S2;
     use crate::solar_system;
 
     const AU_KM: f64 = 1.495_978_707e8;
@@ -262,16 +279,16 @@ mod tests {
         // Earth and Mars only line up for an efficient transfer roughly once
         // a synodic period (~780 days) — this pair, found by scanning for the
         // window nearest J2000, is one of those, not an arbitrary date. A
-        // transfer at a random phase can easily cost several times this,
-        // which is this module's own point: the delta-v is a real function
-        // of where the planets actually are on the dates asked for, not a
-        // constant a mission planner can assume.
+        // transfer at a random phase can easily cost several times this: the
+        // delta-v is a real function of where the planets actually are on
+        // the dates asked for, not a constant a mission planner can assume.
         let departure = Epoch::J2000.advanced_by_seconds(1_253.0 * 86_400.0);
         let arrival = departure.advanced_by_seconds(204.0 * 86_400.0);
 
         let plan = plan_transfer(
             &tree,
             sun,
+            GM_SUN_KM3_S2,
             earth,
             mars,
             departure,
@@ -281,8 +298,8 @@ mod tests {
         .expect("a real Earth-Mars launch window should solve");
 
         // Close to the heliocentric Hohmann figure for this pair (about
-        // 5.6 km/s combined), which is exactly what a transfer timed to a
-        // real launch window should be near.
+        // 5.6 km/s combined) — the ballpark a transfer timed to a real
+        // launch window should land near.
         assert!((4.0..8.0).contains(&plan.total_delta_v_km_s()), "{plan:?}");
     }
 
@@ -307,6 +324,7 @@ mod tests {
         let plan = find_best_transfer_window(
             &tree,
             sun,
+            GM_SUN_KM3_S2,
             earth,
             mars,
             departure_start,
@@ -339,6 +357,7 @@ mod tests {
             plan_transfer(
                 &tree,
                 sun,
+                GM_SUN_KM3_S2,
                 earth,
                 mars,
                 departure,

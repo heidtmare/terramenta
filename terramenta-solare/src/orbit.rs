@@ -6,10 +6,10 @@
 //! one massless body, no perturbation from anything else — which is exact for
 //! a planet's motion around the Sun to the precision the tables in
 //! [`crate::planets`] bother with, and exact for a spacecraft for as long as
-//! one body's gravity dominates it, which is the whole premise of
-//! [`crate::spacecraft`]'s sphere-of-influence switch: outside of that switch,
-//! nothing here needs a perturbation term because nothing here is claiming to
-//! model a transfer under two bodies' gravity at once.
+//! one body's gravity dominates it — the premise
+//! [`crate::spacecraft`]'s sphere-of-influence switch relies on. Outside of
+//! that switch, nothing here needs a perturbation term because nothing here
+//! is claiming to model a transfer under two bodies' gravity at once.
 
 use glam::DVec3;
 

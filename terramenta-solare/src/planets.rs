@@ -3,8 +3,8 @@
 //! Each is stated the way the JPL low-precision planetary theory publishes
 //! it: mean orbital elements at J2000.0 and their rate per Julian century,
 //! valid from 1800 to 2050 to a few arcseconds — plenty for a scene, not
-//! enough for a real mission, and in that respect exactly the kind of model
-//! `terramenta-globe`'s own sun and moon already are. A planet's own gravity
+//! enough for a real mission — the same approach `terramenta-globe`'s own sun
+//! and moon already take. A planet's own gravity
 //! perturbs the others' orbits at a level these linear rates already fold in
 //! as an average; what they do not capture is the day-to-day wobble that
 //! comes from *where* the perturbing planets currently are, which is why this

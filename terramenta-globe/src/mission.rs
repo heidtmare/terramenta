@@ -201,6 +201,7 @@ fn search_missions(
         let plan = find_best_transfer_window(
             solar_system.tree(),
             sun_frame,
+            GM_SUN_KM3_S2,
             origin_frame,
             destination_frame,
             search_start,

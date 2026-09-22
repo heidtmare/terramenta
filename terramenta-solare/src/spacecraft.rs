@@ -66,6 +66,9 @@ pub struct Primary {
 }
 
 impl Primary {
+    /// The last stop this crate models: a primary with nothing left to
+    /// escape to, which is what tells [`Spacecraft::update`] to stop checking
+    /// for an escape.
     pub fn sun(frame: FrameId) -> Self {
         Self {
             frame,
@@ -75,22 +78,25 @@ impl Primary {
         }
     }
 
-    pub fn earth(frame: FrameId, sun: FrameId) -> Self {
+    /// A primary that itself orbits `parent` — the general case every body
+    /// but the Sun is: [`Primary::earth`] and [`Primary::mars`] are both just
+    /// this with their own `gm_km3_s2`, and any body this crate adds later
+    /// gets the same one-liner rather than its own hand-written constructor.
+    pub fn orbiting(frame: FrameId, gm_km3_s2: f64, parent: Primary) -> Self {
         Self {
             frame,
-            gm_km3_s2: bodies::GM_EARTH_KM3_S2,
-            orbits: Some(Box::new(Self::sun(sun))),
+            gm_km3_s2,
+            orbits: Some(Box::new(parent)),
             capture_candidates: Vec::new(),
         }
     }
 
+    pub fn earth(frame: FrameId, sun: FrameId) -> Self {
+        Self::orbiting(frame, bodies::GM_EARTH_KM3_S2, Self::sun(sun))
+    }
+
     pub fn mars(frame: FrameId, sun: FrameId) -> Self {
-        Self {
-            frame,
-            gm_km3_s2: bodies::GM_MARS_KM3_S2,
-            orbits: Some(Box::new(Self::sun(sun))),
-            capture_candidates: Vec::new(),
-        }
+        Self::orbiting(frame, bodies::GM_MARS_KM3_S2, Self::sun(sun))
     }
 
     /// Attaches the bodies a spacecraft on this primary should be checked
@@ -131,6 +137,11 @@ pub struct Spacecraft {
 impl Spacecraft {
     /// Adds a spacecraft to the tree, orbiting `primary` on the given state
     /// relative to it.
+    ///
+    /// # Panics
+    ///
+    /// If `name` is already taken by another frame in `tree` — see
+    /// [`FrameTree::add`].
     pub fn spawn(
         tree: &mut FrameTree,
         name: &'static str,
