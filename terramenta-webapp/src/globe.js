@@ -428,6 +428,36 @@ export const ephemerisObjects = (id) => required().ephemerisObjects(id);
  */
 export const ephemerisGeometry = (id) => required().ephemerisGeometry(id);
 
+// --- Missions ----------------------------------------------------------------
+
+/**
+ * Searches for a launch window and, once the simulated clock reaches it,
+ * launches a spacecraft on it — replacing any mission already under this id.
+ *
+ * The search and the launch both run against the simulated clock, so
+ * `setTimeScale`/`setClock` affect how soon a launch happens. A mission that
+ * fails to find a window still returns from this call; the failure arrives on
+ * `state.missions` as `status: "failed"` instead, with `reason` saying why.
+ *
+ * ```js
+ * // A default Earth-Mars mission, searched for from wherever the simulated
+ * // clock is right now:
+ * addMission("mars-1", {});
+ * // A wider search, further out:
+ * addMission("mars-2", { departureSearchDays: 400, arrivalSearchEndDays: 900 });
+ * ```
+ *
+ * Options: `origin`, `destination` (frame names `terramenta_solare::solar_system`
+ * adds — `"Earth"`/`"Mars"` if omitted, the only pair a mission can actually fly
+ * between), `departureSearchDays`, `arrivalSearchStartDays`, `arrivalSearchEndDays`,
+ * `searchSteps` and `parkingAltitudeKm`.
+ *
+ * Returns whether the options could be read.
+ */
+export const addMission = (id, options) => required().addMission(id, options);
+
+export const removeMission = (id) => required().removeMission(id);
+
 // --- Geometry --------------------------------------------------------------
 
 /**
@@ -533,8 +563,15 @@ export const setKeyboardEnabled = (enabled) => required().setKeyboardEnabled(ena
  * Registers the callback the globe reports its state to.
  *
  * The snapshot is `{camera, frame, sun, imagery, vectorTiles, overlays,
- * ephemerides, hud, cursor, keyboard}`; see
+ * ephemerides, missions, hud, cursor, keyboard}`; see
  * `readout.js` and `panel.js` for what is in each. Only one listener is kept,
  * so this app fans it out itself rather than registering twice.
+ *
+ * `missions` is `[{id, origin, destination, status, departureUnixSeconds,
+ * arrivalUnixSeconds, departureDeltaVKmS, arrivalDeltaVKmS, orbiting, reason},
+ * ...]`, one entry per `addMission` call still up. `status` is `"searching"`,
+ * `"waiting"`, `"enroute"`, `"arrived"` or `"failed"`; the fields after it are
+ * `null` until the status they belong to is reached. `mission.js` is where
+ * this app reads it.
  */
 export const onState = (callback) => required().onState(callback);

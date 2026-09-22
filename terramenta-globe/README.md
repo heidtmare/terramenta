@@ -688,6 +688,42 @@ The readout shows both speeds for whatever is being followed, so the difference
 is a number rather than a claim: the ISS is about 7.66 km/s inertial and 7.36
 over the ground, and a geostationary satellite is 3.07 and zero.
 
+## Missions
+
+A mission is a real Earth-to-Mars trip, flown rather than animated: give a
+body pair and a search window, and [`mission.rs`](src/mission.rs) scores a
+grid of Lambert transfers with [`terramenta-solare`](../terramenta-solare/)'s
+own solver, waits for the simulated clock to reach the cheapest departure it
+finds, and launches a spacecraft onto it — the same two-body, patched-conics
+model [`terramenta-solare::spacecraft`](../terramenta-solare/src/spacecraft.rs)
+runs for [`docs/earth_to_mars.svg`](../terramenta-solare/docs/earth_to_mars.svg),
+now driven by the globe's own clock instead of a fixed timeline. It escapes the
+origin's sphere of influence, cruises heliocentric, and is captured the moment
+it crosses the destination's.
+
+```js
+globe.addMission("mars-1", {});  // Earth → Mars, searched for from now
+globe.addMission("mars-2", { origin: "Earth", destination: "Mars", departureSearchDays: 400 });
+globe.removeMission("mars-1");
+
+globe.onState(({missions}) => {
+  // [{id, origin, destination, status, departureUnixSeconds, arrivalUnixSeconds,
+  //   departureDeltaVKmS, arrivalDeltaVKmS, orbiting, reason}, ...]
+  // status is "searching", "waiting", "enroute", "arrived" or "failed".
+});
+```
+
+A mission draws a small glowing marker once it launches — switch to the
+heliocentric view (`globe.setView("heliocentric")`) to see it. It is a plain
+`SolarBody` ([`solar.rs`](src/solar.rs)), the same component the Sun, Earth and
+Mars themselves are drawn through, so it never needs to be told where it is:
+`place_solar_bodies` reads it straight out of the frame tree, wherever in it a
+capture has most recently reparented the spacecraft.
+
+`terramenta-webapp`'s Mission tab is the reference: a porkchop plot to choose
+a window by eye, and a Launch button underneath it that sends the pair just
+plotted off for real.
+
 ## Placemarks
 
 Two icons stand on the globe from the moment it starts: the **subsolar** point,

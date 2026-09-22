@@ -494,14 +494,21 @@ body.panel-collapsed #panel {
   padding: 0.5rem 0.6rem;
   background: var(--surface-raised);
   border: 1px solid var(--line);
-  /* A status stripe down the side: loading, ready, or failed, without a row of
-     its own and without the eye having to read anything to see which. */
+  /* A status stripe down the side — loading/searching/waiting, ready/enroute,
+     arrived, or failed — without a row of its own and without the eye having
+     to read anything to see which. Shared between an overlay's own statuses
+     and a mission's, since both are drawn as `.layer` rows. */
   border-left: 2px solid var(--ink-faint);
   border-radius: 2px;
 }
 
-.layer[data-status="ready"] {
+.layer[data-status="ready"],
+.layer[data-status="enroute"] {
   border-left-color: var(--accent);
+}
+
+.layer[data-status="arrived"] {
+  border-left-color: #7ef0c8;
 }
 
 .layer[data-status="failed"] {
@@ -514,10 +521,18 @@ body.panel-collapsed #panel {
   gap: 0.5rem;
 }
 
-/* The name takes the room; the swatch keeps its own. */
-.layer-head .toggle {
+/* The name takes the room; the swatch, or a mission's Remove button, keeps
+   its own. */
+.layer-head .toggle,
+.layer-head .mission-title {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+.mission-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .layer-head .toggle span {

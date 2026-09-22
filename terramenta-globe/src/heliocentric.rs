@@ -4,11 +4,17 @@
 //!
 //! Everything here draws through the same [`crate::solar::SolarBody`] and
 //! [`crate::solar::place_solar_bodies`] machinery a spacecraft already used —
-//! these are just three more entities carrying that component, scaled in
-//! astronomical units instead of Earth radii once [`crate::view::ViewState`]
-//! says the view is heliocentric. What's new is a mesh to look at (a
-//! spacecraft draws nothing of its own) and a camera rig sized for the
-//! distances between planets rather than the distance to a horizon.
+//! the Sun, Earth and Mars are just three more entities carrying that
+//! component, scaled in astronomical units instead of Earth radii once
+//! [`crate::view::ViewState`] says the view is heliocentric. What's new is a
+//! mesh to look at and a camera rig sized for the distances between planets
+//! rather than the distance to a horizon.
+//!
+//! [`spawn_mission_visuals`] adds a fourth kind of mesh, for a spacecraft
+//! [`crate::mission::launch_missions`] spawns: that system builds the physics
+//! half only ([`crate::solar::SolarBody`], [`crate::solar::TrackedSpacecraft`],
+//! a bare [`Transform`]), so the crate's physics/drawing split holds for a
+//! mission too.
 //!
 //! At true scale a planet is a few hundred-thousandths of an astronomical
 //! unit across — invisible from a vantage that sees all three bodies at once.
@@ -25,10 +31,10 @@ use bevy::render::render_resource::{
 };
 use bevy::shader::ShaderRef;
 
-use crate::solar::{FloatingOrigin, SolarBody, SolarSystem, floating_offset};
+use crate::solar::{FloatingOrigin, SolarBody, SolarSystem, TrackedSpacecraft, floating_offset};
 use crate::starfield::{self, Starfield, StarfieldMaterial};
 use crate::sun::Sun;
-use crate::view::in_heliocentric_view;
+use crate::view::{ViewState, in_heliocentric_view};
 use terramenta_solare::{Epoch, FrameId};
 
 /// The Sun's visual radius, wildly exaggerated from its true ~0.00465 AU so
@@ -41,6 +47,10 @@ const SUN_CORONA_RADIUS_AU: f32 = SUN_VISUAL_RADIUS_AU * 1.9;
 /// Mars's real 1.88:1 size ratio between the two.
 const EARTH_VISUAL_RADIUS_AU: f32 = 0.006;
 const MARS_VISUAL_RADIUS_AU: f32 = 0.0032;
+/// A mission's own marker — smaller than either planet, so it never reads as
+/// a third world. Drawn unlit, unlike the planets: a sphere this small has no
+/// shading to speak of, only whichever half happens to face the sun.
+const SPACECRAFT_VISUAL_RADIUS_AU: f32 = 0.0016;
 /// Inside [`crate::view`]'s far plane (20 AU) but well outside anything the
 /// heliocentric camera can orbit out to ([`HELIO_MAX_DISTANCE_AU`]).
 const STARFIELD_RADIUS_AU: f32 = 15.0;
@@ -59,9 +69,11 @@ const ZOOM_SENSITIVITY: f32 = 0.15;
 const SMOOTHING: f32 = 14.0;
 const PITCH_LIMIT: f32 = std::f32::consts::FRAC_PI_2 - 0.02;
 
-/// Marks the three [`SolarBody`] entities this module owns — the Sun, Earth
-/// and Mars meshes — so [`crate::view::toggle_body_visibility`] can show or
-/// hide exactly these without touching a spacecraft's own [`SolarBody`].
+/// Marks every mesh this module wants shown only in the heliocentric view —
+/// the Sun, Earth and Mars spawned at startup, and a mission's marker from
+/// [`spawn_mission_visuals`] — so [`crate::view::toggle_body_visibility`] can
+/// show or hide exactly those without touching a spacecraft's own
+/// physics-only [`SolarBody`].
 #[derive(Component)]
 pub(crate) struct HeliocentricVisual;
 
@@ -288,6 +300,7 @@ impl Plugin for HeliocentricPlugin {
         .add_systems(
             Update,
             (
+                spawn_mission_visuals,
                 heliocentric_mouse_input.run_if(in_heliocentric_view),
                 heliocentric_keyboard_input
                     .run_if(crate::api::keyboard_enabled)
@@ -391,6 +404,47 @@ fn spawn_heliocentric_bodies(
         Transform::default(),
         Visibility::Hidden,
     ));
+}
+
+/// Gives every newly-launched [`TrackedSpacecraft`] a marker to draw.
+/// [`crate::mission::launch_missions`] spawns the physics half only — the
+/// same split [`crate::solar::spawn_spacecraft`] keeps for every body, with
+/// [`spawn_heliocentric_bodies`] handling the drawing side for the Sun,
+/// Earth and Mars. Matched by absence of [`HeliocentricVisual`] rather than
+/// [`Added<TrackedSpacecraft>`], so a mission launched the same tick
+/// [`HeliocentricPlugin`] starts is still caught — `Added` only sees
+/// insertions from ticks after a query starts tracking.
+///
+/// Visibility is set from [`ViewState`] here rather than left to
+/// [`crate::view::toggle_body_visibility`], which only runs on a view
+/// change: a mission launched while already in the heliocentric view would
+/// otherwise stay hidden until the next switch.
+fn spawn_mission_visuals(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    view: Res<ViewState>,
+    spacecraft: Query<Entity, (With<TrackedSpacecraft>, Without<HeliocentricVisual>)>,
+) {
+    let visibility = if view.is_heliocentric() {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    };
+    for entity in &spacecraft {
+        commands.entity(entity).insert((
+            Name::new("Mission spacecraft"),
+            HeliocentricVisual,
+            Mesh3d(meshes.add(Sphere::new(SPACECRAFT_VISUAL_RADIUS_AU))),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: Color::srgb(1.0, 0.92, 0.55),
+                emissive: bevy::color::LinearRgba::rgb(3.2, 2.8, 1.2),
+                unlit: true,
+                ..default()
+            })),
+            visibility,
+        ));
+    }
 }
 
 fn heliocentric_mouse_input(

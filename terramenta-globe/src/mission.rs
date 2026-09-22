@@ -24,8 +24,16 @@
 //! origin's finite sphere of influence is enough, given Lambert-transfer
 //! sensitivity to departure velocity, to miss the destination by many SOI
 //! radii.
+//!
+//! A mission's own condition is also read out as [`MissionInfo`], flattened
+//! for [`crate::api::GlobeState`] through [`MissionReport`] so an interface
+//! can show a launch without reaching into this module's state machine.
+//! [`crate::heliocentric`] draws the spacecraft; this module still spawns
+//! only the physics half.
 
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
+use serde::Serialize;
 use terramenta_solare::bodies::{GM_SUN_KM3_S2, sphere_of_influence_km};
 use terramenta_solare::lambert::TransferDirection;
 use terramenta_solare::mission::{TransferPlan, find_best_transfer_window};
@@ -87,9 +95,13 @@ enum MissionState {
     },
     Launched {
         entity: Entity,
+        plan: TransferPlan,
+        destination_frame: FrameId,
         last_primary: FrameId,
     },
-    Failed,
+    Failed {
+        reason: &'static str,
+    },
 }
 
 struct Mission {
@@ -186,7 +198,9 @@ fn search_missions(
                 "mission {}: unknown body — origin {:?}, destination {:?}",
                 mission.request.id, mission.request.origin, mission.request.destination
             );
-            mission.state = MissionState::Failed;
+            mission.state = MissionState::Failed {
+                reason: "unknown body",
+            };
             continue;
         };
 
@@ -237,7 +251,9 @@ fn search_missions(
                     "mission {}: no {}-{} transfer window found in the search range",
                     mission.request.id, mission.request.origin, mission.request.destination
                 );
-                MissionState::Failed
+                MissionState::Failed {
+                    reason: "no transfer window found in the search range",
+                }
             }
         };
     }
@@ -274,13 +290,17 @@ fn launch_missions(
 
         let Some(origin_primary) = primary_for(&mission.request.origin, origin_frame, sun_frame)
         else {
-            mission.state = MissionState::Failed;
+            mission.state = MissionState::Failed {
+                reason: "unknown body",
+            };
             continue;
         };
         let Some(destination_primary) =
             primary_for(&mission.request.destination, destination_frame, sun_frame)
         else {
-            mission.state = MissionState::Failed;
+            mission.state = MissionState::Failed {
+                reason: "unknown body",
+            };
             continue;
         };
 
@@ -329,14 +349,17 @@ fn launch_missions(
         let entity = commands.spawn(bundle).id();
         mission.state = MissionState::Launched {
             entity,
+            plan,
+            destination_frame,
             last_primary: origin_frame,
         };
     }
 }
 
 /// Logs each launched mission's primary body the moment it changes — the
-/// only observable proof, absent any visual, that
-/// [`crate::solar::update_spacecraft`] is driving
+/// same transition [`MissionReport`]'s `"enroute"`/`"arrived"` status and
+/// [`crate::heliocentric`]'s drawing also read off
+/// [`crate::solar::update_spacecraft`] driving
 /// [`TrackedSpacecraft::update`](terramenta_solare::spacecraft::Spacecraft::update):
 /// origin → Sun (escape), then Sun → destination (capture).
 fn log_mission_progress(
@@ -349,6 +372,7 @@ fn log_mission_progress(
         let MissionState::Launched {
             entity,
             last_primary,
+            ..
         } = &mut mission.state
         else {
             continue;
@@ -418,6 +442,118 @@ fn civil_from_days(days_since_j2000: i64) -> (i64, u32, u32) {
         month_prime - 9
     } as u32;
     (if month <= 2 { year + 1 } else { year }, month, day)
+}
+
+// ---------------------------------------------------------------------------
+// State reported to an interface
+// ---------------------------------------------------------------------------
+
+/// One mission, as an interface sees it — flattened out of whichever
+/// [`MissionState`] the request has reached, so a caller can read it without
+/// knowing this module's own state machine.
+#[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MissionInfo {
+    pub id: String,
+    pub origin: String,
+    pub destination: String,
+    /// `"searching"`, `"waiting"`, `"enroute"`, `"arrived"` or `"failed"`.
+    pub status: &'static str,
+    /// Set from `"waiting"` onward — a plan has been found by then.
+    pub departure_unix_seconds: Option<f64>,
+    pub arrival_unix_seconds: Option<f64>,
+    pub departure_delta_v_km_s: Option<f64>,
+    pub arrival_delta_v_km_s: Option<f64>,
+    /// Set only for `"enroute"` or `"arrived"` — the body the spacecraft
+    /// currently orbits, `terramenta_solare::solar_system`'s own name for it.
+    pub orbiting: Option<String>,
+    /// Set only for `"failed"`.
+    pub reason: Option<&'static str>,
+}
+
+impl MissionInfo {
+    fn new(request: &MissionRequest, status: &'static str) -> Self {
+        Self {
+            id: request.id.clone(),
+            origin: request.origin.clone(),
+            destination: request.destination.clone(),
+            status,
+            departure_unix_seconds: None,
+            arrival_unix_seconds: None,
+            departure_delta_v_km_s: None,
+            arrival_delta_v_km_s: None,
+            orbiting: None,
+            reason: None,
+        }
+    }
+
+    fn with_plan(mut self, plan: &TransferPlan) -> Self {
+        self.departure_unix_seconds = Some(plan.departure.to_unix_seconds());
+        self.arrival_unix_seconds = Some(plan.arrival.to_unix_seconds());
+        self.departure_delta_v_km_s = Some(plan.departure_delta_v_magnitude_km_s());
+        self.arrival_delta_v_km_s = Some(plan.arrival_delta_v_magnitude_km_s());
+        self
+    }
+}
+
+impl Mission {
+    fn describe(&self, solar_system: &SolarSystem, spacecraft: &Query<&TrackedSpacecraft>) -> MissionInfo {
+        match &self.state {
+            MissionState::Searching => MissionInfo::new(&self.request, "searching"),
+            MissionState::Waiting { plan, .. } => {
+                MissionInfo::new(&self.request, "waiting").with_plan(plan)
+            }
+            MissionState::Launched {
+                entity,
+                plan,
+                destination_frame,
+                ..
+            } => {
+                let orbiting = spacecraft
+                    .get(*entity)
+                    .ok()
+                    .map(|craft| craft.0.primary_frame());
+                let arrived = orbiting == Some(*destination_frame);
+                let mut info =
+                    MissionInfo::new(&self.request, if arrived { "arrived" } else { "enroute" })
+                        .with_plan(plan);
+                info.orbiting = orbiting.map(|frame| solar_system.tree().name(frame).to_string());
+                info
+            }
+            MissionState::Failed { reason } => {
+                let mut info = MissionInfo::new(&self.request, "failed");
+                info.reason = Some(reason);
+                info
+            }
+        }
+    }
+}
+
+impl MissionSettings {
+    fn describe(&self, solar_system: &SolarSystem, spacecraft: &Query<&TrackedSpacecraft>) -> Vec<MissionInfo> {
+        self.missions
+            .iter()
+            .map(|mission| mission.describe(solar_system, spacecraft))
+            .collect()
+    }
+}
+
+/// What the state snapshot reads missions through: [`MissionSettings`]
+/// itself, the [`TrackedSpacecraft`] query for which body a launched mission
+/// currently orbits, and [`SolarSystem`] to name it. One parameter rather
+/// than three because a system may only take sixteen, same as
+/// [`crate::placemark::PlacemarkPicks`].
+#[derive(SystemParam)]
+pub struct MissionReport<'w, 's> {
+    settings: Res<'w, MissionSettings>,
+    solar_system: Res<'w, SolarSystem>,
+    spacecraft: Query<'w, 's, &'static TrackedSpacecraft>,
+}
+
+impl MissionReport<'_, '_> {
+    pub fn describe(&self) -> Vec<MissionInfo> {
+        self.settings.describe(&self.solar_system, &self.spacecraft)
+    }
 }
 
 #[cfg(test)]
@@ -537,7 +673,7 @@ mod tests {
         let settings = app.world().resource::<MissionSettings>();
         assert!(matches!(
             settings.missions.first().map(|mission| &mission.state),
-            Some(MissionState::Failed)
+            Some(MissionState::Failed { .. })
         ));
     }
 }

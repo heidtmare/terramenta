@@ -20,7 +20,7 @@
 //! recolour a layer and only the features that did not request a colour
 //! move.
 //!
-//! **What is drawn and what is handed on.** Five of the members are paint,
+//! **What is drawn and what is handed on.** Seven of the members are paint,
 //! and the globe draws them: `marker-size`, `marker-color`, `stroke`,
 //! `stroke-opacity`, `stroke-width`, `fill` and `fill-opacity`. Three are not
 //! paint — `title`, `description` and `marker-symbol` — and the globe has no

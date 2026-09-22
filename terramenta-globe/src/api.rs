@@ -36,7 +36,7 @@ use crate::gnc::{FrameReport, GncSettings};
 use crate::heliocentric::HeliocentricCamera;
 use crate::hud::HudSettings;
 use crate::imagery::{ImageryLayer, ImagerySettings};
-use crate::mission::MissionSettings;
+use crate::mission::{MissionReport, MissionSettings};
 use crate::overlays::{self, OverlaySettings};
 use crate::placemark::{self, PlacemarkSettings};
 use crate::solar::SolarSystem;
@@ -68,7 +68,7 @@ pub use crate::gnc::{
     MIN_GRATICULE_STEP, MIN_TRACK_ORBITS, SatelliteFocus, ecef_to_eci_quat, eci_to_ecef_dcm,
     eci_to_ecef_quat, velocity_eci_to_ecef,
 };
-pub use crate::mission::MissionRequest;
+pub use crate::mission::{MissionInfo, MissionRequest};
 pub use crate::overlays::{
     AltitudeMode, MIN_REFRESH_SECONDS, OverlayAltitude, OverlayInfo, OverlayRequest, OverlaySource,
     OverlayStyle, PickedFeature,
@@ -349,6 +349,9 @@ pub struct GlobeState {
     pub overlays: OverlaysState,
     /// Every ephemeris layer, in the order they were added.
     pub ephemerides: EphemerisState,
+    /// Every mission requested via [`GlobeCommand::AddMission`], in the order
+    /// they were added.
+    pub missions: Vec<MissionInfo>,
     /// The icons standing on the points the sun and the moon are overhead.
     pub placemarks: PlacemarksState,
     pub hud: HudState,
@@ -759,6 +762,19 @@ impl Plugin for ApiPlugin {
     }
 }
 
+/// [`OverlaySettings`] and [`EphemerisSettings`], read rather than written,
+/// bundled with [`MissionReport`] for the reason [`LayerSources`] bundles
+/// their writable side: a system may only take sixteen params, and
+/// [`publish_state`] is already at its limit. Destructured back into its
+/// three fields at the top of [`publish_state`], same as [`LayerSources`] is
+/// in [`apply_commands`].
+#[derive(SystemParam)]
+pub(crate) struct LayerReports<'w, 's> {
+    overlays: Res<'w, OverlaySettings>,
+    ephemerides: Res<'w, EphemerisSettings>,
+    missions: MissionReport<'w, 's>,
+}
+
 /// [`OverlaySettings`], [`EphemerisSettings`] and [`MissionSettings`] each
 /// take an `add`/`remove` request the same way; bundled into one
 /// [`SystemParam`] so [`apply_commands`] stays under the sixteen params a
@@ -1031,8 +1047,7 @@ pub(crate) fn publish_state(
     tiles: Res<TileCache>,
     vector_settings: Res<VectorTileSettings>,
     vector_cache: Res<VectorTileCache>,
-    overlays: Res<OverlaySettings>,
-    ephemerides: Res<EphemerisSettings>,
+    layers: LayerReports<'_, '_>,
     placemarks: placemark::PlacemarkPicks,
     hud: Res<HudSettings>,
     input: Res<GlobeInput>,
@@ -1042,6 +1057,11 @@ pub(crate) fn publish_state(
     let Some(orbit) = camera.iter().next() else {
         return;
     };
+    let LayerReports {
+        overlays,
+        ephemerides,
+        missions,
+    } = layers;
 
     let state = GlobeState {
         camera: CameraState {
@@ -1083,6 +1103,7 @@ pub(crate) fn publish_state(
             pinned: overlays::pinned(&overlays),
         },
         ephemerides: ephemeris::describe(&ephemerides, sun.unix_seconds),
+        missions: missions.describe(),
         placemarks: placemarks.describe(&sun),
         hud: HudState {
             visible: hud.visible,

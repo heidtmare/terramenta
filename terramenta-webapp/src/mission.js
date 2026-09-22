@@ -1,19 +1,27 @@
 /**
- * The porkchop plot: total delta-v as a contoured field over departure date
+ * Mission planning and mission flying, in that order.
+ *
+ * The porkchop plot is total delta-v as a contoured field over departure date
  * against arrival date, for a Lambert transfer between two of
  * `terramenta-solare`'s bodies — the standard tool an interplanetary launch
  * window is actually chosen with, because the cheapest date to leave and the
- * cheapest date to arrive are a joint choice, not two separate ones.
+ * cheapest date to arrive are a joint choice, not two separate ones. It owns
+ * its own state entirely: there is no globe snapshot a porkchop plot could be
+ * read off, since what it draws depends on nothing the globe is currently
+ * doing. It computes once, on request, into an inline SVG built by hand —
+ * `dom.js`'s `el()` creates HTML elements, which is not what an `<svg>`
+ * needs, so this file has its own tiny version of it.
  *
- * Unlike the rest of the panel this owns its own state entirely: there is no
- * globe snapshot a porkchop plot could be read off, since what it draws
- * depends on nothing the globe is currently doing. It computes once, on
- * request, into an inline SVG built by hand — `dom.js`'s `el()` creates HTML
- * elements, which is not what an `<svg>` needs, so this file has its own
- * tiny version of it.
+ * "Launch" is the rest of the panel's own pattern again — `globe.addMission`
+ * sent on a click, a list rebuilt from `state.missions` the way
+ * `ephemeris.js` rebuilds its layer list from `state.ephemerides` — because
+ * once a mission is up, what it is doing *is* something the globe is
+ * currently doing.
  */
 
 import { el, row, section } from "./dom.js";
+import { clock, duration } from "./format.js";
+import * as globe from "./globe.js";
 import { button } from "./widgets.js";
 import * as porkchop from "./porkchop.js";
 
@@ -70,7 +78,7 @@ function isoDate(unixSeconds) {
   return new Date(unixSeconds * 1000).toISOString().slice(0, 10);
 }
 
-export function mountMission() {
+export function mountMission(bind) {
   const originSelect = el(
     "select",
     { class: "select" },
@@ -286,7 +294,115 @@ export function mountMission() {
     ),
   );
 
-  return controls;
+  const launch = mountLaunch(bind, originSelect, destinationSelect);
+
+  return el("div", {}, controls, launch);
+}
+
+/**
+ * Launching a mission on the pair `originSelect`/`destinationSelect` are set
+ * to, and the list of every one still up — searching, waiting on its
+ * departure date, en route, arrived, or failed.
+ *
+ * Shares those two selects with the porkchop plot above rather than keeping
+ * its own: the pair worth launching is the pair just planned for, and the
+ * globe only knows how to fly between the three bodies `porkchop.bodies()`
+ * offers anyway.
+ */
+function mountLaunch(bind, originSelect, destinationSelect) {
+  let launched = 0;
+
+  const launchButton = button("Launch", () => {
+    globe.addMission(`mission-${++launched}`, {
+      origin: originSelect.value,
+      destination: destinationSelect.value,
+    });
+  });
+
+  const list = el("div", { class: "layers" });
+  const rows = new Map();
+
+  bind(list, (state) => {
+    const missions = state.missions;
+
+    for (const [id, existing] of rows) {
+      if (!missions.some((mission) => mission.id === id)) {
+        existing.node.remove();
+        rows.delete(id);
+      }
+    }
+
+    for (const mission of missions) {
+      let entry = rows.get(mission.id);
+      if (!entry) {
+        entry = missionRow(mission.id);
+        rows.set(mission.id, entry);
+        list.append(entry.node);
+      }
+      entry.sync(mission, state.sun.unixSeconds);
+    }
+
+    list.classList.toggle("empty", missions.length === 0);
+  });
+
+  return section(
+    "Launch",
+    el(
+      "p",
+      { class: "detail" },
+      "Searches for a real launch window from wherever the simulated clock is " +
+        "now, then departs the moment it gets there — watch it happen in the " +
+        "heliocentric view.",
+    ),
+    el("div", { class: "buttons" }, launchButton),
+    list,
+  );
+}
+
+/** One mission: what it is doing, and a way to call it off. */
+function missionRow(id) {
+  const title = el("span", { class: "mission-title" }, "");
+  const detail = el("p", { class: "detail" }, "");
+  const node = el(
+    "div",
+    { class: "layer" },
+    el("div", { class: "layer-head" }, title, button("Remove", () => globe.removeMission(id))),
+    detail,
+  );
+  return {
+    node,
+    sync(mission, sunUnixSeconds) {
+      node.dataset.status = mission.status;
+      title.textContent = `${mission.origin} → ${mission.destination}`;
+      detail.textContent = describeMission(mission, sunUnixSeconds);
+    },
+  };
+}
+
+/** The line under a mission's name: what it found, and where it is with it. */
+function describeMission(mission, sunUnixSeconds) {
+  switch (mission.status) {
+    case "searching":
+      return "searching for a launch window…";
+    case "waiting":
+      return (
+        `window found — departs ${clock(mission.departureUnixSeconds)} ` +
+        `(in ${duration(mission.departureUnixSeconds - sunUnixSeconds)}), ` +
+        `arrives ${clock(mission.arrivalUnixSeconds)} — ` +
+        `Δv ${mission.departureDeltaVKmS.toFixed(2)} + ${mission.arrivalDeltaVKmS.toFixed(2)} km/s`
+      );
+    case "enroute":
+      return (
+        `en route since ${clock(mission.departureUnixSeconds)}, now orbiting ${mission.orbiting} — ` +
+        `arrival planned ${clock(mission.arrivalUnixSeconds)}`
+      );
+    case "arrived":
+      return `arrived at ${mission.destination} on ${clock(mission.arrivalUnixSeconds)}`;
+    case "failed":
+      return `failed — ${mission.reason}`;
+    default:
+      return "—";
+  }
 }
 
 /** `count` indices spanning `0..length-1`, including both ends. */

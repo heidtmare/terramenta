@@ -13,11 +13,12 @@
  * leaves it alone until it is let go.
  *
  * The sections are dealt out into four tabs — the imagery under everything,
- * the data drawn over it, the view it is all seen from, and mission planning,
- * which stands apart from the other three: nothing in it is bound to a globe
- * snapshot, since a porkchop plot depends on nothing the globe is currently
- * doing. Switching tabs only hides panes; nothing is torn down or rebuilt, so
- * a control in a closed tab is still bound and still current when you come
+ * the data drawn over it, the view it is all seen from, and mission, which is
+ * two things stacked: a porkchop plot bound to nothing, since it depends on
+ * nothing the globe is currently doing, and a launch list bound the same way
+ * every other section here is. Switching tabs only hides panes; nothing is
+ * torn down or rebuilt, so a control in a closed tab is still bound and still
+ * current when you come
  * back to it.
  */
 
@@ -398,7 +399,7 @@ export function mountPanel(root) {
   // over it, vector tiles included — they are decoded features, not pixels,
   // and belong with the other two feature layers rather than with the raster
   // imagery. What is left is how the scene is viewed rather than what is in it.
-  const mission = mountMission();
+  const mission = mountMission(bind);
 
   const { strip, panes } = tabs([
     { id: "imagery", label: "Imagery", panes: [imagery] },

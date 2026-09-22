@@ -27,11 +27,12 @@ from the filesystem will not work.
 
 ## What it controls
 
-Everything, which is the point. The panel is in three tabs: **Imagery** for the
-basemap under everything, **Data layers** for what is drawn over it, and
-**Other** for how the scene is viewed rather than what is in it. Only the open
-pane is shown — every control in the panel stays bound and keeps taking its
-value from each snapshot, so nothing has to catch up when a tab is opened.
+Everything, which is the point. The panel is in four tabs: **Imagery** for the
+basemap under everything, **Data layers** for what is drawn over it, **Other**
+for how the scene is viewed rather than what is in it, and **Mission** for
+planning and flying an interplanetary trip. Only the open pane is shown — every
+control in the panel stays bound and keeps taking its value from each snapshot,
+so nothing has to catch up when a tab is opened.
 
 | Tab | Section | |
 | --- | --- | --- |
@@ -44,6 +45,8 @@ value from each snapshot, so nothing has to catch up when a tab is opened.
 |  | **Both frames at once** | The inertial triad, the Earth-fixed triad, the graticule and its spacing, the arc measuring the sidereal angle between the two, and one satellite's orbit and ground track drawn together over a window you set — plus the rotation as a quaternion, and the followed object's speed measured in each frame |
 |  | **Camera** | Altitude, latitude and longitude to fly to, nine places to try, and reading the current view back into the boxes |
 |  | **Globe chrome** | The globe's own readout, its key list, and its key bindings — each switchable |
+| **Mission** | **Porkchop plot** | Total delta-v as a contoured field over departure date against arrival date, for a Lambert transfer between two of `terramenta-solare`'s bodies — the standard tool a launch window is actually chosen with |
+|  | **Launch** | Sends the pair just plotted on a real search-then-depart mission — `terramenta-globe` scores its own grid for the cheapest window, waits for the clock to reach it, and departs, drawn as a small glowing marker in the heliocentric view. Per mission: status, dates, delta-v, and remove |
 
 Alongside them is a telemetry panel showing every field the globe reports:
 cursor and camera coordinates, altitude, frame, the sidereal angle and the
