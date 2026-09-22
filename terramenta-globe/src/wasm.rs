@@ -15,8 +15,9 @@ use wasm_bindgen::prelude::*;
 
 use crate::GlobeConfig;
 use crate::api::{
-    self, AltitudeMode, EphemerisRequest, GlobeCommand, GlobeState, Limits, OverlayAltitude,
-    OverlayRequest, OverlaySource, OverlayStyle, SatelliteFocus, Selection, TrailPath, TrailWindow,
+    self, AltitudeMode, EphemerisRequest, GlobeCommand, GlobeState, Limits, MissionRequest,
+    OverlayAltitude, OverlayRequest, OverlaySource, OverlayStyle, SatelliteFocus, Selection,
+    TrailPath, TrailWindow,
 };
 use crate::frame::FrameMode;
 use crate::geo::LatLon;
@@ -37,11 +38,12 @@ pub fn start(canvas_selector: Option<String>, asset_path: Option<String>) {
     crate::app(GlobeConfig {
         canvas_selector: canvas_selector.unwrap_or(defaults.canvas_selector),
         asset_path: asset_path.unwrap_or(defaults.asset_path),
-        // A web embedder adds its layers through `addOverlay` and `addEphemeris`
-        // once the module has loaded; the queue holds them until the globe is
-        // there to take them.
+        // A web embedder adds its layers through `addOverlay`, `addEphemeris`
+        // and `addMission` once the module has loaded; the queue holds them
+        // until the globe is there to take them.
         overlays: defaults.overlays,
         ephemerides: defaults.ephemerides,
+        missions: defaults.missions,
     })
     .run();
 }
@@ -897,6 +899,83 @@ pub fn ephemeris_geometry(id: &str) -> JsValue {
         ("points", points),
         ("lines", lines),
     ])
+}
+
+// ---------------------------------------------------------------------------
+// Missions
+// ---------------------------------------------------------------------------
+
+/// The options a mission is added with, as a plain JavaScript object.
+///
+/// `origin`/`destination` name frames the solar system actually has —
+/// `"Earth"`/`"Mars"` if omitted, the only pair
+/// [`terramenta_solare::solar_system`] currently adds. Everything else
+/// tunes the search: days ahead to look for a departure, days past that to
+/// allow for arrival, grid resolution, and departure-orbit altitude.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct MissionOptions {
+    origin: Option<String>,
+    destination: Option<String>,
+    departure_search_days: Option<f64>,
+    arrival_search_start_days: Option<f64>,
+    arrival_search_end_days: Option<f64>,
+    search_steps: Option<usize>,
+    parking_altitude_km: Option<f64>,
+}
+
+impl MissionOptions {
+    fn resolve(self, id: String) -> MissionRequest {
+        let defaults = MissionRequest::default();
+        MissionRequest {
+            id,
+            origin: self.origin.unwrap_or(defaults.origin),
+            destination: self.destination.unwrap_or(defaults.destination),
+            departure_search_days: self
+                .departure_search_days
+                .unwrap_or(defaults.departure_search_days),
+            arrival_search_start_days: self
+                .arrival_search_start_days
+                .unwrap_or(defaults.arrival_search_start_days),
+            arrival_search_end_days: self
+                .arrival_search_end_days
+                .unwrap_or(defaults.arrival_search_end_days),
+            search_steps: self.search_steps.unwrap_or(defaults.search_steps),
+            parking_altitude_km: self
+                .parking_altitude_km
+                .unwrap_or(defaults.parking_altitude_km),
+        }
+    }
+}
+
+/// Searches for a launch window and, once the simulated clock reaches it,
+/// launches a spacecraft mission — replacing any already under this id.
+///
+/// ```js
+/// // A default Earth-Mars mission, searched for from wherever the
+/// // simulated clock is right now:
+/// addMission("mars-1", {});
+/// // A wider search, further out:
+/// addMission("mars-2", { departureSearchDays: 400, arrivalSearchEndDays: 900 });
+/// ```
+///
+/// The search and the launch both run against the simulated clock —
+/// `setTimeScale`/`setClock` affect how soon a launch happens.
+///
+/// Returns whether the options could be read. A mission that fails to find a
+/// window still returns `true`; the failure arrives on the log instead.
+#[wasm_bindgen(js_name = addMission)]
+pub fn add_mission(id: String, options: JsValue) -> bool {
+    let Some(options) = from_js::<MissionOptions>(&options) else {
+        return false;
+    };
+    api::send(GlobeCommand::AddMission(options.resolve(id)));
+    true
+}
+
+#[wasm_bindgen(js_name = removeMission)]
+pub fn remove_mission(id: String) {
+    api::send(GlobeCommand::RemoveMission(id));
 }
 
 // ---------------------------------------------------------------------------

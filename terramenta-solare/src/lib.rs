@@ -25,6 +25,7 @@
 //! scene up to this tree is future work for whatever embeds it.
 
 pub mod bodies;
+pub mod departure;
 pub mod ecliptic;
 pub mod frame;
 pub mod lambert;
@@ -35,9 +36,12 @@ pub mod spacecraft;
 pub mod sun;
 pub mod time;
 
+pub use departure::{escape_injection_state, injection_state};
 pub use frame::{Ephemeris, FrameId, FrameTree, StateVector};
 pub use lambert::{LambertSolution, TransferDirection};
-pub use mission::{HohmannTransfer, TransferPlan, hohmann_transfer, plan_transfer};
+pub use mission::{
+    HohmannTransfer, TransferPlan, find_best_transfer_window, hohmann_transfer, plan_transfer,
+};
 pub use time::Epoch;
 
 /// The tree this crate exists to build: the Solar System Barycentre at the

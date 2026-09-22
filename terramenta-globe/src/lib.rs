@@ -27,6 +27,7 @@ mod gnc;
 mod heliocentric;
 mod hud;
 mod imagery;
+mod mission;
 mod moon;
 mod mvt;
 mod omm;
@@ -59,6 +60,7 @@ use gnc::GncPlugin;
 use heliocentric::HeliocentricPlugin;
 use hud::HudPlugin;
 use imagery::{ImageFormat, ImageryLayer, ImageryPlugin};
+use mission::{MissionPlugin, MissionRequest};
 use moon::MoonPlugin;
 use overlays::{OverlayPlugin, OverlayRequest, OverlaySourcePlugin};
 use placemark::PlacemarkPlugin;
@@ -97,6 +99,11 @@ pub struct GlobeConfig {
     /// satellites is the embedder's data, and a web one adds its own through
     /// [`api::GlobeCommand::AddEphemeris`].
     pub ephemerides: Vec<EphemerisRequest>,
+    /// Spacecraft missions to search for at startup, on the same terms: the
+    /// embedder's data (origin, destination, search range) rather than
+    /// anything this crate launches on its own. A web embedder adds its own
+    /// through [`api::GlobeCommand::AddMission`].
+    pub missions: Vec<MissionRequest>,
 }
 
 impl Default for GlobeConfig {
@@ -106,6 +113,7 @@ impl Default for GlobeConfig {
             asset_path: "assets".into(),
             overlays: Vec::new(),
             ephemerides: Vec::new(),
+            missions: Vec::new(),
         }
     }
 }
@@ -185,6 +193,9 @@ pub fn app(config: GlobeConfig) -> App {
             FramePlugin,
             GncPlugin,
             SolarSystemPlugin,
+            MissionPlugin {
+                initial: config.missions.clone(),
+            },
             StarfieldPlugin,
         ))
         .add_plugins((

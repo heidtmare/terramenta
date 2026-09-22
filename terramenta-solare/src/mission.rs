@@ -161,6 +161,60 @@ pub fn plan_transfer(
     })
 }
 
+/// `steps` epochs evenly spaced from `start` to `end`, inclusive of both.
+/// `steps <= 1` collapses to just `start`.
+fn linspace_epochs(start: Epoch, end: Epoch, steps: usize) -> Vec<Epoch> {
+    if steps <= 1 {
+        return vec![start];
+    }
+    let start_seconds = start.to_unix_seconds();
+    let end_seconds = end.to_unix_seconds();
+    (0..steps)
+        .map(|step| {
+            let fraction = step as f64 / (steps - 1) as f64;
+            Epoch::from_unix_seconds(start_seconds + (end_seconds - start_seconds) * fraction)
+        })
+        .collect()
+}
+
+/// Scans a grid of candidate departure/arrival dates for the single cheapest
+/// [`plan_transfer`] solution — for an automated caller that needs one
+/// number rather than the whole grid `terramenta-charta` draws a porkchop
+/// plot from.
+///
+/// Cost is `O(departure_steps * arrival_steps)` Lambert solves; keep the
+/// axes coarse for a caller on a tight startup budget. Returns `None` only
+/// if nothing on the grid solves, which shouldn't happen for an Earth-Mars
+/// grid spanning a full synodic period (~780 days) of departure dates.
+pub fn find_best_transfer_window(
+    tree: &FrameTree,
+    sun: FrameId,
+    origin: FrameId,
+    destination: FrameId,
+    departure_start: Epoch,
+    departure_end: Epoch,
+    departure_steps: usize,
+    arrival_start: Epoch,
+    arrival_end: Epoch,
+    arrival_steps: usize,
+    direction: TransferDirection,
+) -> Option<TransferPlan> {
+    let departures = linspace_epochs(departure_start, departure_end, departure_steps);
+    let arrivals = linspace_epochs(arrival_start, arrival_end, arrival_steps);
+
+    departures
+        .iter()
+        .flat_map(|&departure| arrivals.iter().map(move |&arrival| (departure, arrival)))
+        .filter_map(|(departure, arrival)| {
+            plan_transfer(tree, sun, origin, destination, departure, arrival, direction)
+        })
+        .min_by(|a, b| {
+            a.total_delta_v_km_s()
+                .partial_cmp(&b.total_delta_v_km_s())
+                .expect("delta-v is never NaN for a transfer plan_transfer returned")
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,6 +284,44 @@ mod tests {
         // 5.6 km/s combined), which is exactly what a transfer timed to a
         // real launch window should be near.
         assert!((4.0..8.0).contains(&plan.total_delta_v_km_s()), "{plan:?}");
+    }
+
+    #[test]
+    fn finds_the_known_good_window_inside_a_wider_search_grid() {
+        let tree = solar_system();
+        let (sun, earth, mars) = (
+            tree.find("Sun").unwrap(),
+            tree.find("Earth").unwrap(),
+            tree.find("Mars").unwrap(),
+        );
+
+        // Wide enough to contain the known-good window
+        // `plans_a_lambert_transfer_from_earth_to_mars` uses (departure
+        // +1253 days, arrival 204 days later), but coarse, like a real
+        // search.
+        let departure_start = Epoch::J2000.advanced_by_seconds(1_200.0 * 86_400.0);
+        let departure_end = Epoch::J2000.advanced_by_seconds(1_320.0 * 86_400.0);
+        let arrival_start = Epoch::J2000.advanced_by_seconds(1_400.0 * 86_400.0);
+        let arrival_end = Epoch::J2000.advanced_by_seconds(1_520.0 * 86_400.0);
+
+        let plan = find_best_transfer_window(
+            &tree,
+            sun,
+            earth,
+            mars,
+            departure_start,
+            departure_end,
+            13,
+            arrival_start,
+            arrival_end,
+            13,
+            TransferDirection::Prograde,
+        )
+        .expect("a grid spanning a real Earth-Mars window should find a solvable transfer");
+
+        // Should match the ballpark of the known-good window, not wander
+        // onto a costlier corner of the grid.
+        assert!((3.0..10.0).contains(&plan.total_delta_v_km_s()), "{plan:?}");
     }
 
     #[test]

@@ -22,6 +22,7 @@
 
 use std::sync::{LazyLock, Mutex};
 
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use serde::Serialize;
 
@@ -34,6 +35,7 @@ use crate::gnc::{FrameReport, GncSettings};
 use crate::heliocentric::HeliocentricCamera;
 use crate::hud::HudSettings;
 use crate::imagery::{ImageryLayer, ImagerySettings};
+use crate::mission::MissionSettings;
 use crate::overlays::{self, OverlaySettings};
 use crate::placemark::{self, PlacemarkSettings};
 use crate::solar::SolarSystem;
@@ -65,6 +67,7 @@ pub use crate::gnc::{
     MIN_GRATICULE_STEP, MIN_TRACK_ORBITS, SatelliteFocus, ecef_to_eci_quat, eci_to_ecef_dcm,
     eci_to_ecef_quat, velocity_eci_to_ecef,
 };
+pub use crate::mission::MissionRequest;
 pub use crate::overlays::{
     AltitudeMode, MIN_REFRESH_SECONDS, OverlayAltitude, OverlayInfo, OverlayRequest, OverlaySource,
     OverlayStyle, PickedFeature,
@@ -257,6 +260,14 @@ pub enum GlobeCommand {
     /// Whether ephemerides are drawn at all. Off, every layer stays loaded and
     /// stops being propagated, which is where the cost of one goes.
     SetEphemeridesEnabled(bool),
+
+    /// Searches for a launch window and, once the simulated clock reaches
+    /// it, launches a spacecraft mission — replacing any already under this
+    /// id.
+    AddMission(MissionRequest),
+    /// Cancels a mission, at whatever stage its search or launch has
+    /// reached.
+    RemoveMission(String),
 
     /// Whether the cursor picks anything at all — overlay features and
     /// satellites both. One switch, because "the cursor picks things" is one
@@ -747,6 +758,20 @@ impl Plugin for ApiPlugin {
     }
 }
 
+/// [`OverlaySettings`], [`EphemerisSettings`] and [`MissionSettings`] each
+/// take an `add`/`remove` request the same way; bundled into one
+/// [`SystemParam`] so [`apply_commands`] stays under the sixteen params a
+/// system may take (same squeeze [`crate::gnc::FrameReport`] and
+/// [`crate::placemark::PlacemarkPicks`] answer). Destructured back into its
+/// three fields at the top of [`apply_commands`] so nothing downstream
+/// changes.
+#[derive(SystemParam)]
+struct LayerSources<'w> {
+    overlays: ResMut<'w, OverlaySettings>,
+    ephemerides: ResMut<'w, EphemerisSettings>,
+    missions: ResMut<'w, MissionSettings>,
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "commands reach every controllable part of the globe, so applying them necessarily borrows all of them"
@@ -764,11 +789,16 @@ fn apply_commands(
     mut imagery: ResMut<ImagerySettings>,
     mut vector_tiles: ResMut<VectorTileSettings>,
     mut hud: ResMut<HudSettings>,
-    mut overlays: ResMut<OverlaySettings>,
-    mut ephemerides: ResMut<EphemerisSettings>,
+    sources: LayerSources,
     mut placemarks: ResMut<PlacemarkSettings>,
     mut input: ResMut<GlobeInput>,
 ) {
+    let LayerSources {
+        mut overlays,
+        mut ephemerides,
+        mut missions,
+    } = sources;
+
     let commands = take_queued();
     if commands.is_empty() {
         return;
@@ -896,6 +926,12 @@ fn apply_commands(
                 overlays.refresh(&id);
             }
             GlobeCommand::SetOverlaysEnabled(enabled) => overlays.enabled = enabled,
+
+            GlobeCommand::AddMission(request) => missions.add(request),
+            // Not an error, same as removing an overlay that's already gone.
+            GlobeCommand::RemoveMission(id) => {
+                missions.remove(&id);
+            }
 
             GlobeCommand::AddEphemeris(request) => ephemerides.add(request),
             GlobeCommand::RemoveEphemeris(id) => {
