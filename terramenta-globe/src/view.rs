@@ -183,11 +183,29 @@ pub enum ViewSet {
     Settle,
 }
 
-pub struct ViewPlugin;
+/// Which view a page starts in — [`ViewMode::Globe`] unless the embedder
+/// asks otherwise. See [`start_in_heliocentric`] for what asking otherwise
+/// does differently from a [`RequestViewChange`] sent right after startup:
+/// no pull-back, no fade, no globe ever drawn at all.
+pub struct ViewPlugin {
+    pub initial: ViewMode,
+}
+
+impl Default for ViewPlugin {
+    fn default() -> Self {
+        Self {
+            initial: ViewMode::Globe,
+        }
+    }
+}
 
 impl Plugin for ViewPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<ViewState>()
+        let initial_state = match self.initial {
+            ViewMode::Globe => ViewState::Globe,
+            ViewMode::Heliocentric => ViewState::Heliocentric,
+        };
+        app.insert_resource(initial_state)
             .init_resource::<TransitionFade>()
             .add_message::<RequestViewChange>()
             .add_message::<ViewChanged>()
@@ -209,6 +227,13 @@ impl Plugin for ViewPlugin {
                 Update,
                 (toggle_body_visibility, drop_departure_clutter).in_set(FrameSet::Apply),
             );
+
+        if self.initial == ViewMode::Heliocentric {
+            app.add_systems(
+                Startup,
+                start_in_heliocentric.after(crate::camera::spawn_camera),
+            );
+        }
     }
 }
 
@@ -345,19 +370,25 @@ fn drive_view_transition(
             orbit.target_distance = distance;
             fade.0 = ((t - FADE_START_FRACTION) / (1.0 - FADE_START_FRACTION)).clamp(0.0, 1.0);
             if *elapsed >= TRANSITION_OUT_SECONDS {
-                origin.frame = solar_system.root();
-                set_projection(projection, HELIO_NEAR_AU, HELIO_FAR_AU);
-                helio.anchor = solar_system.find("Earth");
+                // Carries the globe camera's own facing over rather than
+                // starting from `HeliocentricCamera::default()`'s — this is a
+                // live departure, not a cold start, so the shot should pick up
+                // roughly where the globe view left off instead of snapping
+                // to face whatever direction the rig defaults to.
                 helio.yaw = orbit.yaw;
                 helio.target_yaw = orbit.yaw;
                 helio.pitch = 0.35;
                 helio.target_pitch = 0.35;
                 helio.distance = HELIO_DEFAULT_DISTANCE_AU;
                 helio.target_distance = HELIO_DEFAULT_DISTANCE_AU;
-                changed.write(ViewChanged {
-                    mode: ViewMode::Heliocentric,
-                });
-                *view = ViewState::Heliocentric;
+                settle_into_heliocentric(
+                    &mut view,
+                    &mut changed,
+                    &mut origin,
+                    projection,
+                    helio,
+                    &solar_system,
+                );
             }
         }
         ViewState::TransitioningIn { elapsed } => {
@@ -385,6 +416,58 @@ fn drive_view_transition(
         }
         ViewState::Globe => {}
     }
+}
+
+/// The hard cut into heliocentric, shared by [`drive_view_transition`]'s
+/// arrival and by [`start_in_heliocentric`]'s cold start: settles
+/// [`FloatingOrigin`] onto [`SolarSystem::root`], the camera's [`Projection`]
+/// onto the heliocentric near/far planes, anchors the heliocentric rig on
+/// Earth, and fires [`ViewChanged`] so [`toggle_body_visibility`] hides the
+/// globe's own visuals and shows [`HeliocentricVisual`]'s.
+///
+/// Deliberately leaves `helio`'s yaw, pitch and distance alone — a live
+/// transition sets those itself, from wherever the globe camera was facing;
+/// a cold start has nothing to carry over and leaves them at
+/// [`HeliocentricCamera::default`]'s.
+fn settle_into_heliocentric(
+    view: &mut ViewState,
+    changed: &mut MessageWriter<ViewChanged>,
+    origin: &mut FloatingOrigin,
+    projection: &mut Projection,
+    helio: &mut HeliocentricCamera,
+    solar_system: &SolarSystem,
+) {
+    origin.frame = solar_system.root();
+    set_projection(projection, HELIO_NEAR_AU, HELIO_FAR_AU);
+    helio.anchor = solar_system.find("Earth");
+    changed.write(ViewChanged {
+        mode: ViewMode::Heliocentric,
+    });
+    *view = ViewState::Heliocentric;
+}
+
+/// Settles the scene straight into the heliocentric view before the first
+/// frame is even drawn — for [`ViewPlugin::initial`] set to
+/// [`ViewMode::Heliocentric`], a page that never shows the Earth globe at
+/// all. Unlike [`RequestViewChange`], this skips [`drive_view_transition`]'s
+/// pull-back-and-fade entirely: there is no globe view to depart from, so
+/// there is nothing for the fade to cover a cut away from.
+///
+/// Ordered after [`crate::camera::spawn_camera`] so the camera entity — and
+/// the [`HeliocentricCamera`]/[`Projection`] components on it — already
+/// exists. [`SolarSystem`] and [`FloatingOrigin`] are already resources by
+/// the time any `Startup` system runs regardless, since
+/// [`crate::solar::SolarSystemPlugin`] inserts them directly in its own
+/// `build` rather than through a system.
+fn start_in_heliocentric(
+    mut view: ResMut<ViewState>,
+    mut changed: MessageWriter<ViewChanged>,
+    mut origin: ResMut<FloatingOrigin>,
+    solar_system: Res<SolarSystem>,
+    mut camera: Single<(&mut HeliocentricCamera, &mut Projection)>,
+) {
+    let (helio, projection) = &mut *camera;
+    settle_into_heliocentric(&mut view, &mut changed, &mut origin, projection, helio, &solar_system);
 }
 
 /// Spawns the full-screen, initially-clear `Node` [`apply_transition_fade`]

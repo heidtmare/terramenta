@@ -30,7 +30,7 @@ use bevy::prelude::*;
 
 use crate::frame::{FrameSet, sidereal_radians};
 use crate::geo::LatLon;
-use crate::sun::{Sun, wall_clock_unix_seconds};
+use crate::time::{SimClock, wall_clock_unix_seconds};
 
 /// Seconds from the Unix epoch to 1999-12-31 00:00 UT, the epoch these
 /// elements are stated at — "day zero" of the series, half a day before J2000.
@@ -95,7 +95,7 @@ impl Plugin for MoonPlugin {
             // After the clock has been advanced for this frame, and before
             // anything drawn from the frame reads the result.
             track_moon
-                .after(crate::sun::advance_sun)
+                .after(crate::time::advance_clock)
                 .before(FrameSet::Apply),
         );
     }
@@ -103,8 +103,8 @@ impl Plugin for MoonPlugin {
 
 /// Follows the same simulated clock the sun does. There is only one clock, and
 /// a moon on a clock of its own would drift out of phase with the terminator.
-fn track_moon(sun: Res<Sun>, mut moon: ResMut<Moon>) {
-    moon.set_clock(sun.unix_seconds);
+fn track_moon(clock: Res<SimClock>, mut moon: ResMut<Moon>) {
+    moon.set_clock(clock.unix_seconds);
 }
 
 /// The point on Earth the moon is overhead at a given moment.
@@ -248,6 +248,7 @@ fn wrap_degrees(degrees: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sun::Sun;
 
     /// The total lunar eclipse of 21 January 2000, at greatest eclipse. The
     /// moon is in the Earth's shadow, so it is within a fraction of a degree of

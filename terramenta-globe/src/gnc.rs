@@ -72,7 +72,7 @@ use crate::geo::{EARTH_RADIUS_KM, LatLon};
 use crate::globe::GLOBE_RADIUS;
 use crate::omm::Catalogue;
 use crate::overlays::{Paint, VectorMaterial, VectorMode, WorldPath, world_line_mesh};
-use crate::sun::Sun;
+use crate::time::SimClock;
 use crate::tiles::MAX_TILE_RADIUS;
 
 // ---------------------------------------------------------------------------
@@ -657,7 +657,7 @@ fn carry_frames(frame: Res<ReferenceFrame>, mut drawn: Query<(&Anchor, &mut Tran
 fn draw_gnc(
     mut commands: Commands,
     time: Res<Time>,
-    sun: Res<Sun>,
+    clock: Res<SimClock>,
     frame: Res<ReferenceFrame>,
     settings: Res<GncSettings>,
     ephemerides: Res<EphemerisSettings>,
@@ -677,7 +677,7 @@ fn draw_gnc(
         return;
     }
 
-    let now = sun.unix_seconds;
+    let now = clock.unix_seconds;
     let gmst = crate::frame::sidereal_radians(now);
 
     // The rigid pieces are rebuilt only when what they are made of changes: the
@@ -1421,7 +1421,7 @@ mod tests {
         .init_resource::<ButtonInput<KeyCode>>()
         .init_resource::<Time>()
         .init_resource::<ReferenceFrame>()
-        .init_resource::<Sun>()
+        .init_resource::<SimClock>()
         .init_resource::<GncDrawn>()
         .insert_resource(ephemerides)
         .insert_resource(settings)

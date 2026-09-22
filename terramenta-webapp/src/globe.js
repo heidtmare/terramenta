@@ -57,13 +57,19 @@ export async function load() {
 /**
  * Starts rendering on a canvas.
  *
+ * `view` is `"globe"` or `"heliocentric"`, defaulting to `"globe"`. Starting
+ * in `"heliocentric"` settles straight into that view before the first
+ * frame — no pull-back, no fade, no globe view ever drawn — unlike calling
+ * `setView("heliocentric")` right after this resolves, which still plays the
+ * ordinary transition.
+ *
  * Resolves once the globe has taken the event loop, which it signals by
  * throwing; any other error is real and is rethrown.
  */
-export async function start(canvasSelector) {
+export async function start(canvasSelector, { view } = {}) {
   const module = await load();
   try {
-    module.start(canvasSelector, ASSET_PATH);
+    module.start(canvasSelector, ASSET_PATH, view ?? null);
   } catch (error) {
     if (!`${error}`.includes(CONTROL_FLOW_UNWIND)) throw error;
   }
@@ -568,10 +574,13 @@ export const setKeyboardEnabled = (enabled) => required().setKeyboardEnabled(ena
  * so this app fans it out itself rather than registering twice.
  *
  * `missions` is `[{id, origin, destination, status, departureUnixSeconds,
- * arrivalUnixSeconds, departureDeltaVKmS, arrivalDeltaVKmS, orbiting, reason},
- * ...]`, one entry per `addMission` call still up. `status` is `"searching"`,
- * `"waiting"`, `"enroute"`, `"arrived"` or `"failed"`; the fields after it are
- * `null` until the status they belong to is reached. `mission.js` is where
- * this app reads it.
+ * arrivalUnixSeconds, departureDeltaVKmS, arrivalDeltaVKmS, orbiting, reason,
+ * phases}, ...]`, one entry per `addMission` call still up. `status` is
+ * `"searching"`, `"waiting"`, `"enroute"`, `"arrived"` or `"failed"`; the
+ * fields after it are `null` until the status they belong to is reached.
+ * `phases` is always four entries — `[{id, label, unixSeconds, reached},
+ * ...]` for `"departure"`, `"escape"`, `"arrival"` and `"capture"`, in that
+ * order — `unixSeconds` likewise `null` until that milestone is known.
+ * `mission.js` and `mission-demo-panel.js` are where this app reads it.
  */
 export const onState = (callback) => required().onState(callback);

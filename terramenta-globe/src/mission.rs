@@ -41,7 +41,7 @@ use terramenta_solare::spacecraft::Primary;
 use terramenta_solare::{Epoch, FrameId, escape_injection_state};
 
 use crate::solar::{SolarSystem, TrackedSpacecraft, spawn_spacecraft};
-use crate::sun::Sun;
+use crate::time::SimClock;
 
 /// A body-to-body transfer, searched for from wherever the simulated clock
 /// is when this request is added.
@@ -98,6 +98,16 @@ enum MissionState {
         plan: TransferPlan,
         destination_frame: FrameId,
         last_primary: FrameId,
+        /// When the spacecraft's primary first became the Sun — set by
+        /// [`log_mission_progress`] the tick it detects the escape, since it
+        /// is a physical event this module observes rather than one Lambert
+        /// scored in advance.
+        escape_unix_seconds: Option<f64>,
+        /// When the spacecraft's primary first became `destination_frame` —
+        /// set the same way, and generally a little after
+        /// [`TransferPlan::arrival`]: that date is the idealised patched-conic
+        /// arrival, while this is the real SOI capture landing shortly after it.
+        capture_unix_seconds: Option<f64>,
     },
     Failed {
         reason: &'static str,
@@ -107,6 +117,14 @@ enum MissionState {
 struct Mission {
     request: MissionRequest,
     state: MissionState,
+    /// How many times [`launch_missions`] has spawned this mission's
+    /// spacecraft — 0 until the first launch. [`terramenta_solare::frame::FrameTree`]
+    /// never frees a name once added, and never will (see
+    /// [`crate::solar::spawn_spacecraft`]), so a mission un-launched and
+    /// relaunched — the clock running back past its departure and then
+    /// forward again — needs a fresh frame name each time rather than
+    /// reusing one the tree already has.
+    launches: u32,
 }
 
 /// Every mission this globe has been asked for, in whatever state its
@@ -128,6 +146,7 @@ impl MissionSettings {
         self.missions.push(Mission {
             request,
             state: MissionState::Searching,
+            launches: 0,
         });
     }
 
@@ -182,7 +201,7 @@ impl Plugin for MissionPlugin {
 fn search_missions(
     mut settings: ResMut<MissionSettings>,
     solar_system: Res<SolarSystem>,
-    sun_clock: Res<Sun>,
+    clock: Res<SimClock>,
 ) {
     for mission in &mut settings.missions {
         if !matches!(mission.state, MissionState::Searching) {
@@ -204,7 +223,7 @@ fn search_missions(
             continue;
         };
 
-        let search_start = Epoch::from_unix_seconds(sun_clock.unix_seconds);
+        let search_start = Epoch::from_unix_seconds(clock.unix_seconds);
         let departure_end =
             search_start.advanced_by_seconds(mission.request.departure_search_days * 86_400.0);
         let arrival_start = search_start
@@ -265,17 +284,44 @@ fn search_missions(
 /// elements to the given epoch, and evaluating them before that epoch lands
 /// on the hyperbola's incoming branch instead of its outgoing one, looking
 /// like an instant, spurious escape.
+///
+/// Also the reverse: a [`MissionState::Launched`] mission the clock has run
+/// back to *before* its own departure — the clock can now run backward, see
+/// [`crate::time::SimClock::set_time_scale`] — is un-launched rather than
+/// left for [`crate::solar::update_spacecraft`] to evaluate on that same
+/// wrong branch. [`search_missions`] never re-solves it: the plan already
+/// found is still the one this departure date belongs to, so reverting to
+/// [`MissionState::Waiting`] with it is enough for [`launch_missions`] to
+/// spawn the identical spacecraft again once the clock crosses forward.
 fn launch_missions(
     mut commands: Commands,
     mut settings: ResMut<MissionSettings>,
     mut solar_system: ResMut<SolarSystem>,
-    sun_clock: Res<Sun>,
+    clock: Res<SimClock>,
 ) {
     let Some(sun_frame) = solar_system.find("Sun") else {
         return;
     };
 
     for mission in &mut settings.missions {
+        if let MissionState::Launched { entity, plan, .. } = mission.state {
+            if clock.unix_seconds < plan.departure.to_unix_seconds() {
+                let bodies = solar_system
+                    .find(&mission.request.origin)
+                    .zip(solar_system.find(&mission.request.destination));
+                let Some((origin_frame, destination_frame)) = bodies else {
+                    continue;
+                };
+                commands.entity(entity).despawn();
+                mission.state = MissionState::Waiting {
+                    plan,
+                    origin_frame,
+                    destination_frame,
+                };
+            }
+            continue;
+        }
+
         let (plan, origin_frame, destination_frame) = match mission.state {
             MissionState::Waiting {
                 plan,
@@ -284,7 +330,7 @@ fn launch_missions(
             } => (plan, origin_frame, destination_frame),
             _ => continue,
         };
-        if sun_clock.unix_seconds < plan.departure.to_unix_seconds() {
+        if clock.unix_seconds < plan.departure.to_unix_seconds() {
             continue;
         }
 
@@ -341,19 +387,37 @@ fn launch_missions(
 
         let bundle = spawn_spacecraft(
             &mut solar_system,
-            "Mission",
+            frame_name(&mission.request.id, mission.launches),
             primary,
             departure_state,
             plan.departure,
         );
+        mission.launches += 1;
         let entity = commands.spawn(bundle).id();
         mission.state = MissionState::Launched {
             entity,
             plan,
             destination_frame,
             last_primary: origin_frame,
+            escape_unix_seconds: None,
+            capture_unix_seconds: None,
         };
     }
+}
+
+/// A fresh, never-reused frame name for a mission's `launches`-th spacecraft.
+///
+/// [`terramenta_solare::frame::FrameTree::add`] rejects a name already in the
+/// tree, and the tree never frees one — see the field doc on
+/// [`Mission::launches`] for why a relaunch cannot reuse the name its
+/// previous launch took. Leaked rather than stored: a `'static str` is what
+/// [`crate::solar::spawn_spacecraft`] takes, or a compile-time constant would
+/// do here, but that's not available for a name built at runtime from the
+/// mission's own id — and missions are added by an embedder's explicit
+/// action, at a scale of a handful over an app's lifetime, not thousands, so
+/// leaking a few dozen bytes per launch is the right side of that trade.
+fn frame_name(mission_id: &str, launches: u32) -> &'static str {
+    Box::leak(format!("mission:{mission_id}:{launches}").into_boxed_str())
 }
 
 /// Logs each launched mission's primary body the moment it changes — the
@@ -365,13 +429,18 @@ fn launch_missions(
 fn log_mission_progress(
     mut settings: ResMut<MissionSettings>,
     solar_system: Res<SolarSystem>,
-    sun_clock: Res<Sun>,
+    clock: Res<SimClock>,
     spacecraft: Query<&TrackedSpacecraft>,
 ) {
+    let sun_frame = solar_system.find("Sun");
+
     for mission in &mut settings.missions {
         let MissionState::Launched {
             entity,
+            destination_frame,
             last_primary,
+            escape_unix_seconds,
+            capture_unix_seconds,
             ..
         } = &mut mission.state
         else {
@@ -387,11 +456,23 @@ fn log_mission_progress(
         }
         *last_primary = current;
 
+        // The two hand-offs a patched-conic transfer ever makes: away from
+        // the origin's SOI (primary becomes the Sun) and into the
+        // destination's (primary becomes `destination_frame`) — stamped with
+        // the simulated clock the moment each is observed, for
+        // [`MissionInfo::phases`] to report alongside the Lambert-planned
+        // departure/arrival dates.
+        if Some(current) == sun_frame {
+            *escape_unix_seconds = Some(clock.unix_seconds);
+        } else if current == *destination_frame {
+            *capture_unix_seconds = Some(clock.unix_seconds);
+        }
+
         info!(
             "mission {}: now orbiting {}, as of {}",
             mission.request.id,
             solar_system.tree().name(current),
-            format_epoch(Epoch::from_unix_seconds(sun_clock.unix_seconds)),
+            format_epoch(Epoch::from_unix_seconds(clock.unix_seconds)),
         );
     }
 }
@@ -469,6 +550,41 @@ pub struct MissionInfo {
     pub orbiting: Option<String>,
     /// Set only for `"failed"`.
     pub reason: Option<&'static str>,
+    /// The mission's milestones, always in this order: departure, escape
+    /// (from `origin`'s sphere of influence), arrival (the Lambert-planned
+    /// date) and capture (by `destination`). See [`MissionPhase`].
+    pub phases: Vec<MissionPhase>,
+}
+
+/// One milestone in a mission's timeline, for an interface to build a
+/// scrubber or a set of "jump to" controls from.
+///
+/// Always reported, even before it is known — `unix_seconds` is `None` until
+/// then, rather than the entry being left out, so an interface can render a
+/// fixed four-stop timeline and grey out what is not there yet instead of
+/// reflowing as the mission progresses.
+#[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MissionPhase {
+    /// `"departure"`, `"escape"`, `"arrival"` or `"capture"`.
+    pub id: &'static str,
+    pub label: String,
+    pub unix_seconds: Option<f64>,
+    /// Whether the simulated clock has reached this milestone yet. `false`
+    /// while `unix_seconds` is still `None`, since an unknown moment cannot
+    /// have been reached.
+    pub reached: bool,
+}
+
+impl MissionPhase {
+    fn new(id: &'static str, label: String, unix_seconds: Option<f64>, sun_unix_seconds: f64) -> Self {
+        Self {
+            id,
+            label,
+            unix_seconds,
+            reached: unix_seconds.is_some_and(|seconds| sun_unix_seconds >= seconds),
+        }
+    }
 }
 
 impl MissionInfo {
@@ -484,6 +600,7 @@ impl MissionInfo {
             arrival_delta_v_km_s: None,
             orbiting: None,
             reason: None,
+            phases: Vec::new(),
         }
     }
 
@@ -494,19 +611,70 @@ impl MissionInfo {
         self.arrival_delta_v_km_s = Some(plan.arrival_delta_v_magnitude_km_s());
         self
     }
+
+    /// Fills in [`MissionInfo::phases`] — always all four milestones, drawing
+    /// the departure/arrival dates from whatever [`MissionInfo::with_plan`]
+    /// already set, and escape/capture from [`log_mission_progress`]'s own
+    /// observations. Called for every mission regardless of state, so a
+    /// mission still searching (or one that failed) reports the same four
+    /// milestones with everything past what is known left as `None`.
+    fn with_phases(
+        mut self,
+        escape_unix_seconds: Option<f64>,
+        capture_unix_seconds: Option<f64>,
+        sun_unix_seconds: f64,
+    ) -> Self {
+        let departure_unix_seconds = self.departure_unix_seconds;
+        let arrival_unix_seconds = self.arrival_unix_seconds;
+        self.phases = vec![
+            MissionPhase::new(
+                "departure",
+                format!("Depart {}", self.origin),
+                departure_unix_seconds,
+                sun_unix_seconds,
+            ),
+            MissionPhase::new(
+                "escape",
+                format!("Escape {}", self.origin),
+                escape_unix_seconds,
+                sun_unix_seconds,
+            ),
+            MissionPhase::new(
+                "arrival",
+                format!("Arrive at {}", self.destination),
+                arrival_unix_seconds,
+                sun_unix_seconds,
+            ),
+            MissionPhase::new(
+                "capture",
+                format!("Captured by {}", self.destination),
+                capture_unix_seconds,
+                sun_unix_seconds,
+            ),
+        ];
+        self
+    }
 }
 
 impl Mission {
-    fn describe(&self, solar_system: &SolarSystem, spacecraft: &Query<&TrackedSpacecraft>) -> MissionInfo {
+    fn describe(
+        &self,
+        solar_system: &SolarSystem,
+        spacecraft: &Query<&TrackedSpacecraft>,
+        sun_unix_seconds: f64,
+    ) -> MissionInfo {
         match &self.state {
-            MissionState::Searching => MissionInfo::new(&self.request, "searching"),
-            MissionState::Waiting { plan, .. } => {
-                MissionInfo::new(&self.request, "waiting").with_plan(plan)
-            }
+            MissionState::Searching => MissionInfo::new(&self.request, "searching")
+                .with_phases(None, None, sun_unix_seconds),
+            MissionState::Waiting { plan, .. } => MissionInfo::new(&self.request, "waiting")
+                .with_plan(plan)
+                .with_phases(None, None, sun_unix_seconds),
             MissionState::Launched {
                 entity,
                 plan,
                 destination_frame,
+                escape_unix_seconds,
+                capture_unix_seconds,
                 ..
             } => {
                 let orbiting = spacecraft
@@ -516,12 +684,14 @@ impl Mission {
                 let arrived = orbiting == Some(*destination_frame);
                 let mut info =
                     MissionInfo::new(&self.request, if arrived { "arrived" } else { "enroute" })
-                        .with_plan(plan);
+                        .with_plan(plan)
+                        .with_phases(*escape_unix_seconds, *capture_unix_seconds, sun_unix_seconds);
                 info.orbiting = orbiting.map(|frame| solar_system.tree().name(frame).to_string());
                 info
             }
             MissionState::Failed { reason } => {
-                let mut info = MissionInfo::new(&self.request, "failed");
+                let mut info = MissionInfo::new(&self.request, "failed")
+                    .with_phases(None, None, sun_unix_seconds);
                 info.reason = Some(reason);
                 info
             }
@@ -530,10 +700,15 @@ impl Mission {
 }
 
 impl MissionSettings {
-    fn describe(&self, solar_system: &SolarSystem, spacecraft: &Query<&TrackedSpacecraft>) -> Vec<MissionInfo> {
+    fn describe(
+        &self,
+        solar_system: &SolarSystem,
+        spacecraft: &Query<&TrackedSpacecraft>,
+        sun_unix_seconds: f64,
+    ) -> Vec<MissionInfo> {
         self.missions
             .iter()
-            .map(|mission| mission.describe(solar_system, spacecraft))
+            .map(|mission| mission.describe(solar_system, spacecraft, sun_unix_seconds))
             .collect()
     }
 }
@@ -551,8 +726,9 @@ pub struct MissionReport<'w, 's> {
 }
 
 impl MissionReport<'_, '_> {
-    pub fn describe(&self) -> Vec<MissionInfo> {
-        self.settings.describe(&self.solar_system, &self.spacecraft)
+    pub fn describe(&self, sun_unix_seconds: f64) -> Vec<MissionInfo> {
+        self.settings
+            .describe(&self.solar_system, &self.spacecraft, sun_unix_seconds)
     }
 }
 
@@ -588,9 +764,9 @@ mod tests {
         app.add_plugins(TaskPoolPlugin::default())
             .init_resource::<ReferenceFrame>()
             .init_resource::<ViewState>()
-            .insert_resource(Sun {
+            .insert_resource(SimClock {
                 unix_seconds: start_unix_seconds,
-                ..Sun::default()
+                ..SimClock::default()
             })
             .add_plugins(SolarSystemPlugin)
             .add_plugins(MissionPlugin {
@@ -604,39 +780,41 @@ mod tests {
                 ..MissionRequest::default()
             });
 
-        let sun_frame = app.world().resource::<SolarSystem>().find("Sun").unwrap();
-        let mars_frame = app.world().resource::<SolarSystem>().find("Mars").unwrap();
-
         let mut launched = false;
         let mut escaped = false;
         let mut captured = false;
         // Covers the departure window (120d) plus the arrival window past it
         // (420d), plus margin for the SOI capture landing a bit after the
         // scored arrival date — same margin `earth_to_mars.rs` keeps.
+        //
+        // Reads `MissionSettings`'s own state rather than separately querying
+        // `TrackedSpacecraft::primary_frame` — that would race
+        // `log_mission_progress` against `update_spacecraft`'s reparenting on
+        // whichever tick the hand-off lands on, since the two have no
+        // ordering constraint relative to each other. Reading the state
+        // `log_mission_progress` itself wrote is what this test means to
+        // check anyway.
         for _ in 0..(560 * 24) {
-            app.world_mut().resource_mut::<Sun>().unix_seconds += 3_600.0;
+            app.world_mut().resource_mut::<SimClock>().unix_seconds += 3_600.0;
             app.update();
 
-            if !launched {
-                let mut spacecraft = app.world_mut().query::<&TrackedSpacecraft>();
-                if spacecraft.iter(app.world()).next().is_some() {
-                    launched = true;
-                }
+            let settings = app.world().resource::<MissionSettings>();
+            let mission = settings
+                .missions
+                .iter()
+                .find(|mission| mission.request.id == "test")
+                .expect("the mission is still tracked");
+            let MissionState::Launched {
+                escape_unix_seconds,
+                capture_unix_seconds,
+                ..
+            } = &mission.state
+            else {
                 continue;
-            }
-
-            let primary = {
-                let mut spacecraft = app.world_mut().query::<&TrackedSpacecraft>();
-                spacecraft
-                    .iter(app.world())
-                    .next()
-                    .expect("the mission's spacecraft never despawns")
-                    .0
-                    .primary_frame()
             };
-            if !escaped && primary == sun_frame {
-                escaped = true;
-            } else if escaped && primary == mars_frame {
+            launched = true;
+            escaped = escape_unix_seconds.is_some();
+            if capture_unix_seconds.is_some() {
                 captured = true;
                 break;
             }
@@ -645,6 +823,122 @@ mod tests {
         assert!(launched, "the mission never launched");
         assert!(escaped, "the mission's spacecraft never escaped Earth");
         assert!(captured, "the mission's spacecraft never arrived at Mars");
+
+        // The two hand-offs `log_mission_progress` stamped, in order — the
+        // same two moments `MissionInfo::phases` reports as `"escape"` and
+        // `"capture"`.
+        let settings = app.world().resource::<MissionSettings>();
+        let mission = settings
+            .missions
+            .iter()
+            .find(|mission| mission.request.id == "test")
+            .expect("the mission is still tracked");
+        let MissionState::Launched {
+            plan,
+            escape_unix_seconds,
+            capture_unix_seconds,
+            ..
+        } = &mission.state
+        else {
+            panic!("expected the mission to still be Launched, got {:?}", mission.state);
+        };
+        let escape_unix_seconds = escape_unix_seconds.expect("escape was observed above");
+        let capture_unix_seconds = capture_unix_seconds.expect("capture was observed above");
+        assert!(plan.departure.to_unix_seconds() < escape_unix_seconds);
+        assert!(escape_unix_seconds < capture_unix_seconds);
+    }
+
+    /// Running the clock back past a launched mission's own departure date
+    /// un-launches it — caught by the mission-planning demo page's reverse
+    /// clock control, which can send the simulated clock anywhere, including
+    /// back across a departure `search_missions` already solved. Without
+    /// this, `update_spacecraft` would keep evaluating the escape hyperbola
+    /// on the epoch it spawned from, the same wrong-branch concern
+    /// `launch_missions`'s own docs already raise about launching too early.
+    #[test]
+    fn a_mission_reversed_past_its_departure_is_unlaunched_and_relaunches_forward() {
+        let start_unix_seconds = Epoch::J2000
+            .advanced_by_seconds(1_200.0 * 86_400.0)
+            .to_unix_seconds();
+
+        let mut app = App::new();
+        app.add_plugins(TaskPoolPlugin::default())
+            .init_resource::<ReferenceFrame>()
+            .init_resource::<ViewState>()
+            .insert_resource(SimClock {
+                unix_seconds: start_unix_seconds,
+                ..SimClock::default()
+            })
+            .add_plugins(SolarSystemPlugin)
+            .add_plugins(MissionPlugin {
+                initial: Vec::new(),
+            });
+
+        app.world_mut()
+            .resource_mut::<MissionSettings>()
+            .add(MissionRequest {
+                id: "test".to_string(),
+                ..MissionRequest::default()
+            });
+
+        let is_launched = |app: &App| {
+            matches!(
+                app.world()
+                    .resource::<MissionSettings>()
+                    .missions
+                    .iter()
+                    .find(|mission| mission.request.id == "test")
+                    .map(|mission| &mission.state),
+                Some(MissionState::Launched { .. })
+            )
+        };
+        let spacecraft_count =
+            |app: &mut App| app.world_mut().query::<&TrackedSpacecraft>().iter(app.world()).count();
+
+        // Run forward past the known-good departure (~53 days in) until launched.
+        for _ in 0..(60 * 24) {
+            app.world_mut().resource_mut::<SimClock>().unix_seconds += 3_600.0;
+            app.update();
+            if is_launched(&app) {
+                break;
+            }
+        }
+        assert!(is_launched(&app), "the mission never launched");
+        assert_eq!(spacecraft_count(&mut app), 1);
+
+        // A little further forward, still nowhere near escaping Earth.
+        for _ in 0..24 {
+            app.world_mut().resource_mut::<SimClock>().unix_seconds += 3_600.0;
+            app.update();
+        }
+
+        // Now run the clock all the way back past the departure date.
+        for _ in 0..(90 * 24) {
+            app.world_mut().resource_mut::<SimClock>().unix_seconds -= 3_600.0;
+            app.update();
+        }
+        assert!(
+            !is_launched(&app),
+            "a mission reversed past its own departure should have un-launched"
+        );
+        assert_eq!(
+            spacecraft_count(&mut app),
+            0,
+            "the un-launched mission's spacecraft should have despawned"
+        );
+
+        // And forward again should relaunch it, identically — further this
+        // time, since the reversal above ran the clock back well before the
+        // departure date, not just up to it.
+        for _ in 0..(150 * 24) {
+            app.world_mut().resource_mut::<SimClock>().unix_seconds += 3_600.0;
+            app.update();
+            if is_launched(&app) {
+                break;
+            }
+        }
+        assert!(is_launched(&app), "the mission never relaunched");
+        assert_eq!(spacecraft_count(&mut app), 1);
     }
 
     /// An unknown body name fails the search cleanly rather than panicking.
@@ -654,7 +948,7 @@ mod tests {
         app.add_plugins(TaskPoolPlugin::default())
             .init_resource::<ReferenceFrame>()
             .init_resource::<ViewState>()
-            .insert_resource(Sun::default())
+            .insert_resource(SimClock::default())
             .add_plugins(SolarSystemPlugin)
             .add_plugins(MissionPlugin {
                 initial: Vec::new(),

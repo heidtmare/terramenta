@@ -834,3 +834,19 @@ body.panel-collapsed #panel {
     animation: none;
   }
 }
+
+/* mission-demo.html only: the mission phase buttons double as a "jump to"
+   scrubber, so they need a reached/current look `.button` has no reason to
+   have anywhere else, plus a disabled state for whichever phases the mission
+   hasn't reached yet. */
+body.mission-demo .buttons .button.selected {
+  color: #06121f;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+body.mission-demo .buttons .button:disabled {
+  color: var(--ink-faint);
+  cursor: default;
+  opacity: 0.5;
+}

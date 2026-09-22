@@ -27,17 +27,28 @@ use crate::view::ViewMode;
 /// Starts the globe on a canvas, by CSS selector, loading its assets from a
 /// path relative to the page.
 ///
-/// Either argument may be `null` for its default — `"#terramenta"` and
-/// `"assets"`. This does not return in the usual sense: winit hands control to
+/// `canvas_selector` and `asset_path` may be `null` for their defaults —
+/// `"#terramenta"` and `"assets"`. `initial_view` is `"globe"` or
+/// `"heliocentric"` — `null` or an unrecognized name defaults to `"globe"`.
+/// Starting in `"heliocentric"` settles straight into that view before the
+/// first frame, with no pull-back, no fade and no globe view ever drawn —
+/// unlike calling `setView("heliocentric")` right after this, which still
+/// plays the ordinary transition.
+///
+/// This does not return in the usual sense: winit hands control to
 /// the browser's event loop by unwinding through an exception, which the caller
 /// is expected to catch and ignore. `terramenta-webapp/src/globe.js` shows what
 /// that looks like.
 #[wasm_bindgen]
-pub fn start(canvas_selector: Option<String>, asset_path: Option<String>) {
+pub fn start(canvas_selector: Option<String>, asset_path: Option<String>, initial_view: Option<String>) {
     let defaults = GlobeConfig::default();
     crate::app(GlobeConfig {
         canvas_selector: canvas_selector.unwrap_or(defaults.canvas_selector),
         asset_path: asset_path.unwrap_or(defaults.asset_path),
+        initial_view: initial_view
+            .as_deref()
+            .and_then(ViewMode::from_id)
+            .unwrap_or(defaults.initial_view),
         // A web embedder adds its layers through `addOverlay`, `addEphemeris`
         // and `addMission` once the module has loaded; the queue holds them
         // until the globe is there to take them.

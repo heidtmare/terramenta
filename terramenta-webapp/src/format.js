@@ -20,14 +20,20 @@ export function altitude(km) {
  *
  * `360×` is true but not much use; "1 day / 4 min" is the thing you actually
  * want to know when you are choosing a speed to watch the terminator at.
+ *
+ * A negative `scale` runs the clock backward — reported the same way, with
+ * "reverse" added, since the magnitude is what says how fast either way.
  */
 export function timeScale(scale) {
   const secondsPerDay = 86_400;
-  const realSeconds = secondsPerDay / scale;
-  if (realSeconds < 1) return `${scale.toLocaleString()}× · ${(1 / realSeconds).toFixed(1)} days / s`;
-  if (realSeconds < 90) return `${scale.toLocaleString()}× · 1 day / ${realSeconds.toFixed(0)} s`;
-  if (realSeconds < 5400) return `${scale.toLocaleString()}× · 1 day / ${(realSeconds / 60).toFixed(0)} min`;
-  return `${scale.toLocaleString()}× · 1 day / ${(realSeconds / 3600).toFixed(1)} h`;
+  const magnitude = Math.abs(scale);
+  const realSeconds = secondsPerDay / magnitude;
+  const suffix = scale < 0 ? " reverse" : "";
+  if (realSeconds < 1) return `${magnitude.toLocaleString()}×${suffix} · ${(1 / realSeconds).toFixed(1)} days / s`;
+  if (realSeconds < 90) return `${magnitude.toLocaleString()}×${suffix} · 1 day / ${realSeconds.toFixed(0)} s`;
+  if (realSeconds < 5400)
+    return `${magnitude.toLocaleString()}×${suffix} · 1 day / ${(realSeconds / 60).toFixed(0)} min`;
+  return `${magnitude.toLocaleString()}×${suffix} · 1 day / ${(realSeconds / 3600).toFixed(1)} h`;
 }
 
 /**

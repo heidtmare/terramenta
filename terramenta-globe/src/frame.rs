@@ -26,7 +26,7 @@
 
 use bevy::prelude::*;
 
-use crate::sun::Sun;
+use crate::time::SimClock;
 
 /// Seconds from the Unix epoch to J2000.0, the epoch the sidereal angle is
 /// measured from.
@@ -199,7 +199,7 @@ impl Plugin for FramePlugin {
                 Update,
                 (FrameSet::Settle, FrameSet::Camera, FrameSet::Apply)
                     .chain()
-                    .after(crate::sun::advance_sun),
+                    .after(crate::time::advance_clock),
             )
             .add_systems(
                 Update,
@@ -230,8 +230,8 @@ pub(crate) fn frame_controls(
     });
 }
 
-pub(crate) fn sync_earth_rotation(sun: Res<Sun>, mut frame: ResMut<ReferenceFrame>) {
-    frame.sync_rotation(sun.unix_seconds);
+pub(crate) fn sync_earth_rotation(clock: Res<SimClock>, mut frame: ResMut<ReferenceFrame>) {
+    frame.sync_rotation(clock.unix_seconds);
 }
 
 /// Greenwich mean sidereal time as an angle in radians.

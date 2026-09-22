@@ -33,7 +33,7 @@ use bevy::shader::ShaderRef;
 
 use crate::solar::{FloatingOrigin, SolarBody, SolarSystem, TrackedSpacecraft, floating_offset};
 use crate::starfield::{self, Starfield, StarfieldMaterial};
-use crate::sun::Sun;
+use crate::time::SimClock;
 use crate::view::{ViewState, in_heliocentric_view};
 use terramenta_solare::{Epoch, FrameId};
 
@@ -533,7 +533,7 @@ fn apply_heliocentric_orbit(
     time: Res<Time>,
     solar_system: Res<SolarSystem>,
     origin: Res<FloatingOrigin>,
-    sun: Res<Sun>,
+    clock: Res<SimClock>,
     mut camera: Single<(&mut HeliocentricCamera, &mut Transform)>,
 ) {
     let (rig, transform) = &mut *camera;
@@ -546,7 +546,7 @@ fn apply_heliocentric_orbit(
     rig.pitch += (rig.target_pitch - rig.pitch) * t;
     rig.distance += (rig.target_distance - rig.distance) * t;
 
-    let epoch = Epoch::from_unix_seconds(sun.unix_seconds);
+    let epoch = Epoch::from_unix_seconds(clock.unix_seconds);
     let anchor_position = floating_offset(
         solar_system.tree(),
         anchor,

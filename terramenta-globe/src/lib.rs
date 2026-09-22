@@ -40,6 +40,7 @@ mod starfield;
 mod sun;
 mod tessellate;
 mod tiles;
+mod time;
 mod vector_tiles;
 mod view;
 #[cfg(target_arch = "wasm32")]
@@ -68,8 +69,9 @@ use solar::SolarSystemPlugin;
 use starfield::StarfieldPlugin;
 use sun::SunPlugin;
 use tiles::TilePlugin;
+use time::TimePlugin;
 use vector_tiles::{VectorTileLayer, VectorTilePlugin, VectorTileSourcePlugin};
-use view::ViewPlugin;
+use view::{ViewMode, ViewPlugin};
 use wms::WmsConfig;
 use wmts::WmtsConfig;
 
@@ -104,6 +106,13 @@ pub struct GlobeConfig {
     /// anything this crate launches on its own. A web embedder adds its own
     /// through [`api::GlobeCommand::AddMission`].
     pub missions: Vec<MissionRequest>,
+    /// Which view the globe starts in. [`ViewMode::Globe`] unless an embedder
+    /// wants a page that never shows the Earth globe at all: starting in
+    /// [`ViewMode::Heliocentric`] settles straight into that view before the
+    /// first frame, with no pull-back, no fade and no globe view ever drawn —
+    /// unlike sending [`api::GlobeCommand::SetView`] right after startup,
+    /// which still plays the ordinary transition.
+    pub initial_view: ViewMode,
 }
 
 impl Default for GlobeConfig {
@@ -114,6 +123,7 @@ impl Default for GlobeConfig {
             overlays: Vec::new(),
             ephemerides: Vec::new(),
             missions: Vec::new(),
+            initial_view: ViewMode::Globe,
         }
     }
 }
@@ -188,6 +198,7 @@ pub fn app(config: GlobeConfig) -> App {
             ApiPlugin,
             GlobePlugin,
             OrbitCameraPlugin,
+            TimePlugin,
             SunPlugin,
             MoonPlugin,
             FramePlugin,
@@ -199,7 +210,9 @@ pub fn app(config: GlobeConfig) -> App {
             StarfieldPlugin,
         ))
         .add_plugins((
-            ViewPlugin,
+            ViewPlugin {
+                initial: config.initial_view,
+            },
             HeliocentricPlugin,
             TilePlugin,
             VectorTilePlugin,

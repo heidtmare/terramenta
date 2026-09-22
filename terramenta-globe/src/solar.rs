@@ -33,7 +33,7 @@ use terramenta_solare::{Epoch, FrameId, FrameTree, StateVector};
 use crate::frame::{FrameSet, ReferenceFrame};
 use crate::geo::EARTH_RADIUS_KM;
 use crate::gnc::scene_from_canonical;
-use crate::sun::Sun;
+use crate::time::SimClock;
 use crate::view::ViewState;
 
 /// The solar system's frame tree, rooted at the Solar System Barycentre with
@@ -149,10 +149,10 @@ pub fn spawn_spacecraft(
 /// having to name which body is "current".
 fn update_spacecraft(
     mut solar_system: ResMut<SolarSystem>,
-    sun: Res<Sun>,
+    clock: Res<SimClock>,
     mut spacecraft: Query<&mut TrackedSpacecraft>,
 ) {
-    let epoch = Epoch::from_unix_seconds(sun.unix_seconds);
+    let epoch = Epoch::from_unix_seconds(clock.unix_seconds);
     for mut craft in &mut spacecraft {
         craft.0.update(&mut solar_system.tree, epoch);
     }
@@ -191,12 +191,12 @@ pub(crate) fn floating_offset(
 fn place_solar_bodies(
     solar_system: Res<SolarSystem>,
     origin: Res<FloatingOrigin>,
-    sun: Res<Sun>,
+    clock: Res<SimClock>,
     frame: Res<ReferenceFrame>,
     view: Res<ViewState>,
     mut bodies: Query<(&SolarBody, &mut Transform)>,
 ) {
-    let epoch = Epoch::from_unix_seconds(sun.unix_seconds);
+    let epoch = Epoch::from_unix_seconds(clock.unix_seconds);
     let (orientation, km_per_unit) = if view.is_heliocentric() {
         (Quat::IDENTITY, ASTRONOMICAL_UNIT_KM)
     } else {
@@ -340,16 +340,16 @@ mod tests {
             .insert_resource(FloatingOrigin { frame: earth_frame })
             .insert_resource(ReferenceFrame::default())
             .insert_resource(ViewState::default())
-            .insert_resource(Sun {
+            .insert_resource(SimClock {
                 unix_seconds: 946_728_000.0, // Epoch::J2000, as Unix seconds.
-                ..Sun::default()
+                ..SimClock::default()
             })
             .add_systems(Update, (update_spacecraft, place_solar_bodies).chain());
         app.world_mut().spawn(bundle);
 
         let mut escaped = false;
         for _ in 0..(60 * 24) {
-            app.world_mut().resource_mut::<Sun>().unix_seconds += 3_600.0;
+            app.world_mut().resource_mut::<SimClock>().unix_seconds += 3_600.0;
             app.update();
             if app.world().resource::<SolarSystem>().tree.parent(frame) == Some(sun_frame) {
                 escaped = true;

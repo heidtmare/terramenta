@@ -40,8 +40,9 @@ use crate::mission::{MissionReport, MissionSettings};
 use crate::overlays::{self, OverlaySettings};
 use crate::placemark::{self, PlacemarkSettings};
 use crate::solar::SolarSystem;
-use crate::sun::{self, Sun};
+use crate::sun::Sun;
 use crate::tiles::TileCache;
+use crate::time::{self, SimClock};
 use crate::vector_tiles::{self, VectorTileCache, VectorTileSettings};
 use crate::view::{RequestViewChange, ViewState};
 
@@ -475,8 +476,8 @@ impl Limits {
         Self {
             min_altitude_km,
             max_altitude_km,
-            min_time_scale: sun::MIN_TIME_SCALE,
-            max_time_scale: sun::MAX_TIME_SCALE,
+            min_time_scale: time::MIN_TIME_SCALE,
+            max_time_scale: time::MAX_TIME_SCALE,
             max_vector_tile_latitude: crate::mvt::MAX_LATITUDE,
             min_graticule_step: MIN_GRATICULE_STEP,
             max_graticule_step: MAX_GRATICULE_STEP,
@@ -789,6 +790,24 @@ struct LayerSources<'w> {
     missions: ResMut<'w, MissionSettings>,
 }
 
+/// [`SimClock`] and [`Sun`], writable together — every `GlobeCommand` that
+/// touches the clock or the shading switch reaches both, and bundling them
+/// keeps [`apply_commands`] under the same sixteen-parameter ceiling
+/// [`LayerSources`] answers to.
+#[derive(SystemParam)]
+struct ClockAndSun<'w> {
+    clock: ResMut<'w, SimClock>,
+    sun: ResMut<'w, Sun>,
+}
+
+/// The read-only counterpart to [`ClockAndSun`], for [`publish_state`] on the
+/// same terms [`LayerReports`] pairs with [`LayerSources`].
+#[derive(SystemParam)]
+pub(crate) struct ClockAndSunReport<'w> {
+    clock: Res<'w, SimClock>,
+    sun: Res<'w, Sun>,
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "commands reach every controllable part of the globe, so applying them necessarily borrows all of them"
@@ -802,7 +821,7 @@ fn apply_commands(
     mut helio: Query<&mut HeliocentricCamera>,
     solar_system: Res<SolarSystem>,
     mut gnc: ResMut<GncSettings>,
-    mut sun: ResMut<Sun>,
+    clock_and_sun: ClockAndSun,
     mut imagery: ResMut<ImagerySettings>,
     mut vector_tiles: ResMut<VectorTileSettings>,
     mut hud: ResMut<HudSettings>,
@@ -815,6 +834,10 @@ fn apply_commands(
         mut ephemerides,
         mut missions,
     } = sources;
+    let ClockAndSun {
+        mut clock,
+        mut sun,
+    } = clock_and_sun;
 
     let commands = take_queued();
     if commands.is_empty() {
@@ -893,16 +916,16 @@ fn apply_commands(
             GlobeCommand::SetGncTrackOrbits(orbits) => gnc.set_track_orbits(orbits),
             GlobeCommand::SetGncFocus(focus) => gnc.focus = focus,
 
-            GlobeCommand::SetSunPaused(paused) => sun.paused = paused,
-            GlobeCommand::SetTimeScale(scale) => sun.set_time_scale(scale),
+            GlobeCommand::SetSunPaused(paused) => clock.paused = paused,
+            GlobeCommand::SetTimeScale(scale) => clock.set_time_scale(scale),
             GlobeCommand::SetClock(unix_seconds) => {
-                sun.set_clock(unix_seconds);
+                clock.set_clock(unix_seconds);
                 // The rotation for this tick was settled from the old clock.
-                frame.sync_rotation(sun.unix_seconds);
+                frame.sync_rotation(clock.unix_seconds);
             }
             GlobeCommand::SnapClockToNow => {
-                sun.snap_to_now();
-                frame.sync_rotation(sun.unix_seconds);
+                clock.snap_to_now();
+                frame.sync_rotation(clock.unix_seconds);
             }
             GlobeCommand::SetSunShaded(shaded) => sun.shaded = shaded,
 
@@ -1042,7 +1065,7 @@ pub(crate) fn publish_state(
     camera: Query<&OrbitCamera>,
     cursor: Res<Cursor>,
     frames: FrameReport,
-    sun: Res<Sun>,
+    clock_and_sun: ClockAndSunReport,
     imagery: Res<ImagerySettings>,
     tiles: Res<TileCache>,
     vector_settings: Res<VectorTileSettings>,
@@ -1062,6 +1085,7 @@ pub(crate) fn publish_state(
         ephemerides,
         missions,
     } = layers;
+    let ClockAndSunReport { clock, sun } = clock_and_sun;
 
     let state = GlobeState {
         camera: CameraState {
@@ -1074,13 +1098,13 @@ pub(crate) fn publish_state(
             mode: frames.frame.mode.id(),
             label: frames.frame.mode.label(),
         },
-        gnc: frames.describe(&ephemerides, sun.unix_seconds),
+        gnc: frames.describe(&ephemerides, clock.unix_seconds),
         sun: SunState {
-            paused: sun.paused,
+            paused: clock.paused,
             shaded: sun.shaded,
-            time_scale: sun.time_scale,
-            unix_seconds: sun.unix_seconds,
-            utc: sun.format_utc(),
+            time_scale: clock.time_scale,
+            unix_seconds: clock.unix_seconds,
+            utc: clock.format_utc(),
             subsolar: sun.subsolar,
         },
         imagery: ImageryState {
@@ -1102,8 +1126,8 @@ pub(crate) fn publish_state(
             hovered: overlays::hovered(&overlays),
             pinned: overlays::pinned(&overlays),
         },
-        ephemerides: ephemeris::describe(&ephemerides, sun.unix_seconds),
-        missions: missions.describe(),
+        ephemerides: ephemeris::describe(&ephemerides, clock.unix_seconds),
+        missions: missions.describe(clock.unix_seconds),
         placemarks: placemarks.describe(&sun),
         hud: HudState {
             visible: hud.visible,

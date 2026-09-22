@@ -11,8 +11,8 @@
 //!
 //! **Positions are computed, not parsed.** [`crate::omm`] turns each record
 //! into a propagator; nothing has a coordinate until this module evaluates
-//! one, against [`crate::sun::Sun::unix_seconds`] — the simulated clock, not
-//! the wall clock. Satellites follow the clock controls like everything else:
+//! one, against [`crate::time::SimClock::unix_seconds`] — the simulated
+//! clock, not the wall clock. Satellites follow the clock controls like everything else:
 //! pausing, time-scaling, and jumping all apply.
 //!
 //! **Geometry is rebuilt every frame, not loaded once.** Other layers parse a
@@ -83,7 +83,7 @@ use crate::overlays::{
     AltitudeMode, FeaturePaint, HIGHLIGHT_COLOR, HIGHLIGHT_GROW_PX, OverlayAltitude, OverlaySource,
     OverlayStyle, OverlayStyleInfo, PICK_SLACK_PX, VectorMaterial, VectorMode,
 };
-use crate::sun::Sun;
+use crate::time::SimClock;
 use crate::tiles::MAX_TILE_RADIUS;
 
 /// The asset source OMM catalogues are fetched over.
@@ -1260,7 +1260,7 @@ fn adopt_catalogues(mut settings: ResMut<EphemerisSettings>) {
 fn draw_ephemerides(
     mut commands: Commands,
     settings: ResMut<EphemerisSettings>,
-    sun: Res<Sun>,
+    clock: Res<SimClock>,
     frame: Res<ReferenceFrame>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<VectorMaterial>>,
@@ -1277,7 +1277,7 @@ fn draw_ephemerides(
         return;
     }
 
-    let now = sun.unix_seconds;
+    let now = clock.unix_seconds;
     let mode = frame.mode;
 
     for layer in &mut settings.layers {

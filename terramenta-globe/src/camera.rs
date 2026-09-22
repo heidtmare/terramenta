@@ -274,7 +274,7 @@ struct TouchTracker {
     previous_spread: Option<f32>,
 }
 
-fn spawn_camera(mut commands: Commands) {
+pub(crate) fn spawn_camera(mut commands: Commands) {
     let orbit = OrbitCamera::default();
     commands.spawn((
         Name::new("Orbit Camera"),
