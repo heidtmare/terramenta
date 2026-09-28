@@ -41,6 +41,7 @@ mod sun;
 mod tessellate;
 mod tiles;
 mod time;
+mod trail;
 mod vector_tiles;
 mod view;
 #[cfg(target_arch = "wasm32")]
@@ -214,6 +215,7 @@ pub fn app(config: GlobeConfig) -> App {
                 initial: config.initial_view,
             },
             HeliocentricPlugin,
+            trail::TrailPlugin,
             TilePlugin,
             VectorTilePlugin,
             OverlayPlugin,

@@ -32,6 +32,18 @@ mission clock would make, until it crosses into Mars' sphere of influence and
 is captured. The launch and landing flashes and the moving Earth, Mars, and
 spacecraft markers are all animated from that same flight data, on a loop.*
 
+[![The mission-planning demo flying Earth to Mars: the spacecraft climbs out of its parking orbit over the globe with a white trail behind it and its planned escape dashed in yellow ahead, then the view cuts to the heliocentric scene and follows it along the dashed Lambert transfer until Mars captures it](docs/mission-demo.gif)](docs/mission-demo.mp4)
+
+*Recorded from `terramenta-webapp`'s
+[`mission-demo.html`](terramenta-webapp/mission-demo.html), running the globe
+module in Chromium over WebGPU. The demo searches for an Earth-Mars launch
+window, skips the clock to departure, follows the spacecraft out of its parking
+orbit in the globe view, and cuts to the heliocentric view once it escapes
+Earth's sphere of influence, until Mars captures it. The white line is where
+the spacecraft has been; the dashed yellow line is where the mission plan has
+it going. The cruise is sped up. Click through for the
+[full-resolution video](docs/mission-demo.mp4).*
+
 ## Components
 
 Two independent pairs, each a Rust engine plus the client that drives it:

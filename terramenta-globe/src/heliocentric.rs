@@ -71,6 +71,11 @@ pub(crate) const HELIO_MIN_DISTANCE_AU: f32 = 0.05;
 pub(crate) const HELIO_MAX_DISTANCE_AU: f32 = 6.0;
 /// Where the establishing shot lands, on the cut into this view.
 pub(crate) const HELIO_DEFAULT_DISTANCE_AU: f32 = 3.0;
+/// Where the shot lands instead when the camera is following a spacecraft
+/// into this view — closer in, so the spacecraft and the trail it is laying
+/// down read as the subject rather than a speck against the whole inner
+/// solar system.
+pub(crate) const HELIO_FOLLOW_DISTANCE_AU: f32 = 1.5;
 
 const DRAG_SENSITIVITY: f32 = 0.005;
 const KEY_ORBIT_SPEED: f32 = 1.2;

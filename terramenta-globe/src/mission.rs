@@ -42,6 +42,7 @@ use terramenta_solare::{Epoch, FrameId, escape_injection_state};
 
 use crate::solar::{SolarSystem, TrackedSpacecraft, spawn_spacecraft};
 use crate::time::SimClock;
+use crate::trail::MissionTrail;
 
 /// A body-to-body transfer, searched for from wherever the simulated clock
 /// is when this request is added.
@@ -420,6 +421,17 @@ fn launch_missions(
             origin_primary.gm_km3_s2,
         );
 
+        let trail = MissionTrail::plan(
+            &solar_system,
+            &plan,
+            origin_frame,
+            destination_frame,
+            sun_frame,
+            departure_state,
+            origin_primary.gm_km3_s2,
+            origin_soi_km,
+        );
+
         let primary = Primary {
             orbits: Some(Box::new(
                 Primary::sun(sun_frame).with_capture_candidates(vec![destination_primary]),
@@ -444,7 +456,7 @@ fn launch_missions(
         );
         mission.launches += 1;
         let frame = bundle.0.0;
-        let entity = commands.spawn(bundle).id();
+        let entity = commands.spawn((bundle, trail)).id();
         mission.state = MissionState::Launched {
             entity,
             frame,

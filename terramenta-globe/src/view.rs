@@ -27,7 +27,8 @@ use crate::frame::FrameSet;
 use crate::globe::AtmosphereMaterial;
 use crate::globe::Globe;
 use crate::heliocentric::{
-    GlobeSpacecraftMarker, HELIO_DEFAULT_DISTANCE_AU, HeliocentricCamera, HeliocentricVisual,
+    GlobeSpacecraftMarker, HELIO_DEFAULT_DISTANCE_AU, HELIO_FOLLOW_DISTANCE_AU, HeliocentricCamera,
+    HeliocentricVisual,
 };
 use crate::placemark::Placemark;
 use crate::solar::{FloatingOrigin, SolarSystem};
@@ -408,8 +409,13 @@ fn drive_view_transition(
                 helio.target_yaw = orbit.yaw;
                 helio.pitch = 0.35;
                 helio.target_pitch = 0.35;
-                helio.distance = HELIO_DEFAULT_DISTANCE_AU;
-                helio.target_distance = HELIO_DEFAULT_DISTANCE_AU;
+                let distance = if helio.following.is_some() {
+                    HELIO_FOLLOW_DISTANCE_AU
+                } else {
+                    HELIO_DEFAULT_DISTANCE_AU
+                };
+                helio.distance = distance;
+                helio.target_distance = distance;
                 settle_into_heliocentric(
                     &mut view,
                     &mut changed,
