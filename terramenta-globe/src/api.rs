@@ -134,6 +134,10 @@ pub enum GlobeCommand {
     /// through a relaunch, and until the next
     /// [`GlobeCommand::SetHeliocentricAnchor`]. An unknown id is not an
     /// error — the camera stays where it is until one by that name is added.
+    ///
+    /// The globe view honours the same lock: once the spacecraft launches,
+    /// the globe camera swaps its orbit for a shot from just behind it,
+    /// looking back at Earth — see [`crate::camera`].
     FollowMission(String),
 
     /// Whether both frames are drawn over the scene at once — the inertial
@@ -308,6 +312,8 @@ pub enum GlobeCommand {
     /// `placemarks.hovered` reports it.
     PinPlacemark(String),
     ClearPinnedPlacemark,
+    /// Whether the subsolar and sublunar placemarks are drawn at all.
+    SetPlacemarksEnabled(bool),
 
     SetHudVisible(bool),
     SetHelpVisible(bool),
@@ -361,6 +367,9 @@ pub struct GlobeState {
     /// Every mission requested via [`GlobeCommand::AddMission`], in the order
     /// they were added.
     pub missions: Vec<MissionInfo>,
+    /// `"globe"`, `"heliocentric"`, or `"transitioning"` for the switch
+    /// between them — see [`ViewState::id`].
+    pub view: &'static str,
     /// The icons standing on the points the sun and the moon are overhead.
     pub placemarks: PlacemarksState,
     pub hud: HudState,
@@ -1044,6 +1053,7 @@ fn apply_commands(
                 placemarks.pin(&body);
             }
             GlobeCommand::ClearPinnedPlacemark => placemarks.clear_pin(),
+            GlobeCommand::SetPlacemarksEnabled(enabled) => placemarks.enabled = enabled,
 
             GlobeCommand::SetHudVisible(visible) => hud.visible = visible,
             GlobeCommand::SetHelpVisible(visible) => hud.help_visible = visible,
@@ -1087,6 +1097,7 @@ pub(crate) fn publish_state(
     placemarks: placemark::PlacemarkPicks,
     hud: Res<HudSettings>,
     input: Res<GlobeInput>,
+    view: Res<ViewState>,
     mut stream: ResMut<StateStream>,
     mut latest: ResMut<LatestState>,
 ) {
@@ -1141,6 +1152,7 @@ pub(crate) fn publish_state(
         },
         ephemerides: ephemeris::describe(&ephemerides, clock.unix_seconds),
         missions: missions.describe(clock.unix_seconds),
+        view: view.id(),
         placemarks: placemarks.describe(&sun),
         hud: HudState {
             visible: hud.visible,

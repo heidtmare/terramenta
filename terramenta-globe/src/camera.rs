@@ -16,6 +16,12 @@
 //! moving the camera. Panning, the tile walk, and the readout are all written
 //! in terms of the anchor; `heading`/`tilt` and `gaze` are the only places
 //! the anchor/camera-position distinction matters.
+//!
+//! A mission lock taken out with [`HeliocentricCamera::follow_mission`] holds
+//! in this view too: once the spacecraft has launched, [`follow_mission`]
+//! swaps the orbit for a shot from just behind it, looking back past it at
+//! Earth, and keeps that shot through the departure for the heliocentric
+//! view — where [`crate::heliocentric`]'s own follow takes the same lock over.
 
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
@@ -25,13 +31,18 @@ use bevy::input::gestures::PinchGesture;
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit};
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
+use terramenta_solare::Epoch;
 
 use crate::api::keyboard_enabled;
-use crate::frame::{FrameRealigned, FrameSet};
+use crate::frame::{FrameRealigned, FrameSet, ReferenceFrame};
 use crate::geo::{EARTH_RADIUS_KM, LatLon};
 use crate::globe::GLOBE_RADIUS;
+use crate::gnc::scene_from_canonical;
 use crate::heliocentric::HeliocentricCamera;
-use crate::view::{in_globe_view, not_heliocentric_view};
+use crate::mission::MissionSettings;
+use crate::solar::{FloatingOrigin, SolarSystem};
+use crate::time::SimClock;
+use crate::view::{ViewState, in_globe_view, not_heliocentric_view};
 
 /// Closest approach, ~130 km above the surface.
 const MIN_DISTANCE: f32 = GLOBE_RADIUS * 1.02;
@@ -54,6 +65,29 @@ const TILT_LIMIT: f32 = FRAC_PI_2 - 0.09;
 /// How far free look can swing off the anchor: a full look to either side, but
 /// never behind, so the globe is always a drag back the way you came.
 const GAZE_LIMIT: f32 = FRAC_PI_2;
+
+/// How far back from a followed spacecraft the camera sits — close enough
+/// that the spacecraft's marker holds a steady size on screen while Earth is
+/// what shrinks behind it.
+const FOLLOW_RANGE: f32 = GLOBE_RADIUS * 1.5;
+/// How far back it has pulled by the end of the departure for the
+/// heliocentric view: the follow's counterpart to [`crate::view`]'s own
+/// departure distance, so leaving reads the same way with or without a lock.
+const FOLLOW_DEPARTURE_RANGE: f32 = GLOBE_RADIUS * 40.0;
+/// How far the follow camera is swung off the spacecraft's local vertical,
+/// toward its orbit normal, so Earth sits beside the spacecraft on screen
+/// rather than hidden straight behind it — kept inside the field of view's
+/// half-height (22.5°), so Earth never leaves the frame however far out the
+/// spacecraft gets.
+const FOLLOW_ELEVATION: f32 = 0.3;
+/// How long the camera takes to swing from its orbit onto a spacecraft that
+/// has just launched.
+const FOLLOW_BLEND_SECONDS: f32 = 1.0;
+/// Past this distance from [`FloatingOrigin`] the follow lets go, well inside
+/// the globe view's far plane — only reached if the clock outruns the
+/// departure for the heliocentric view, which is where a spacecraft that far
+/// out is meant to be watched from.
+const FOLLOW_MAX_DISTANCE: f32 = GLOBE_RADIUS * 400.0;
 
 pub struct OrbitCameraPlugin;
 
@@ -79,7 +113,12 @@ impl Plugin for OrbitCameraPlugin {
                     // that's what actually performs the pull-back and the
                     // return; it only stops once the heliocentric camera is
                     // the one drawing the screen.
-                    (follow_frame, apply_orbit.run_if(not_heliocentric_view))
+                    (
+                        follow_frame,
+                        (apply_orbit, follow_mission)
+                            .chain()
+                            .run_if(not_heliocentric_view),
+                    )
                         .chain()
                         .in_set(FrameSet::Camera),
                 )
@@ -446,6 +485,79 @@ fn apply_orbit(time: Res<Time>, mut camera: Single<(&mut OrbitCamera, &mut Trans
     **transform = orbit.transform();
 }
 
+/// Overrides [`apply_orbit`]'s shot with one locked onto the spacecraft of
+/// the mission [`HeliocentricCamera::following`] names, once it has launched.
+///
+/// The camera sits [`FOLLOW_RANGE`] behind the spacecraft, looking back
+/// along its local vertical at Earth — see [`follow_transform`] — and eases
+/// over from the orbit's own shot across [`FOLLOW_BLEND_SECONDS`] rather than
+/// cutting to it. [`OrbitCamera`] itself is left alone throughout, so the
+/// orbit picks up exactly where it was once the lock is released or the
+/// mission is run back before launch.
+///
+/// Through the departure for the heliocentric view the range eases out to
+/// [`FOLLOW_DEPARTURE_RANGE`] in step with [`ViewState::departure_progress`],
+/// the pull-back [`crate::view`] otherwise plays on [`OrbitCamera`].
+#[allow(clippy::too_many_arguments)]
+fn follow_mission(
+    time: Res<Time>,
+    view: Res<ViewState>,
+    clock: Res<SimClock>,
+    frame: Res<ReferenceFrame>,
+    solar_system: Res<SolarSystem>,
+    origin: Res<FloatingOrigin>,
+    missions: Option<Res<MissionSettings>>,
+    mut blend: Local<f32>,
+    mut camera: Single<(&HeliocentricCamera, &mut Transform)>,
+) {
+    let (helio, transform) = &mut *camera;
+    let spacecraft = helio
+        .following
+        .as_deref()
+        .zip(missions.as_deref())
+        .and_then(|(id, missions)| missions.spacecraft_frame(id));
+    let Some(spacecraft) = spacecraft else {
+        *blend = 0.0;
+        return;
+    };
+
+    let epoch = Epoch::from_unix_seconds(clock.unix_seconds);
+    let state = solar_system
+        .tree()
+        .state_of_relative_to(spacecraft, origin.frame, epoch);
+    let orientation = frame.inertial_to_world();
+    let position =
+        orientation * scene_from_canonical(state.position_km / f64::from(EARTH_RADIUS_KM));
+    let velocity = orientation * scene_from_canonical(state.velocity_km_s);
+    if !position.is_finite() || position.length() >= FOLLOW_MAX_DISTANCE {
+        *blend = 0.0;
+        return;
+    }
+
+    let range = FOLLOW_RANGE + (FOLLOW_DEPARTURE_RANGE - FOLLOW_RANGE) * view.departure_progress();
+    let follow = follow_transform(position, velocity, range);
+
+    *blend = (*blend + time.delta_secs() / FOLLOW_BLEND_SECONDS).min(1.0);
+    let t = *blend * *blend * (3.0 - 2.0 * *blend);
+    transform.translation = transform.translation.lerp(follow.translation, t);
+    transform.rotation = transform.rotation.slerp(follow.rotation, t);
+}
+
+/// The follow shot for a spacecraft at `position` moving at `velocity`, both
+/// relative to Earth in world space: `range` back from it along its local
+/// vertical, swung [`FOLLOW_ELEVATION`] toward its orbit normal, looking at
+/// it with that normal as up. With the spacecraft always dead centre, Earth
+/// sits roughly [`FOLLOW_ELEVATION`] above it on screen from any distance.
+fn follow_transform(position: Vec3, velocity: Vec3, range: f32) -> Transform {
+    let radial = position.normalize_or(Vec3::Y);
+    let normal = radial
+        .cross(velocity)
+        .try_normalize()
+        .unwrap_or_else(|| radial.any_orthonormal_vector());
+    let offset = radial * FOLLOW_ELEVATION.cos() + normal * FOLLOW_ELEVATION.sin();
+    Transform::from_translation(position + offset * range).looking_at(position, normal)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -461,6 +573,27 @@ mod tests {
             target_pitch: pitch,
             target_distance: distance,
             ..default()
+        }
+    }
+
+    #[test]
+    fn the_follow_shot_centres_the_spacecraft_with_earth_in_frame() {
+        let half_fov = 22.5_f32.to_radians();
+        for distance in [1.05, 10.0, 140.0] {
+            let position = Vec3::new(0.3, 0.2, 1.0).normalize() * distance;
+            let velocity = Vec3::new(1.0, -0.4, 0.1);
+            let transform = follow_transform(position, velocity, FOLLOW_RANGE);
+
+            let to_spacecraft = (position - transform.translation).normalize();
+            assert!(
+                (transform.forward().as_vec3() - to_spacecraft).length() < 1.0e-4,
+                "{distance}"
+            );
+            let to_earth = (-transform.translation).normalize();
+            let off_centre = transform.forward().angle_between(to_earth);
+            assert!(off_centre < half_fov, "{distance}: {off_centre}");
+            // And outside the globe, looking in.
+            assert!(transform.translation.length() > distance, "{distance}");
         }
     }
 

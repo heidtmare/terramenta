@@ -26,9 +26,7 @@ use crate::camera::{DEFAULT_DISTANCE, OrbitCamera};
 use crate::frame::FrameSet;
 use crate::globe::AtmosphereMaterial;
 use crate::globe::Globe;
-use crate::heliocentric::{
-    GlobeSpacecraftMarker, HELIO_DEFAULT_DISTANCE_AU, HeliocentricCamera, HeliocentricVisual,
-};
+use crate::heliocentric::{HELIO_DEFAULT_DISTANCE_AU, HeliocentricCamera, HeliocentricVisual};
 use crate::placemark::Placemark;
 use crate::solar::{FloatingOrigin, SolarSystem};
 use crate::starfield::StarfieldMaterial;
@@ -129,33 +127,6 @@ impl ViewState {
     /// back, and only jumps unit regime at the same instant the camera does.
     pub(crate) fn is_heliocentric(&self) -> bool {
         matches!(self, ViewState::Heliocentric)
-    }
-
-    /// The name the state snapshot reports this by: [`ViewMode::id`] for
-    /// either settled view, and `"transitioning"` for both legs between
-    /// them — so an interface can tell the switch it asked for has landed.
-    pub fn id(&self) -> &'static str {
-        match self {
-            ViewState::Globe => ViewMode::Globe.id(),
-            ViewState::Heliocentric => ViewMode::Heliocentric.id(),
-            ViewState::TransitioningOut { .. } | ViewState::TransitioningIn { .. } => {
-                "transitioning"
-            }
-        }
-    }
-
-    /// How far into the pull-back toward the heliocentric view the globe
-    /// camera is, eased the same way [`drive_view_transition`] eases
-    /// [`OrbitCamera::distance`] — `0.0` outside that leg. For a camera rig
-    /// that is not [`OrbitCamera`] (see [`crate::camera`]'s mission follow) to
-    /// pull back in step with it.
-    pub(crate) fn departure_progress(&self) -> f32 {
-        match self {
-            ViewState::TransitioningOut { elapsed, .. } => {
-                smoothstep((*elapsed / TRANSITION_OUT_SECONDS).clamp(0.0, 1.0))
-            }
-            _ => 0.0,
-        }
     }
 }
 
@@ -587,8 +558,7 @@ fn drop_departure_clutter(
 }
 
 /// Shows the globe's own visuals or the heliocentric bodies' meshes,
-/// whichever [`ViewChanged`] just switched to; the other set hides. A
-/// mission's [`GlobeSpacecraftMarker`] counts as one of the globe's own.
+/// whichever [`ViewChanged`] just switched to; the other set hides.
 ///
 /// The queries below all write [`Visibility`] on entity sets Bevy has
 /// no static way to prove disjoint from one another (different marker/material
@@ -615,7 +585,6 @@ fn toggle_body_visibility(
         Query<&mut Visibility, With<TileEntity>>,
         Query<&mut Visibility, With<VectorTileEntity>>,
         Query<&mut Visibility, With<Placemark>>,
-        Query<&mut Visibility, With<GlobeSpacecraftMarker>>,
     )>,
 ) {
     let Some(change) = changed.read().last() else {
@@ -636,9 +605,6 @@ fn toggle_body_visibility(
     }
     for mut visibility in &mut visuals.p3() {
         *visibility = as_visibility(heliocentric_visible);
-    }
-    for mut visibility in &mut visuals.p7() {
-        *visibility = as_visibility(globe_visible);
     }
     if heliocentric_visible {
         for mut visibility in &mut visuals.p4() {

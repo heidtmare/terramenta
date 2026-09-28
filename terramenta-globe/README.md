@@ -726,6 +726,11 @@ follows the first mission). The lock is held by mission id, not by frame, so it
 can be taken out before launch — the camera waits on the origin body, where the
 spacecraft will appear — and it rides through a relaunch when the clock is run
 back past departure. Picking a body with `setHeliocentricAnchor` releases it.
+The globe view holds the same lock: once the spacecraft launches, the globe
+camera trails it out of its parking orbit, looking back past it at Earth, and
+pulls back from it on the departure for the heliocentric view, where the
+heliocentric camera takes the lock over. The state snapshot's `view`
+(`"globe"`, `"heliocentric"` or `"transitioning"`) says which is showing.
 
 `terramenta-webapp`'s Mission tab is the reference: a porkchop plot to choose
 a window by eye, and a Launch button underneath it that sends the pair just

@@ -179,21 +179,6 @@ impl MissionSettings {
         self.missions.first().map(|mission| mission.request.id.as_str())
     }
 
-    /// Mission `id`'s spacecraft frame, if it is launched right now — what
-    /// [`crate::camera`]'s globe-view follow locks onto. Unlike
-    /// [`MissionSettings::camera_frame`] there is no stand-in before launch:
-    /// the globe camera already has Earth in view without being told to.
-    pub(crate) fn spacecraft_frame(&self, id: &str) -> Option<FrameId> {
-        let mission = self
-            .missions
-            .iter()
-            .find(|mission| mission.request.id == id)?;
-        match mission.state {
-            MissionState::Launched { frame, .. } => Some(frame),
-            _ => None,
-        }
-    }
-
     /// The frame a camera following mission `id` should orbit right now: the
     /// spacecraft's own once it has launched, and the origin body's before
     /// then — which is where the spacecraft will appear, so a lock taken out

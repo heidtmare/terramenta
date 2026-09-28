@@ -146,6 +146,8 @@ export const setHeliocentricAnchor = (anchor) => required().setHeliocentricAncho
  * Locks the heliocentric camera onto a mission's spacecraft, by the id it was
  * added under. Before launch the camera sits on the mission's origin body,
  * where the spacecraft will appear; `setHeliocentricAnchor` releases it.
+ * The globe view holds the same lock once the spacecraft has launched,
+ * trailing it out of its parking orbit with Earth behind it.
  */
 export const followMission = (id) => required().followMission(id);
 
@@ -552,6 +554,9 @@ export const clearPinnedSatellite = () => required().clearPinnedSatellite();
 export const pinPlacemark = (body) => required().pinPlacemark(body);
 
 export const clearPinnedPlacemark = () => required().clearPinnedPlacemark();
+
+/** Whether the subsolar and sublunar placemarks are drawn at all. */
+export const setPlacemarksEnabled = (enabled) => required().setPlacemarksEnabled(enabled);
 
 // --- The globe's own chrome ------------------------------------------------
 

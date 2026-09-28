@@ -122,20 +122,28 @@ export function mountMissionDemoPanel(root, missionId) {
 
   // --- Look at -------------------------------------------------------------
 
-  const anchorSection = section(
-    "Look at",
-    choice(
-      [
-        ["sun", "Sun"],
-        ["earth", "Earth"],
-        ["mars", "Mars"],
-        ["barycenter", "Barycenter"],
-        ["spacecraft", "Spacecraft"],
-      ],
-      (value) =>
-        value === "spacecraft" ? globe.followMission(missionId) : globe.setHeliocentricAnchor(value),
-    ).node,
+  // The page starts out following the spacecraft — see `mission-demo.js` —
+  // so that is what shows as picked. The globe reports no anchor back, so
+  // unlike the rest of this panel the pick is remembered here rather than
+  // set back from a snapshot. The bodies only take effect in the
+  // heliocentric view, and picking one releases the lock.
+  const anchorChoice = choice(
+    [
+      ["sun", "Sun"],
+      ["earth", "Earth"],
+      ["mars", "Mars"],
+      ["barycenter", "Barycenter"],
+      ["spacecraft", "Spacecraft"],
+    ],
+    (value) => {
+      anchorChoice.set(value);
+      if (value === "spacecraft") globe.followMission(missionId);
+      else globe.setHeliocentricAnchor(value);
+    },
   );
+  anchorChoice.set("spacecraft");
+
+  const anchorSection = section("Look at", anchorChoice.node);
 
   root.append(clockSection, missionSection, anchorSection);
 

@@ -171,7 +171,9 @@ pub fn set_heliocentric_anchor(anchor: &str) {
 /// Locks the heliocentric camera onto the spacecraft of the mission added
 /// as `id` — see `addMission` — keeping its current yaw, pitch and distance.
 /// Before launch the camera sits on the mission's origin body, where the
-/// spacecraft will appear; `setHeliocentricAnchor` releases the lock.
+/// spacecraft will appear; `setHeliocentricAnchor` releases the lock. The
+/// globe view holds the same lock, trailing the spacecraft out of its parking
+/// orbit with Earth behind it.
 #[wasm_bindgen(js_name = followMission)]
 pub fn follow_mission(id: String) {
     api::send(GlobeCommand::FollowMission(id));
@@ -1182,6 +1184,13 @@ pub fn pin_placemark(body: String) {
 #[wasm_bindgen(js_name = clearPinnedPlacemark)]
 pub fn clear_pinned_placemark() {
     api::send(GlobeCommand::ClearPinnedPlacemark);
+}
+
+/// Whether the subsolar and sublunar placemarks are drawn at all. Off, they
+/// are neither shown nor picked; a pin already set stays set.
+#[wasm_bindgen(js_name = setPlacemarksEnabled)]
+pub fn set_placemarks_enabled(enabled: bool) {
+    api::send(GlobeCommand::SetPlacemarksEnabled(enabled));
 }
 
 // ---------------------------------------------------------------------------

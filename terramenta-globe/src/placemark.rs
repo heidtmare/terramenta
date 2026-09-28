@@ -172,6 +172,11 @@ pub struct Placemark {
 /// pointing at the globe, however many hit tests are behind it.
 #[derive(Resource, Debug, Clone, Copy)]
 pub struct PlacemarkSettings {
+    /// Whether the placemarks are drawn at all. Off, both are hidden — and so
+    /// never picked, since [`pick_placemarks`] skips a hidden icon — until
+    /// switched back on, when [`hide_over_the_horizon`] shows them again on
+    /// its next pass.
+    pub enabled: bool,
     /// Whether the cursor picks placemarks at all. Off, nothing is hovered and
     /// no halo is drawn; a pin already set stays set.
     pub picking: bool,
@@ -185,6 +190,7 @@ pub struct PlacemarkSettings {
 impl Default for PlacemarkSettings {
     fn default() -> Self {
         Self {
+            enabled: true,
             picking: true,
             hovered: None,
             pinned: None,
@@ -302,13 +308,15 @@ fn place_placemarks(
     }
 }
 
-/// Hides the placemarks whose point has gone round the back of the globe.
+/// Hides the placemarks whose point has gone round the back of the globe —
+/// or all of them, while [`PlacemarkSettings::enabled`] is off.
 ///
 /// This is the other half of drawing an icon that ignores the depth buffer —
 /// see [`IconMaterial::specialize`]. Nothing in the scene can hide a placemark
 /// any more, so the planet has to hide it here instead: an icon is drawn only
 /// while its anchor is on the near side of the horizon its own globe cuts.
 fn hide_over_the_horizon(
+    settings: Res<PlacemarkSettings>,
     camera: Query<&GlobalTransform, With<Camera3d>>,
     mut placemarks: Query<(&Transform, &mut Visibility), With<Placemark>>,
 ) {
@@ -318,7 +326,7 @@ fn hide_over_the_horizon(
     let eye = camera.translation();
 
     for (transform, mut visibility) in &mut placemarks {
-        *visibility = if above_the_horizon(transform.translation, eye) {
+        *visibility = if settings.enabled && above_the_horizon(transform.translation, eye) {
             Visibility::Inherited
         } else {
             Visibility::Hidden
@@ -463,6 +471,8 @@ fn icon_quad() -> Mesh {
 #[derive(Serialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct PlacemarksState {
+    /// Whether the placemarks are drawn at all.
+    pub enabled: bool,
     /// Whether the cursor is picking placemarks.
     pub picking: bool,
     /// The placemark under the cursor, if there is one.
@@ -509,6 +519,7 @@ impl PlacemarkPicks<'_> {
             })
         };
         PlacemarksState {
+            enabled: self.settings.enabled,
             picking: self.settings.picking,
             hovered: describe(self.settings.hovered),
             pinned: describe(self.settings.pinned),
