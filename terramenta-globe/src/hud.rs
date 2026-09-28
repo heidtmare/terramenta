@@ -30,6 +30,7 @@ const HELP_TEXT: &str = "drag  orbit\n\
                          O  satellites    shift O  orbit trails\n\
                          U  solar system view\n\
                          1 2 3 4  anchor sun / earth / mars / barycenter\n\
+                         5  follow first mission's spacecraft\n\
                          H  hide this";
 
 /// Whether the readout and its key list are drawn.

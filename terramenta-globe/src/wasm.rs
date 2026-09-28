@@ -168,6 +168,15 @@ pub fn set_heliocentric_anchor(anchor: &str) {
     }
 }
 
+/// Locks the heliocentric camera onto the spacecraft of the mission added
+/// as `id` — see `addMission` — keeping its current yaw, pitch and distance.
+/// Before launch the camera sits on the mission's origin body, where the
+/// spacecraft will appear; `setHeliocentricAnchor` releases the lock.
+#[wasm_bindgen(js_name = followMission)]
+pub fn follow_mission(id: String) {
+    api::send(GlobeCommand::FollowMission(id));
+}
+
 // ---------------------------------------------------------------------------
 // Both frames at once
 // ---------------------------------------------------------------------------

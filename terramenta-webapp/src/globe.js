@@ -142,6 +142,13 @@ export const toggleView = () => required().toggleView();
  */
 export const setHeliocentricAnchor = (anchor) => required().setHeliocentricAnchor(anchor);
 
+/**
+ * Locks the heliocentric camera onto a mission's spacecraft, by the id it was
+ * added under. Before launch the camera sits on the mission's origin body,
+ * where the spacecraft will appear; `setHeliocentricAnchor` releases it.
+ */
+export const followMission = (id) => required().followMission(id);
+
 // --- Both frames at once ---------------------------------------------------
 // The frame above is a choice; this draws both of them over the scene at the
 // same time, so the rotation between them is something to look at rather than

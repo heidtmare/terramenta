@@ -127,6 +127,14 @@ pub enum GlobeCommand {
     /// current yaw, pitch and distance. A no-op outside the heliocentric
     /// view — see [`crate::heliocentric`].
     SetHeliocentricAnchor(HeliocentricAnchor),
+    /// Locks the heliocentric camera onto a mission's spacecraft, by the id
+    /// it was added under, keeping the camera's current yaw, pitch and
+    /// distance. Until the mission launches the camera sits on its origin
+    /// body, which is where the spacecraft will appear; the lock holds
+    /// through a relaunch, and until the next
+    /// [`GlobeCommand::SetHeliocentricAnchor`]. An unknown id is not an
+    /// error — the camera stays where it is until one by that name is added.
+    FollowMission(String),
 
     /// Whether both frames are drawn over the scene at once — the inertial
     /// triad, the Earth-fixed graticule, the sidereal angle between them and a
@@ -902,6 +910,11 @@ fn apply_commands(
             GlobeCommand::SetHeliocentricAnchor(anchor) => {
                 if let Some(mut helio) = helio.iter_mut().next() {
                     helio.set_anchor(anchor, &solar_system);
+                }
+            }
+            GlobeCommand::FollowMission(id) => {
+                if let Some(mut helio) = helio.iter_mut().next() {
+                    helio.follow_mission(id);
                 }
             }
 

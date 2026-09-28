@@ -130,8 +130,10 @@ export function mountMissionDemoPanel(root, missionId) {
         ["earth", "Earth"],
         ["mars", "Mars"],
         ["barycenter", "Barycenter"],
+        ["spacecraft", "Spacecraft"],
       ],
-      globe.setHeliocentricAnchor,
+      (value) =>
+        value === "spacecraft" ? globe.followMission(missionId) : globe.setHeliocentricAnchor(value),
     ).node,
   );
 

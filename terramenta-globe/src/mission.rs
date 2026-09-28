@@ -95,6 +95,11 @@ enum MissionState {
     },
     Launched {
         entity: Entity,
+        /// The spacecraft's own frame in [`SolarSystem`]'s tree — fixed for
+        /// the life of this launch, whichever body it currently hangs off.
+        /// What [`MissionSettings::camera_frame`] hands the heliocentric
+        /// camera to follow.
+        frame: FrameId,
         plan: TransferPlan,
         destination_frame: FrameId,
         last_primary: FrameId,
@@ -166,6 +171,36 @@ impl MissionSettings {
             self.retired.push(entity);
         }
         true
+    }
+
+    /// The id of the first mission still tracked, in the order they were
+    /// added — what the heliocentric view's follow key locks onto.
+    pub(crate) fn first_id(&self) -> Option<&str> {
+        self.missions.first().map(|mission| mission.request.id.as_str())
+    }
+
+    /// The frame a camera following mission `id` should orbit right now: the
+    /// spacecraft's own once it has launched, and the origin body's before
+    /// then — which is where the spacecraft will appear, so a lock taken out
+    /// while the mission is still searching or waiting picks the spacecraft
+    /// up without a jump the tick it departs. `None` for a mission that is
+    /// not tracked, or that failed without ever resolving its origin.
+    ///
+    /// Asked for every tick rather than once: a relaunch (the clock run back
+    /// past departure and forward again) spawns the spacecraft under a fresh
+    /// frame, so a frame id captured at lock time would go stale.
+    pub(crate) fn camera_frame(&self, id: &str, solar_system: &SolarSystem) -> Option<FrameId> {
+        let mission = self
+            .missions
+            .iter()
+            .find(|mission| mission.request.id == id)?;
+        match mission.state {
+            MissionState::Launched { frame, .. } => Some(frame),
+            MissionState::Waiting { origin_frame, .. } => Some(origin_frame),
+            MissionState::Searching | MissionState::Failed { .. } => {
+                solar_system.find(&mission.request.origin)
+            }
+        }
     }
 }
 
@@ -393,9 +428,11 @@ fn launch_missions(
             plan.departure,
         );
         mission.launches += 1;
+        let frame = bundle.0.0;
         let entity = commands.spawn(bundle).id();
         mission.state = MissionState::Launched {
             entity,
+            frame,
             plan,
             destination_frame,
             last_primary: origin_frame,
@@ -939,6 +976,87 @@ mod tests {
         }
         assert!(is_launched(&app), "the mission never relaunched");
         assert_eq!(spacecraft_count(&mut app), 1);
+    }
+
+    /// What a heliocentric camera following a mission orbits: the origin
+    /// body until launch, the spacecraft's own frame from then on, and a
+    /// fresh frame — not the retired one — after a relaunch.
+    #[test]
+    fn a_followed_mission_resolves_to_its_origin_then_its_spacecraft() {
+        let start_unix_seconds = Epoch::J2000
+            .advanced_by_seconds(1_200.0 * 86_400.0)
+            .to_unix_seconds();
+
+        let mut app = App::new();
+        app.add_plugins(TaskPoolPlugin::default())
+            .init_resource::<ReferenceFrame>()
+            .init_resource::<ViewState>()
+            .insert_resource(SimClock {
+                unix_seconds: start_unix_seconds,
+                ..SimClock::default()
+            })
+            .add_plugins(SolarSystemPlugin)
+            .add_plugins(MissionPlugin {
+                initial: Vec::new(),
+            });
+        app.world_mut()
+            .resource_mut::<MissionSettings>()
+            .add(MissionRequest {
+                id: "test".to_string(),
+                ..MissionRequest::default()
+            });
+
+        let camera_frame = |app: &App| {
+            let world = app.world();
+            world
+                .resource::<MissionSettings>()
+                .camera_frame("test", world.resource::<SolarSystem>())
+        };
+        let earth = app.world().resource::<SolarSystem>().find("Earth");
+        let spacecraft_frame = |app: &mut App| {
+            app.world_mut()
+                .query_filtered::<&crate::solar::SolarBody, With<TrackedSpacecraft>>()
+                .iter(app.world())
+                .next()
+                .map(|body| body.0)
+        };
+
+        // Searching, before the first tick has run the search.
+        assert_eq!(camera_frame(&app), earth);
+        assert_eq!(
+            app.world()
+                .resource::<MissionSettings>()
+                .camera_frame("nope", app.world().resource::<SolarSystem>()),
+            None
+        );
+
+        for _ in 0..(60 * 24) {
+            app.world_mut().resource_mut::<SimClock>().unix_seconds += 3_600.0;
+            app.update();
+            if spacecraft_frame(&mut app).is_some() {
+                break;
+            }
+            assert_eq!(camera_frame(&app), earth, "waiting sits on the origin");
+        }
+        let first = spacecraft_frame(&mut app).expect("the mission never launched");
+        assert_eq!(camera_frame(&app), Some(first));
+
+        // Back past departure and forward again: a relaunch, under a new frame.
+        for _ in 0..(90 * 24) {
+            app.world_mut().resource_mut::<SimClock>().unix_seconds -= 3_600.0;
+            app.update();
+        }
+        assert_eq!(camera_frame(&app), earth);
+        for _ in 0..(150 * 24) {
+            app.world_mut().resource_mut::<SimClock>().unix_seconds += 3_600.0;
+            app.update();
+            if spacecraft_frame(&mut app).is_some() {
+                break;
+            }
+        }
+        let second = spacecraft_frame(&mut app).expect("the mission never relaunched");
+        assert_ne!(first, second);
+        assert_eq!(camera_frame(&app), Some(second));
     }
 
     /// An unknown body name fails the search cleanly rather than panicking.

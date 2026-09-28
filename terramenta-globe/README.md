@@ -720,6 +720,13 @@ Mars themselves are drawn through, so it never needs to be told where it is:
 `place_solar_bodies` reads it straight out of the frame tree, wherever in it a
 capture has most recently reparented the spacecraft.
 
+`globe.followMission("mars-1")` locks the heliocentric camera onto that
+spacecraft, the way `setHeliocentricAnchor` locks it onto a body (key `5`
+follows the first mission). The lock is held by mission id, not by frame, so it
+can be taken out before launch — the camera waits on the origin body, where the
+spacecraft will appear — and it rides through a relaunch when the clock is run
+back past departure. Picking a body with `setHeliocentricAnchor` releases it.
+
 `terramenta-webapp`'s Mission tab is the reference: a porkchop plot to choose
 a window by eye, and a Launch button underneath it that sends the pair just
 plotted off for real.

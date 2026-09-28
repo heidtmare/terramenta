@@ -16,6 +16,11 @@
 //! a bare [`Transform`]), so the crate's physics/drawing split holds for a
 //! mission too.
 //!
+//! The camera can be locked onto that spacecraft as well as onto a body —
+//! [`HeliocentricCamera::follow_mission`] names the mission rather than its
+//! frame, and [`follow_locked_mission`] re-resolves the frame every tick, so
+//! the lock rides through the launch itself and through a relaunch.
+//!
 //! At true scale a planet is a few hundred-thousandths of an astronomical
 //! unit across — invisible from a vantage that sees all three bodies at once.
 //! [`SUN_VISUAL_RADIUS_AU`], [`EARTH_VISUAL_RADIUS_AU`] and
@@ -31,6 +36,7 @@ use bevy::render::render_resource::{
 };
 use bevy::shader::ShaderRef;
 
+use crate::mission::MissionSettings;
 use crate::solar::{FloatingOrigin, SolarBody, SolarSystem, TrackedSpacecraft, floating_offset};
 use crate::starfield::{self, Starfield, StarfieldMaterial};
 use crate::time::SimClock;
@@ -150,6 +156,12 @@ pub struct HeliocentricCamera {
     pub target_pitch: f32,
     pub target_distance: f32,
     pub anchor: Option<FrameId>,
+    /// The mission whose spacecraft `anchor` is locked onto, if any —
+    /// re-resolved to a frame every tick by [`follow_locked_mission`], since
+    /// the frame changes on a relaunch and does not exist at all before the
+    /// first one. Cleared by [`HeliocentricCamera::set_anchor`]: picking a
+    /// body is picking something else to look at.
+    pub following: Option<String>,
 }
 
 impl Default for HeliocentricCamera {
@@ -162,6 +174,7 @@ impl Default for HeliocentricCamera {
             target_pitch: 0.35,
             target_distance: HELIO_DEFAULT_DISTANCE_AU,
             anchor: None,
+            following: None,
         }
     }
 }
@@ -187,7 +200,18 @@ impl HeliocentricCamera {
     pub(crate) fn set_anchor(&mut self, anchor: HeliocentricAnchor, solar_system: &SolarSystem) {
         if let Some(frame) = anchor.resolve(solar_system) {
             self.anchor = Some(frame);
+            self.following = None;
         }
+    }
+
+    /// Locks the rig onto mission `id`'s spacecraft, keeping its current
+    /// yaw, pitch and distance the same way [`HeliocentricCamera::set_anchor`]
+    /// does. Takes effect on the next [`follow_locked_mission`], which also
+    /// covers the mission not having launched yet — see
+    /// [`MissionSettings::camera_frame`] — and holds the last anchor it
+    /// resolved should the mission be removed.
+    pub(crate) fn follow_mission(&mut self, id: String) {
+        self.following = Some(id);
     }
 
     /// Where the camera sits and which way it looks, `distance` back from
@@ -305,7 +329,9 @@ impl Plugin for HeliocentricPlugin {
                 heliocentric_keyboard_input
                     .run_if(crate::api::keyboard_enabled)
                     .run_if(in_heliocentric_view),
-                apply_heliocentric_orbit.run_if(in_heliocentric_view),
+                (follow_locked_mission, apply_heliocentric_orbit)
+                    .chain()
+                    .run_if(in_heliocentric_view),
                 drive_heliocentric_sun.run_if(in_heliocentric_view),
             ),
         );
@@ -470,10 +496,17 @@ fn heliocentric_keyboard_input(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
     solar_system: Res<SolarSystem>,
+    missions: Option<Res<MissionSettings>>,
     mut camera: Single<&mut HeliocentricCamera>,
 ) {
     if let Some(anchor) = pressed_anchor(&keys) {
         camera.set_anchor(anchor, &solar_system);
+    }
+    // `5` follows the first mission, after the four bodies `1`–`4` pick.
+    if keys.just_pressed(KeyCode::Digit5)
+        && let Some(id) = missions.as_deref().and_then(MissionSettings::first_id)
+    {
+        camera.follow_mission(id.to_string());
     }
 
     let mut orbit = Vec2::ZERO;
@@ -520,6 +553,26 @@ fn pressed_anchor(keys: &ButtonInput<KeyCode>) -> Option<HeliocentricAnchor> {
         Some(HeliocentricAnchor::Barycenter)
     } else {
         None
+    }
+}
+
+/// Points [`HeliocentricCamera::anchor`] at whichever frame the mission it is
+/// [`HeliocentricCamera::following`] currently resolves to. Chained ahead of
+/// [`apply_heliocentric_orbit`] so the shot is built from this tick's frame,
+/// not last tick's — the tick a mission launches, the anchor moves from the
+/// origin body to the spacecraft sitting in its parking orbit, which at this
+/// view's scale is the same point.
+fn follow_locked_mission(
+    solar_system: Res<SolarSystem>,
+    missions: Option<Res<MissionSettings>>,
+    mut camera: Single<&mut HeliocentricCamera>,
+) {
+    let (Some(id), Some(missions)) = (camera.following.as_deref(), missions) else {
+        return;
+    };
+    let frame = missions.camera_frame(id, &solar_system);
+    if frame.is_some() {
+        camera.anchor = frame;
     }
 }
 
