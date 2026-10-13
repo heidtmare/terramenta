@@ -83,7 +83,7 @@ pub fn gcrf_to_itrf(epoch: Epoch, eop: &Eop, model: EarthModel) -> TerrestrialTr
             let (dpsi, deps) = sofars::pnp::nut80(tt1, tt2);
             let epsa = sofars::pnp::obl80(tt1, tt2);
             let n = sofars::pnp::numat(epsa, dpsi + eop.dpsi, deps + eop.deps);
-            let gast = gast82(epoch, eop);
+            let gast = gast_from(epoch, eop.ut1_minus_utc, tt1, tt2, dpsi + eop.dpsi, epsa);
             (r3(gast) * mat(n) * mat(p), 0.0)
         }
         EarthModel::Iau2006Cio => {
@@ -125,9 +125,21 @@ pub fn gmst82(epoch: Epoch, ut1_minus_utc: f64) -> f64 {
 /// Greenwich apparent sidereal time, IAU-76/FK5 with δΔψ, rad.
 pub fn gast82(epoch: Epoch, eop: &Eop) -> f64 {
     let (tt1, tt2) = epoch.tt_jd();
+    let (dpsi, _) = sofars::pnp::nut80(tt1, tt2);
     let epsa = sofars::pnp::obl80(tt1, tt2);
-    let ee = sofars::erst::eqeq94(tt1, tt2) + eop.dpsi * epsa.cos();
-    (gmst82(epoch, eop.ut1_minus_utc) + ee).rem_euclid(std::f64::consts::TAU)
+    gast_from(epoch, eop.ut1_minus_utc, tt1, tt2, dpsi + eop.dpsi, epsa)
+}
+
+/// GMST82 + eqeq94 from precomputed total Δψ (incl. δΔψ) and mean obliquity; avoids
+/// `eqeq94` re-evaluating `nut80`/`obl80`.
+fn gast_from(epoch: Epoch, ut1_minus_utc: f64, tt1: f64, tt2: f64, dpsi: f64, epsa: f64) -> f64 {
+    const AS2R: f64 = std::f64::consts::PI / 648_000.0;
+    let t = ((tt1 - 2_451_545.0) + tt2) / 36_525.0;
+    // eqeq94 complementary terms; Ω mod 2π is irrelevant under sin.
+    let om = (450_160.280 + (-482_890.539 + (7.455 + 0.008 * t) * t) * t) * AS2R
+        + (-5.0 * t % 1.0) * std::f64::consts::TAU;
+    let ee = dpsi * epsa.cos() + AS2R * (0.002_64 * om.sin() + 0.000_063 * (2.0 * om).sin());
+    (gmst82(epoch, ut1_minus_utc) + ee).rem_euclid(std::f64::consts::TAU)
 }
 
 /// Earth rotation angle (IAU-2000), rad.
@@ -189,6 +201,25 @@ mod tests {
         let mut m = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         sofars::vm::rz(0.3, &mut m);
         assert!((mat(m) - r3(0.3)).abs_diff_eq(DMat3::ZERO, 1e-15));
+    }
+
+    #[test]
+    fn gast82_matches_sofa_eqeq94() {
+        let eop = Eop {
+            dpsi: -5.0e-7,
+            ut1_minus_utc: 0.3,
+            ..Eop::default()
+        };
+        for epoch in [
+            Epoch::from_utc(1992, 8, 20, 12, 14, 0.0),
+            Epoch::from_utc(2024, 6, 20, 12, 0, 0.0),
+            Epoch::from_utc(2049, 1, 1, 0, 0, 0.0),
+        ] {
+            let (tt1, tt2) = epoch.tt_jd();
+            let ee = sofars::erst::eqeq94(tt1, tt2) + eop.dpsi * sofars::pnp::obl80(tt1, tt2).cos();
+            let sofa = (gmst82(epoch, eop.ut1_minus_utc) + ee).rem_euclid(std::f64::consts::TAU);
+            assert!((gast82(epoch, &eop) - sofa).abs() < 1e-14);
+        }
     }
 
     #[test]
