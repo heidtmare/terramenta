@@ -28,26 +28,35 @@ impl Interpolation {
     }
 }
 
-/// Outside coverage, the edge window is extrapolated.
+/// Outside coverage, the edge window is extrapolated. A repeated epoch starts a new
+/// segment (e.g. pre/post impulsive burn); windows never span segments, and the later
+/// segment owns the boundary epoch.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SampledEphemeris {
     origin: Epoch,
-    /// Seconds since `origin`, ascending.
+    /// Seconds since `origin`, non-decreasing.
     times: Vec<f64>,
     states: Vec<StateVector>,
+    /// Segment start indices; `[0, ..]`.
+    breaks: Vec<usize>,
     pub method: Interpolation,
 }
 
 impl SampledEphemeris {
-    /// Sorts by epoch. Panics on fewer than two samples.
+    /// Stable sort by epoch. Panics on fewer than two samples.
     pub fn new(mut samples: Vec<(Epoch, StateVector)>, method: Interpolation) -> Self {
         assert!(samples.len() >= 2, "need at least two samples");
         samples.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
         let origin = samples[0].0;
+        let times: Vec<f64> = samples.iter().map(|s| s.0.seconds_since(origin)).collect();
+        let breaks = std::iter::once(0)
+            .chain((1..times.len()).filter(|&i| times[i] == times[i - 1]))
+            .collect();
         Self {
             origin,
-            times: samples.iter().map(|s| s.0.seconds_since(origin)).collect(),
+            times,
             states: samples.into_iter().map(|s| s.1).collect(),
+            breaks,
             method,
         }
     }
@@ -59,11 +68,27 @@ impl SampledEphemeris {
         )
     }
 
+    /// All samples; boundary epochs appear once per adjacent segment.
     pub fn samples(&self) -> impl Iterator<Item = (Epoch, StateVector)> + '_ {
         self.times
             .iter()
             .zip(&self.states)
             .map(|(t, s)| (self.origin.advanced_by_seconds(*t), *s))
+    }
+
+    /// Samples per segment, each with strictly increasing epochs.
+    pub fn segments(&self) -> impl Iterator<Item = Vec<(Epoch, StateVector)>> + '_ {
+        let ends = self.breaks[1..].iter().copied().chain([self.times.len()]);
+        self.breaks.iter().zip(ends).map(|(&lo, hi)| {
+            (lo..hi)
+                .map(|i| {
+                    (
+                        self.origin.advanced_by_seconds(self.times[i]),
+                        self.states[i],
+                    )
+                })
+                .collect()
+        })
     }
 
     pub fn try_state_at(&self, epoch: Epoch) -> Option<StateVector> {
@@ -72,9 +97,13 @@ impl SampledEphemeris {
     }
 
     fn window(&self, t: f64) -> std::ops::Range<usize> {
-        let n = self.method.points().min(self.times.len());
         let i = self.times.partition_point(|x| *x <= t);
-        let start = (i.saturating_sub(n / 2)).min(self.times.len() - n);
+        // Segment holding the last node ≤ t (the first segment before coverage).
+        let s = self.breaks.partition_point(|&b| b < i.max(1)) - 1;
+        let lo = self.breaks[s];
+        let hi = self.breaks.get(s + 1).copied().unwrap_or(self.times.len());
+        let n = self.method.points().min(hi - lo);
+        let start = i.saturating_sub(n / 2).clamp(lo, hi - n);
         start..start + n
     }
 }
@@ -179,5 +208,45 @@ mod tests {
             let s = eph.state_at(Epoch::J2000.advanced_by_seconds(600.0));
             assert!((s.position_km - samples[10].1.position_km).length() < 1e-9);
         }
+    }
+
+    #[test]
+    fn repeated_epoch_splits_segments() {
+        // Δv at t = 600: windows on either side must not see the other arc.
+        let gm = 398_600.441_8;
+        let s0 = StateVector::new(DVec3::new(7000.0, 0.0, 0.0), DVec3::new(0.0, 6.5, 4.0));
+        let a = OrbitalElements::from_state(s0, gm, 0.0);
+        let burn = a.state_at(gm, 600.0);
+        let b = OrbitalElements::from_state(
+            StateVector::new(burn.position_km, burn.velocity_km_s * 1.05),
+            gm,
+            0.0,
+        );
+        let at = |t: f64| Epoch::J2000.advanced_by_seconds(t);
+        let mut samples: Vec<_> = (0..=10)
+            .map(|k| (at(k as f64 * 60.0), a.state_at(gm, k as f64 * 60.0)))
+            .collect();
+        samples.extend(
+            (10..=20).map(|k| (at(k as f64 * 60.0), b.state_at(gm, k as f64 * 60.0 - 600.0))),
+        );
+        let eph = SampledEphemeris::new(samples, Interpolation::default());
+        assert_eq!(
+            eph.segments().map(|s| s.len()).collect::<Vec<_>>(),
+            [11, 11]
+        );
+        for (t, truth) in [
+            (570.0, a.state_at(gm, 570.0)),
+            (630.0, b.state_at(gm, 30.0)),
+        ] {
+            let s = eph.state_at(at(t));
+            assert!((s.position_km - truth.position_km).length() < 1e-6, "t={t}");
+            assert!(
+                (s.velocity_km_s - truth.velocity_km_s).length() < 1e-9,
+                "t={t}"
+            );
+        }
+        // Boundary belongs to the post-burn arc.
+        let s = eph.state_at(at(600.0));
+        assert!((s.velocity_km_s - burn.velocity_km_s * 1.05).length() < 1e-12);
     }
 }
