@@ -2,7 +2,8 @@
 //!
 //! - [`Method::Rk4`]: classical, fixed step.
 //! - [`Method::Rkf78`]: Fehlberg 7(8), NASA TR R-287; propagates the 8th-order solution.
-//! - [`Method::Dop853`]: Dormand–Prince 8(5,3), Hairer, Nørsett & Wanner, *Solving ODEs I*, §II.10.
+//! - [`Method::Dop853`]: Dormand–Prince 8(5,3), Hairer, Nørsett & Wanner, *Solving ODEs I*, §II.10;
+//!   FSAL, 7th-order dense output (`contd8`).
 //!
 //! Adaptive error norm: RMS of `err_i / (atol + rtol·max(|y_i|, |y'_i|))`.
 
@@ -74,6 +75,8 @@ pub struct Integrator {
     y_stage: Vec<f64>,
     y_new: Vec<f64>,
     err: Vec<f64>,
+    /// Dense-output coefficients, one row per power.
+    cont: Vec<Vec<f64>>,
 }
 
 impl Integrator {
@@ -90,6 +93,7 @@ impl Integrator {
             y_stage: Vec::new(),
             y_new: Vec::new(),
             err: Vec::new(),
+            cont: Vec::new(),
         }
     }
 
@@ -116,6 +120,41 @@ impl Integrator {
         y: &mut [f64],
         t1: f64,
     ) -> Result<(), IntegrationError> {
+        self.integrate_dense(f, t0, y, t1, &[], &mut |_, _| {})
+    }
+
+    /// As [`Self::integrate`], calling `on_output(t, y)` at each of `outputs` (strictly between
+    /// `t0` and `t1`, ordered from `t0`). DOP853 interpolates; other methods stop on each.
+    pub fn integrate_dense(
+        &mut self,
+        f: &mut Derivative,
+        t0: f64,
+        y: &mut [f64],
+        t1: f64,
+        outputs: &[f64],
+        on_output: &mut dyn FnMut(f64, &[f64]),
+    ) -> Result<(), IntegrationError> {
+        if self.tableau().dense.is_some() {
+            return self.run(f, t0, y, t1, outputs, on_output);
+        }
+        let mut t = t0;
+        for &to in outputs {
+            self.run(f, t, y, to, &[], on_output)?;
+            on_output(to, y);
+            t = to;
+        }
+        self.run(f, t, y, t1, &[], on_output)
+    }
+
+    fn run(
+        &mut self,
+        f: &mut Derivative,
+        t0: f64,
+        y: &mut [f64],
+        t1: f64,
+        outputs: &[f64],
+        on_output: &mut dyn FnMut(f64, &[f64]),
+    ) -> Result<(), IntegrationError> {
         let span = t1 - t0;
         if span == 0.0 {
             return Ok(());
@@ -123,8 +162,10 @@ impl Integrator {
         let dir = span.signum();
         let n = y.len();
         let tab = self.tableau();
-        if self.k.len() < tab.stages || self.k.first().is_some_and(|k| k.len() != n) {
-            self.k = vec![vec![0.0; n]; tab.stages];
+        // Dense methods: k[stages] = f(t + h, y_new), then the extra stages.
+        let slots = tab.stages + tab.dense.map_or(0, |d| 1 + d.c.len());
+        if self.k.len() < slots || self.k.first().is_some_and(|k| k.len() != n) {
+            self.k = vec![vec![0.0; n]; slots];
         }
         self.y_stage.resize(n, 0.0);
         self.y_new.resize(n, 0.0);
@@ -138,6 +179,9 @@ impl Integrator {
                 None => self.initial_step(f, t0, y, dir, tab.order),
             },
         };
+        // k[0] = f(t, y) is current: reused after a rejection, and after acceptance for FSAL.
+        let mut k0 = false;
+        let mut next = 0;
         let mut steps = 0;
         while (t1 - t) * dir > 0.0 {
             steps += 1;
@@ -149,23 +193,55 @@ impl Integrator {
             let last = h >= remaining;
             let h_try = if last { remaining } else { h };
 
+            if !k0 {
+                f(t, y, &mut self.k[0]);
+                self.stats.evaluations += 1;
+                k0 = true;
+            }
             self.stage(f, &tab, t, y, dir * h_try);
             if self.y_new.iter().any(|v| !v.is_finite()) {
                 return Err(IntegrationError::NonFinite { t });
             }
 
-            let Some(e) = tab.e else {
-                y.copy_from_slice(&self.y_new);
-                t = if last { t1 } else { t + dir * h_try };
-                self.stats.accepted += 1;
-                continue;
+            let norm = match tab.e {
+                Some(e) => self.error_norm(y, e, h_try, tab.err3),
+                None => 0.0,
             };
+            if norm > 1.0 {
+                self.stats.rejected += 1;
+                h = h_try * (0.9 * norm.powf(-1.0 / (tab.order as f64 + 1.0))).max(0.2);
+                if h < self.min_step_s {
+                    return Err(IntegrationError::StepSizeUnderflow { t, h });
+                }
+                continue;
+            }
 
-            let norm = self.error_norm(y, e, h_try, tab.err3);
-            if norm <= 1.0 {
-                y.copy_from_slice(&self.y_new);
-                t = if last { t1 } else { t + dir * h_try };
-                self.stats.accepted += 1;
+            let t_new = if last { t1 } else { t + dir * h_try };
+            k0 = false;
+            if let Some(d) = tab.dense {
+                let pending = outputs
+                    .get(next)
+                    .is_some_and(|&to| (to - t_new) * dir <= 0.0);
+                if !last || pending {
+                    f(t_new, &self.y_new, &mut self.k[tab.stages]);
+                    self.stats.evaluations += 1;
+                    if pending {
+                        self.dense(f, &tab, d, t, y, dir * h_try);
+                    }
+                    while let Some(&to) = outputs.get(next).filter(|&&to| (to - t_new) * dir <= 0.0)
+                    {
+                        self.interpolate(y, (to - t) / (dir * h_try));
+                        on_output(to, &self.y_stage);
+                        next += 1;
+                    }
+                    self.k.swap(0, tab.stages);
+                    k0 = true;
+                }
+            }
+            y.copy_from_slice(&self.y_new);
+            t = t_new;
+            self.stats.accepted += 1;
+            if tab.e.is_some() {
                 let grow = if norm == 0.0 {
                     10.0
                 } else {
@@ -178,12 +254,6 @@ impl Integrator {
                     h_try * grow
                 };
                 self.h_next = Some(h);
-            } else {
-                self.stats.rejected += 1;
-                h = h_try * (0.9 * norm.powf(-1.0 / (tab.order as f64 + 1.0))).max(0.2);
-                if h < self.min_step_s {
-                    return Err(IntegrationError::StepSizeUnderflow { t, h });
-                }
             }
         }
         Ok(())
@@ -197,19 +267,25 @@ impl Integrator {
         }
     }
 
-    /// Fills `k` and `y_new` for one step of size `h` (signed).
-    fn stage(&mut self, f: &mut Derivative, tab: &Tableau, t: f64, y: &[f64], h: f64) {
-        for s in 0..tab.stages {
-            self.y_stage.copy_from_slice(y);
-            for (j, &a) in tab.a[s].iter().enumerate() {
-                if a != 0.0 {
-                    for (ys, kj) in self.y_stage.iter_mut().zip(&self.k[j]) {
-                        *ys += h * a * kj;
-                    }
+    /// `k[s] = f(t + c·h, y + h·Σ a_j k_j)`.
+    fn eval_stage(&mut self, f: &mut Derivative, t: f64, y: &[f64], h: f64, s: usize, row: Row) {
+        let (c, a) = row;
+        self.y_stage.copy_from_slice(y);
+        for (j, &a) in a.iter().enumerate() {
+            if a != 0.0 {
+                for (ys, kj) in self.y_stage.iter_mut().zip(&self.k[j]) {
+                    *ys += h * a * kj;
                 }
             }
-            f(t + tab.c[s] * h, &self.y_stage, &mut self.k[s]);
-            self.stats.evaluations += 1;
+        }
+        f(t + c * h, &self.y_stage, &mut self.k[s]);
+        self.stats.evaluations += 1;
+    }
+
+    /// Fills `k[1..]` and `y_new` for one step of size `h` (signed); `k[0]` is current.
+    fn stage(&mut self, f: &mut Derivative, tab: &Tableau, t: f64, y: &[f64], h: f64) {
+        for s in 1..tab.stages {
+            self.eval_stage(f, t, y, h, s, (tab.c[s], tab.a[s]));
         }
         self.y_new.copy_from_slice(y);
         for (s, &b) in tab.b.iter().enumerate() {
@@ -218,6 +294,46 @@ impl Integrator {
                     *yn += h * b * ks;
                 }
             }
+        }
+    }
+
+    /// Extra stages and `cont` for the step `(t, y) → (t + h, y_new)`; `k[stages]` is current.
+    fn dense(&mut self, f: &mut Derivative, tab: &Tableau, d: &Dense, t: f64, y: &[f64], h: f64) {
+        for (e, (&c, a)) in d.c.iter().zip(d.a).enumerate() {
+            self.eval_stage(f, t, y, h, tab.stages + 1 + e, (c, a));
+        }
+        let n = y.len();
+        if self.cont.len() != 3 + d.d.len() || self.cont[0].len() != n {
+            self.cont = vec![vec![0.0; n]; 3 + d.d.len()];
+        }
+        for (i, &yi) in y.iter().enumerate() {
+            let ydiff = self.y_new[i] - yi;
+            let bspl = h * self.k[0][i] - ydiff;
+            self.cont[0][i] = ydiff;
+            self.cont[1][i] = bspl;
+            self.cont[2][i] = ydiff - h * self.k[tab.stages][i] - bspl;
+            for (r, row) in d.d.iter().enumerate() {
+                let sum: f64 = row
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, c)| **c != 0.0)
+                    .map(|(j, c)| c * self.k[j][i])
+                    .sum();
+                self.cont[3 + r][i] = h * sum;
+            }
+        }
+    }
+
+    /// `y_stage` = dense output at step fraction `s` from `y`.
+    fn interpolate(&mut self, y: &[f64], s: f64) {
+        let s1 = 1.0 - s;
+        let c = &self.cont;
+        for (i, out) in self.y_stage.iter_mut().enumerate() {
+            let mut acc = 0.0;
+            for (r, row) in c.iter().enumerate().rev() {
+                acc = (acc + row[i]) * if r % 2 == 0 { s } else { s1 };
+            }
+            *out = y[i] + acc;
         }
     }
 
@@ -288,6 +404,9 @@ impl Integrator {
     }
 }
 
+/// Stage node and coefficients `(c, a)`.
+type Row = (f64, &'static [f64]);
+
 struct Tableau {
     stages: usize,
     /// Order of the propagated solution.
@@ -299,6 +418,14 @@ struct Tableau {
     e: Option<&'static [f64]>,
     /// DOP853 3rd-order error weights.
     err3: Option<&'static [f64]>,
+    dense: Option<&'static Dense>,
+}
+
+/// Dense output: extra stages (`c`, `a` over all prior `k`) and the `d` rows over all `k`.
+struct Dense {
+    c: [f64; 3],
+    a: [&'static [f64]; 3],
+    d: [&'static [f64]; 4],
 }
 
 const RK4: Tableau = Tableau {
@@ -309,6 +436,7 @@ const RK4: Tableau = Tableau {
     b: &[1.0 / 6.0, 1.0 / 3.0, 1.0 / 3.0, 1.0 / 6.0],
     e: None,
     err3: None,
+    dense: None,
 };
 
 const RKF78: Tableau = Tableau {
@@ -447,6 +575,7 @@ const RKF78: Tableau = Tableau {
         41.0 / 840.0,
     ]),
     err3: None,
+    dense: None,
 };
 
 #[allow(clippy::excessive_precision)] // Hairer's coefficients verbatim
@@ -585,6 +714,7 @@ const DOP853: Tableau = Tableau {
         DOP853_B[10],
         DOP853_B[11] - 0.220588235294117647058823529412e-1,
     ]),
+    dense: Some(&DOP853_DENSE),
 };
 
 #[allow(clippy::excessive_precision)]
@@ -602,6 +732,135 @@ const DOP853_B: [f64; 12] = [
     2.01365400804030348374776537501e-1,
     4.47106157277725905176885569043e-2,
 ];
+
+#[allow(clippy::excessive_precision)] // Hairer's dop853.f (contd8), as tabulated in SciPy
+const DOP853_DENSE: Dense = Dense {
+    c: [0.1, 0.2, 0.777777777777777777777777777778],
+    a: [
+        &[
+            5.61675022830479523392909219681e-2,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            2.53500210216624811088794765333e-1,
+            -2.46239037470802489917441475441e-1,
+            -1.24191423263816360469010140626e-1,
+            1.5329179827876569731206322685e-1,
+            8.20105229563468988491666602057e-3,
+            7.56789766054569976138603589584e-3,
+            -8.298e-3,
+        ],
+        &[
+            3.18346481635021405060768473261e-2,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            2.83009096723667755288322961402e-2,
+            5.35419883074385676223797384372e-2,
+            -5.49237485713909884646569340306e-2,
+            0.0,
+            0.0,
+            -1.08347328697249322858509316994e-4,
+            3.82571090835658412954920192323e-4,
+            -3.40465008687404560802977114492e-4,
+            1.41312443674632500278074618366e-1,
+        ],
+        &[
+            -4.28896301583791923408573538692e-1,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -4.69762141536116384314449447206,
+            7.68342119606259904184240953878,
+            4.06898981839711007970213554331,
+            3.56727187455281109270669543021e-1,
+            0.0,
+            0.0,
+            0.0,
+            -1.39902416515901462129418009734e-3,
+            2.9475147891527723389556272149,
+            -9.15095847217987001081870187138,
+        ],
+    ],
+    d: [
+        &[
+            -0.84289382761090128651353491142e+1,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.56671495351937776962531783590,
+            -0.30689499459498916912797304727e+1,
+            0.23846676565120698287728149680e+1,
+            0.21170345824450282767155149946e+1,
+            -0.87139158377797299206789907490,
+            0.22404374302607882758541771650e+1,
+            0.63157877876946881815570249290,
+            -0.88990336451333310820698117400e-1,
+            0.18148505520854727256656404962e+2,
+            -0.91946323924783554000451984436e+1,
+            -0.44360363875948939664310572000e+1,
+        ],
+        &[
+            0.10427508642579134603413151009e+2,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.24228349177525818288430175319e+3,
+            0.16520045171727028198505394887e+3,
+            -0.37454675472269020279518312152e+3,
+            -0.22113666853125306036270938578e+2,
+            0.77334326684722638389603898808e+1,
+            -0.30674084731089398182061213626e+2,
+            -0.93321305264302278729567221706e+1,
+            0.15697238121770843886131091075e+2,
+            -0.31139403219565177677282850411e+2,
+            -0.93529243588444783865713862664e+1,
+            0.35816841486394083752465898540e+2,
+        ],
+        &[
+            0.19985053242002433820987653617e+2,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -0.38703730874935176555105901742e+3,
+            -0.18917813819516756882830838328e+3,
+            0.52780815920542364900561016686e+3,
+            -0.11573902539959630126141871134e+2,
+            0.68812326946963000169666922661e+1,
+            -0.10006050966910838403183860980e+1,
+            0.77771377980534432092869265740,
+            -0.27782057523535084065932004339e+1,
+            -0.60196695231264120758267380846e+2,
+            0.84320405506677161018159903784e+2,
+            0.11992291136182789328035130030e+2,
+        ],
+        &[
+            -0.25693933462703749003312586129e+2,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -0.15418974869023643374053993627e+3,
+            -0.23152937917604549567536039109e+3,
+            0.35763911791061412378285349910e+3,
+            0.93405324183624310003907691704e+2,
+            -0.37458323136451633156875139351e+2,
+            0.10409964950896230045147246184e+3,
+            0.29840293426660503123344363579e+2,
+            -0.43533456590011143754432175058e+2,
+            0.96324553959188282948394950600e+2,
+            -0.39177261675615439165231486172e+2,
+            -0.14972683625798562581422125276e+3,
+        ],
+    ],
+};
 
 #[cfg(test)]
 mod tests {
@@ -637,6 +896,14 @@ mod tests {
             if let Some(e) = t.e {
                 assert!(e.iter().sum::<f64>().abs() < 1e-14, "{name} Σe");
             }
+            if let Some(d) = t.dense {
+                for (a, c) in d.a.iter().zip(d.c) {
+                    assert!(
+                        (a.iter().sum::<f64>() - c).abs() < 1e-14,
+                        "{name} dense c={c}"
+                    );
+                }
+            }
         }
     }
 
@@ -662,6 +929,34 @@ mod tests {
             let (err, stats) = oscillator(m);
             assert!(err < 1e-9, "{m:?}: {err}");
             assert!(stats.accepted < 2000, "{m:?}: {stats:?}");
+        }
+    }
+
+    #[test]
+    fn dense_output_matches_solution() {
+        for m in [Method::Dop853, Method::Rkf78] {
+            let mut integ = Integrator::new(m).with_tolerance(1e-12, 1e-12);
+            let mut f = |_t: f64, y: &[f64], d: &mut [f64]| {
+                d[0] = y[1];
+                d[1] = -y[0];
+            };
+            let mut y = [1.0, 0.0];
+            let outputs: Vec<f64> = (1..200).map(|i| i as f64 * 0.1).collect();
+            let mut seen = Vec::new();
+            integ
+                .integrate_dense(&mut f, 0.0, &mut y, 20.0, &outputs, &mut |t, y| {
+                    let err = ((y[0] - t.cos()).powi(2) + (y[1] + t.sin()).powi(2)).sqrt();
+                    assert!(err < 1e-10, "{m:?} t={t}: {err}");
+                    seen.push(t);
+                })
+                .unwrap();
+            assert_eq!(seen, outputs, "{m:?}");
+            if m == Method::Dop853 {
+                // Steps are not shortened by outputs.
+                let mut plain = Integrator::new(m).with_tolerance(1e-12, 1e-12);
+                plain.integrate(&mut f, 0.0, &mut [1.0, 0.0], 20.0).unwrap();
+                assert_eq!(integ.stats.accepted, plain.stats.accepted);
+            }
         }
     }
 

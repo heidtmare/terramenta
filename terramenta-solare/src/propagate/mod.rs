@@ -311,29 +311,51 @@ impl Propagator {
         // Last emitted offset; a burn epoch emits pre- and post-burn states once each.
         let mut emitted: Option<f64> = None;
         let result = (|| {
-            for (i, &(ts, kind)) in stops.iter().enumerate() {
+            let mut i = 0;
+            while let Some(&(ts, kind)) = stops.get(i) {
                 if ts != t {
-                    self.switch_epoch = Some(start.advanced_by_seconds(0.5 * (t + ts)));
+                    // Samples before the next other stop are dense outputs of one segment.
+                    let j = i + stops[i..]
+                        .iter()
+                        .position(|s| s.1 != Stop::Sample)
+                        .expect("End is last");
+                    let te = stops[j].0;
+                    let outputs: Vec<f64> = stops[i..j].iter().map(|s| s.0).collect();
+                    let mut emit = |tt: f64, yy: &[f64]| {
+                        on_sample(&SpacecraftState::from_slice(
+                            start.advanced_by_seconds(tt),
+                            yy,
+                        ));
+                    };
+                    self.switch_epoch = Some(start.advanced_by_seconds(0.5 * (t + te)));
                     self.switch_mass = Some(y[6]);
-                    if let Some(td) = self.depletion(start, t, &y, ts) {
-                        integ.integrate(
+                    let mut from = 0;
+                    if let Some(td) = self.depletion(start, t, &y, te) {
+                        from = outputs.partition_point(|o| (o - td) * dir < 0.0);
+                        integ.integrate_dense(
                             &mut |tt, yy, dd| self.eval(start.advanced_by_seconds(tt), yy, dd),
                             t,
                             &mut y,
                             td,
+                            &outputs[..from],
+                            &mut emit,
                         )?;
                         y[6] = self.vehicle.dry_mass_kg;
                         self.switch_mass = Some(y[6]);
                         integ.reset();
                         t = td;
                     }
-                    integ.integrate(
+                    integ.integrate_dense(
                         &mut |tt, yy, dd| self.eval(start.advanced_by_seconds(tt), yy, dd),
                         t,
                         &mut y,
-                        ts,
+                        te,
+                        &outputs[from..],
+                        &mut emit,
                     )?;
-                    t = ts;
+                    t = te;
+                    i = j;
+                    continue;
                 }
                 let epoch = start.advanced_by_seconds(t);
                 match kind {
@@ -373,6 +395,7 @@ impl Propagator {
                     on_sample(&SpacecraftState::from_slice(epoch, &y));
                     emitted = Some(t);
                 }
+                i += 1;
             }
             Ok(SpacecraftState::from_slice(to, &y))
         })();
@@ -456,6 +479,26 @@ mod tests {
         for (a, b) in t.iter().zip([0.0, 300.0, 600.0, 900.0, 1000.0]) {
             assert!((a - b).abs() < 1e-6, "{t:?}");
         }
+    }
+
+    #[test]
+    fn dense_samples_match_kepler() {
+        let s0 = leo();
+        let to = s0.epoch.advanced_by_seconds(20_000.0);
+        let el = OrbitalElements::from_state(s0.state_vector(), GM, 0.0);
+        let mut p = two_body(Method::Dop853);
+        let eph = p.ephemeris(&s0, to, 10.0).unwrap();
+        assert_eq!(eph.len(), 2001);
+        for s in &eph {
+            let expect = el.state_at(GM, s.epoch.seconds_since(s0.epoch));
+            assert!((s.position_km - expect.position_km).length() < 1e-5);
+            assert!((s.velocity_km_s - expect.velocity_km_s).length() < 1e-8);
+        }
+        // Samples do not shorten steps.
+        let sampled = p.integrator.stats.evaluations;
+        p.integrator.stats = Default::default();
+        p.propagate(&s0, to).unwrap();
+        assert!(sampled < 2 * p.integrator.stats.evaluations, "{sampled}");
     }
 
     #[test]
