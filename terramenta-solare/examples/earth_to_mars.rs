@@ -60,7 +60,7 @@ fn main() {
     let transfer = lambert::solve(
         earth_at_departure.position_km,
         mars_at_arrival.position_km,
-        arrival.to_unix_seconds() - departure.to_unix_seconds(),
+        arrival.seconds_since(departure),
         GM_SUN_KM3_S2,
         TransferDirection::Prograde,
     )

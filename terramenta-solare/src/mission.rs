@@ -142,7 +142,7 @@ pub fn plan_transfer(
     arrival: Epoch,
     direction: TransferDirection,
 ) -> Option<TransferPlan> {
-    let time_of_flight_seconds = arrival.to_unix_seconds() - departure.to_unix_seconds();
+    let time_of_flight_seconds = arrival.seconds_since(departure);
 
     let departure_state = tree.state_of_relative_to(origin, central_body, departure);
     let arrival_state = tree.state_of_relative_to(destination, central_body, arrival);

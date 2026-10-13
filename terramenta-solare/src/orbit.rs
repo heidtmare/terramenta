@@ -35,6 +35,8 @@ pub struct OrbitalElements {
     /// angle — a hyperbolic trajectory passes periapsis once and never
     /// repeats, so there is no `2π` to wrap it into.
     pub mean_anomaly_at_epoch: f64,
+    /// Reference time, uniform scale. The crate uses TT seconds since J2000
+    /// ([`crate::time::Epoch::tt_seconds`]); UTC would drop leap seconds.
     pub epoch_seconds: f64,
 }
 
@@ -50,10 +52,10 @@ impl OrbitalElements {
         (gm_km3_s2 / self.semi_major_axis_km.abs().powi(3)).sqrt()
     }
 
-    /// This orbit's state at a given time, relative to the body `gm_km3_s2`
-    /// belongs to.
-    pub fn state_at(&self, gm_km3_s2: f64, unix_seconds: f64) -> StateVector {
-        let dt = unix_seconds - self.epoch_seconds;
+    /// This orbit's state at `seconds` (same scale as `epoch_seconds`),
+    /// relative to the body `gm_km3_s2` belongs to.
+    pub fn state_at(&self, gm_km3_s2: f64, seconds: f64) -> StateVector {
+        let dt = seconds - self.epoch_seconds;
         let mean_anomaly = self.mean_anomaly_at_epoch + self.mean_motion(gm_km3_s2) * dt;
 
         let true_anomaly = if self.eccentricity < 1.0 {
