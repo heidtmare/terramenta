@@ -5,6 +5,7 @@
 use glam::{DMat3, DVec3};
 
 use crate::earth::TerrestrialTransform;
+use crate::frame::Ephemeris;
 use crate::time::Epoch;
 
 pub mod drag;
@@ -61,12 +62,21 @@ pub struct ForceContext<'a> {
     pub switch_epoch: Epoch,
     /// Mass for on/off switching: mass at the start of the current segment.
     pub switch_mass_kg: f64,
+    /// Sun relative to the central body at `epoch`, evaluated once per stage by the
+    /// propagator. Overrides per-force Sun ephemerides.
+    pub sun_km: Option<DVec3>,
 }
 
 impl ForceContext<'_> {
     /// Inertial → body-fixed rotation; identity if none.
     pub fn body_rotation(&self) -> DMat3 {
         self.body_fixed.map_or(DMat3::IDENTITY, |t| t.rotation())
+    }
+
+    /// [`Self::sun_km`], else `fallback` at `epoch`.
+    pub fn sun(&self, fallback: &dyn Ephemeris) -> DVec3 {
+        self.sun_km
+            .unwrap_or_else(|| fallback.state_at(self.epoch).position_km)
     }
 }
 

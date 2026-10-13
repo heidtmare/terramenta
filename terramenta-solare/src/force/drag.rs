@@ -19,6 +19,8 @@ pub struct AtmosphereSample {
     pub position_body_fixed_km: DVec3,
     /// WGS-84 geodetic latitude, longitude (rad), height (km).
     pub geodetic: (f64, f64, f64),
+    /// [`ForceContext::sun_km`].
+    pub sun_km: Option<DVec3>,
 }
 
 pub trait Atmosphere: std::fmt::Debug + Send + Sync {
@@ -182,7 +184,9 @@ impl Atmosphere for HarrisPriester {
         let Some((lo, hi)) = Self::bounds(h) else {
             return 0.0;
         };
-        let sun = self.sun.state_at(s.epoch).position_km;
+        let sun = s
+            .sun_km
+            .unwrap_or_else(|| self.sun.state_at(s.epoch).position_km);
         let ra = sun.y.atan2(sun.x) + self.lag_rad;
         let dec = (sun.z / sun.length()).asin();
         let bulge = DVec3::new(dec.cos() * ra.cos(), dec.cos() * ra.sin(), dec.sin());
@@ -216,6 +220,7 @@ impl ForceModel for Drag {
             position_inertial_km: ctx.position_km,
             position_body_fixed_km: fixed.position_km,
             geodetic: ecef_to_geodetic(fixed.position_km),
+            sun_km: ctx.sun_km,
         };
         let rho = self.atmosphere.density(&sample);
         if rho == 0.0 {
@@ -264,6 +269,7 @@ mod tests {
             position_inertial_km: DVec3::new(x, 0.0, 0.0),
             position_body_fixed_km: DVec3::ZERO,
             geodetic: (0.0, 0.0, 400.0),
+            sun_km: None,
         };
         assert!((hp.density(&sample(6778.0)) - 7.492e-12).abs() < 1e-18);
         assert!((hp.density(&sample(-6778.0)) - 2.249e-12).abs() < 1e-18);
@@ -280,6 +286,7 @@ mod tests {
             position_inertial_km: DVec3::new(6378.0 + h, 0.0, 0.0),
             position_body_fixed_km: DVec3::ZERO,
             geodetic: (0.0, 0.0, h),
+            sun_km: None,
         };
         let at = hp.density(&sample(100.0));
         assert!((at - 4.974e-7).abs() < 1e-15);

@@ -61,7 +61,7 @@ pub fn shadow_fraction(r: DVec3, sun: DVec3, body_radius: f64) -> f64 {
 
 impl ForceModel for SolarRadiationPressure {
     fn acceleration(&self, ctx: &ForceContext) -> DVec3 {
-        let sun = self.sun.state_at(ctx.epoch).position_km;
+        let sun = ctx.sun(&*self.sun);
         let nu = shadow_fraction(ctx.position_km, sun, self.body_radius_km);
         if nu == 0.0 {
             return DVec3::ZERO;
@@ -123,6 +123,7 @@ mod tests {
             body_fixed: None,
             switch_epoch: crate::Epoch::J2000,
             switch_mass_kg: 1.0,
+            sun_km: None,
         };
         let a = srp.acceleration(&ctx);
         // 4.54e-6 m/s² away from the Sun.

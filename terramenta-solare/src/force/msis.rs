@@ -85,6 +85,7 @@ mod tests {
                 position_inertial_km: DVec3::X,
                 position_body_fixed_km: DVec3::X,
                 geodetic: (0.3, 1.0, h),
+                sun_km: None,
             })
         };
         // kg/m³; monotone, within an order of magnitude of the static table.

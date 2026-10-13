@@ -13,6 +13,8 @@ pub struct ThirdBody {
     pub gm_km3_s2: f64,
     /// Body relative to the central body.
     pub ephemeris: Arc<dyn Ephemeris>,
+    /// Body is the Sun: [`ForceContext::sun_km`] overrides `ephemeris`.
+    pub is_sun: bool,
 }
 
 impl ThirdBody {
@@ -20,6 +22,14 @@ impl ThirdBody {
         Self {
             gm_km3_s2,
             ephemeris: Arc::new(ephemeris),
+            is_sun: false,
+        }
+    }
+
+    pub fn sun(gm_km3_s2: f64, ephemeris: impl Ephemeris + 'static) -> Self {
+        Self {
+            is_sun: true,
+            ..Self::new(gm_km3_s2, ephemeris)
         }
     }
 }
@@ -34,7 +44,11 @@ pub fn third_body_acceleration(gm: f64, r: DVec3, s: DVec3) -> DVec3 {
 
 impl ForceModel for ThirdBody {
     fn acceleration(&self, ctx: &ForceContext) -> DVec3 {
-        let s = self.ephemeris.state_at(ctx.epoch).position_km;
+        let s = if self.is_sun {
+            ctx.sun(&*self.ephemeris)
+        } else {
+            self.ephemeris.state_at(ctx.epoch).position_km
+        };
         third_body_acceleration(self.gm_km3_s2, ctx.position_km, s)
     }
 }
