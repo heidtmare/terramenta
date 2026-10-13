@@ -210,7 +210,11 @@ impl SpaceWeather {
     }
 
     pub fn msis_drivers(&self, epoch: Epoch) -> MsisDrivers {
-        let t = epoch.mjd_utc();
+        self.msis_drivers_mjd(epoch.mjd_utc())
+    }
+
+    /// [`Self::msis_drivers`] at MJD (UTC) `t`.
+    pub fn msis_drivers_mjd(&self, t: f64) -> MsisDrivers {
         let mjd = t.floor() as i64;
         let slot = (((t - t.floor()) * 8.0) as i64).min(7);
         let today = self.day(mjd);
@@ -249,6 +253,16 @@ fn parse_date_mjd(s: &str) -> Option<i64> {
 }
 
 /// Gregorian date → MJD (Fliegel & Van Flandern JDN − 2400001).
+/// Day of year (1-based) of MJD `mjd`.
+pub(crate) fn mjd_day_of_year(mjd: i64) -> i32 {
+    // 51_544 = 2000-01-01. Years ≥ 365 d, so the estimate is never low; walk back.
+    let mut y = 2000 + (mjd - 51_544).div_euclid(365) + 1;
+    while civil_to_mjd(y, 1, 1) > mjd {
+        y -= 1;
+    }
+    (mjd - civil_to_mjd(y, 1, 1) + 1) as i32
+}
+
 pub(crate) fn civil_to_mjd(y: i64, m: i64, d: i64) -> i64 {
     let a = (14 - m) / 12;
     let (yy, mm) = (y + 4800 - a, m + 12 * a - 3);
@@ -258,6 +272,21 @@ pub(crate) fn civil_to_mjd(y: i64, m: i64, d: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn day_of_year_from_mjd() {
+        for (y, m, d, doy) in [
+            (2000, 1, 1, 1),
+            (2000, 12, 31, 366),
+            (2001, 1, 1, 1),
+            (1999, 12, 31, 365),
+            (1957, 10, 4, 277),
+            (2024, 3, 1, 61),
+            (2100, 12, 31, 365),
+        ] {
+            assert_eq!(mjd_day_of_year(civil_to_mjd(y, m, d)), doy, "{y}-{m}-{d}");
+        }
+    }
 
     const SAMPLE: &str = "\
 DATE,BSRN,ND,KP1,KP2,KP3,KP4,KP5,KP6,KP7,KP8,KP_SUM,AP1,AP2,AP3,AP4,AP5,AP6,AP7,AP8,AP_AVG,CP,C9,ISN,F10.7_OBS,F10.7_ADJ,F10.7_DATA_TYPE,F10.7_OBS_CENTER81,F10.7_OBS_LAST81,F10.7_ADJ_CENTER81,F10.7_ADJ_LAST81

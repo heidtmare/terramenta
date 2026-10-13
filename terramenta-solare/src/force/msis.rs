@@ -3,11 +3,10 @@
 
 use std::sync::Arc;
 
-use hifitime::TimeScale;
 use nrlmsise00::{Input, MagneticActivity, Model};
 
 use super::drag::{Atmosphere, AtmosphereSample};
-use crate::space_weather::{SpaceWeather, civil_to_mjd};
+use crate::space_weather::{SpaceWeather, mjd_day_of_year};
 
 #[derive(Debug, Clone)]
 pub struct Nrlmsise00 {
@@ -26,10 +25,9 @@ impl Nrlmsise00 {
 
 impl Atmosphere for Nrlmsise00 {
     fn density(&self, s: &AtmosphereSample) -> f64 {
-        let drivers = self.weather.msis_drivers(s.epoch);
         let mjd = s.epoch.mjd_utc();
-        let year = s.epoch.to_gregorian(TimeScale::UTC).0;
-        let day_of_year = (mjd.floor() as i64 - civil_to_mjd(year.into(), 1, 1) + 1) as i32;
+        let drivers = self.weather.msis_drivers_mjd(mjd);
+        let day_of_year = mjd_day_of_year(mjd.floor() as i64);
         let (lat, lon, h) = s.geodetic;
         let input = Input::consistent(
             day_of_year,
