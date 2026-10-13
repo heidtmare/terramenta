@@ -382,9 +382,12 @@ fn propagator(req: &PropagationRequest, env: &Environment) -> Result<Propagator,
         })
     };
     let (sun, moon) = sun_and_moon(env);
+    if f.third_body || f.srp || matches!(f.drag, DragModel::HarrisPriester) {
+        p = p.with_sun(Shared(sun.clone()));
+    }
     if f.third_body {
         p = p
-            .with_force(ThirdBody::new(GM_SUN_KM3_S2, Shared(sun.clone())))
+            .with_force(ThirdBody::sun(GM_SUN_KM3_S2, Shared(sun.clone())))
             .with_force(ThirdBody::new(GM_MOON_KM3_S2, Shared(moon)));
     }
     if f.srp {

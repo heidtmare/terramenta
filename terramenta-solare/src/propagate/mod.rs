@@ -11,7 +11,7 @@ use glam::DVec3;
 use crate::earth::{EarthModel, TerrestrialTransform, gcrf_to_itrf};
 use crate::eop::{Eop, EopTable};
 use crate::force::{ForceContext, ForceModel, Vehicle};
-use crate::frame::StateVector;
+use crate::frame::{Ephemeris, StateVector};
 use crate::maneuver::ImpulsiveManeuver;
 use crate::time::Epoch;
 
@@ -113,6 +113,9 @@ pub struct Propagator {
     /// Full orientation is recomputed on a grid of this spacing (TT); Earth rotation is
     /// applied exactly in between.
     pub orientation_refresh_s: f64,
+    /// Sun relative to the central body; evaluated once per stage into
+    /// [`ForceContext::sun_km`].
+    pub sun: Option<Arc<dyn Ephemeris>>,
     pub maneuvers: Vec<ImpulsiveManeuver>,
     pub integrator: Integrator,
     cache: Option<(f64, TerrestrialTransform)>,
@@ -127,6 +130,7 @@ impl Propagator {
             vehicle: Vehicle::default(),
             orientation: None,
             orientation_refresh_s: 600.0,
+            sun: None,
             maneuvers: Vec::new(),
             integrator,
             cache: None,
@@ -143,6 +147,11 @@ impl Propagator {
     pub fn with_orientation(mut self, orientation: impl BodyOrientation + 'static) -> Self {
         self.orientation = Some(Arc::new(orientation));
         self.cache = None;
+        self
+    }
+
+    pub fn with_sun(mut self, sun: impl Ephemeris + 'static) -> Self {
+        self.sun = Some(Arc::new(sun));
         self
     }
 
@@ -232,6 +241,7 @@ impl Propagator {
             body_fixed: bf.as_ref(),
             switch_epoch: self.switch_epoch.unwrap_or(epoch),
             switch_mass_kg: self.switch_mass.unwrap_or(y[6]),
+            sun_km: self.sun.as_ref().map(|s| s.state_at(epoch).position_km),
         };
         let (mut a, mut mdot) = (DVec3::ZERO, 0.0);
         for f in &self.forces {
@@ -661,5 +671,48 @@ mod tests {
             "{} km",
             ((cached - direct) * r).length()
         );
+    }
+
+    #[test]
+    fn shared_sun_evaluated_once_per_stage() {
+        use crate::force::{Drag, HarrisPriester, SolarRadiationPressure, ThirdBody};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        #[derive(Debug, Clone)]
+        struct CountedSun(Arc<AtomicUsize>);
+        impl Ephemeris for CountedSun {
+            fn state_at(&self, epoch: Epoch) -> StateVector {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                let w = epoch.seconds_since(Epoch::J2000) * 2e-7;
+                StateVector::new(1.496e8 * DVec3::new(w.cos(), w.sin(), 0.1), DVec3::ZERO)
+            }
+        }
+
+        let run = |shared: bool| {
+            let (own, prop) = (Arc::<AtomicUsize>::default(), Arc::<AtomicUsize>::default());
+            let sun = CountedSun(own.clone());
+            let mut p = two_body(Method::Dop853)
+                .with_orientation(EarthOrientation::default())
+                .with_force(ThirdBody::sun(1.327e11, sun.clone()))
+                .with_force(SolarRadiationPressure::new(sun.clone(), 6378.0))
+                .with_force(Drag::new(HarrisPriester::new(sun)));
+            if shared {
+                p = p.with_sun(CountedSun(prop.clone()));
+            }
+            let s0 = leo();
+            let s1 = p
+                .propagate(&s0, s0.epoch.advanced_by_seconds(3600.0))
+                .unwrap();
+            (
+                s1,
+                own.load(Ordering::Relaxed),
+                prop.load(Ordering::Relaxed),
+            )
+        };
+        let (base, own0, _) = run(false);
+        let (s1, own1, prop1) = run(true);
+        assert_eq!(s1, base);
+        assert_eq!(own1, 0);
+        assert!(own0 >= 3 * prop1, "{own0} vs {prop1}");
     }
 }
