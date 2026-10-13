@@ -82,7 +82,8 @@ impl Atmosphere for ExponentialAtmosphere {
 }
 
 /// Harris–Priester, mean solar activity (Montenbruck & Gill, *Satellite Orbits*, §3.5.2,
-/// Table 3.8). 100–1000 km; zero above.
+/// Table 3.8). 100–1000 km; below, [`ExponentialAtmosphere`] scaled to match at 100 km;
+/// zero above.
 #[derive(Debug, Clone)]
 pub struct HarrisPriester {
     /// Sun relative to the central body.
@@ -171,7 +172,14 @@ impl HarrisPriester {
 
 impl Atmosphere for HarrisPriester {
     fn density(&self, s: &AtmosphereSample) -> f64 {
-        let Some((lo, hi)) = Self::bounds(s.geodetic.2) else {
+        let h = s.geodetic.2;
+        if h < HP[0].0 {
+            // Vallado band below 100 km, extended to 100 km for continuity.
+            let (h0, rho0, sh) = VALLADO_EXP[VALLADO_EXP.partition_point(|r| r.0 < HP[0].0) - 1];
+            let scale = HP[0].1 * 1e-12 / (rho0 * (-(HP[0].0 - h0) / sh).exp());
+            return scale * ExponentialAtmosphere::density_at_height(h);
+        }
+        let Some((lo, hi)) = Self::bounds(h) else {
             return 0.0;
         };
         let sun = self.sun.state_at(s.epoch).position_km;
@@ -259,5 +267,29 @@ mod tests {
         };
         assert!((hp.density(&sample(6778.0)) - 7.492e-12).abs() < 1e-18);
         assert!((hp.density(&sample(-6778.0)) - 2.249e-12).abs() < 1e-18);
+    }
+
+    #[test]
+    fn harris_priester_below_table() {
+        let hp = HarrisPriester::new(FixedOffset(StateVector::new(
+            DVec3::new(1.496e8, 0.0, 0.0),
+            DVec3::ZERO,
+        )));
+        let sample = |h: f64| AtmosphereSample {
+            epoch: Epoch::J2000,
+            position_inertial_km: DVec3::new(6378.0 + h, 0.0, 0.0),
+            position_body_fixed_km: DVec3::ZERO,
+            geodetic: (0.0, 0.0, h),
+        };
+        let at = hp.density(&sample(100.0));
+        assert!((at - 4.974e-7).abs() < 1e-15);
+        // Continuous at 100 km, monotone below.
+        let below = hp.density(&sample(100.0 - 1e-9));
+        assert!((below / at - 1.0).abs() < 1e-9, "{below:e} {at:e}");
+        let (r90, r50) = (hp.density(&sample(90.0)), hp.density(&sample(50.0)));
+        assert!(r90 > at && r50 > r90);
+        let ratio = r90 / ExponentialAtmosphere::density_at_height(90.0);
+        assert!((ratio - 4.974e-7 / (3.396e-6 * (-10.0f64 / 5.382).exp())).abs() < 1e-12);
+        assert_eq!(hp.density(&sample(1000.0)), 0.0);
     }
 }
