@@ -349,17 +349,35 @@ impl FrameTree {
         self.position_up_to(frame, common, epoch) - self.position_up_to(other, common, epoch)
     }
 
+    /// Equalise depths, then step both up until they meet.
     fn common_ancestor(&self, frame: FrameId, other: FrameId) -> FrameId {
-        let (ancestors_of_frame, ancestors_of_other) =
-            (self.ancestors(frame), self.ancestors(other));
+        let (mut a, mut b) = (frame, other);
+        let (mut da, mut db) = (self.depth(a), self.depth(b));
+        while da > db {
+            a = self.parent(a).unwrap_or(self.root);
+            da -= 1;
+        }
+        while db > da {
+            b = self.parent(b).unwrap_or(self.root);
+            db -= 1;
+        }
+        while a != b {
+            match (self.parent(a), self.parent(b)) {
+                (Some(pa), Some(pb)) => (a, b) = (pa, pb),
+                _ => return self.root,
+            }
+        }
+        a
+    }
 
-        // The nearest common ancestor is the first of `frame`'s ancestors
-        // (root-most last) that also appears among `other`'s.
-        ancestors_of_frame
-            .iter()
-            .find(|candidate| ancestors_of_other.contains(candidate))
-            .copied()
-            .unwrap_or(self.root)
+    /// Hops to the root.
+    fn depth(&self, mut frame: FrameId) -> usize {
+        let mut d = 0;
+        while let Some(parent) = self.parent(frame) {
+            frame = parent;
+            d += 1;
+        }
+        d
     }
 
     /// `frame`'s state relative to `ancestor`, which must be `frame` itself or
@@ -388,18 +406,6 @@ impl FrameTree {
             current = parent;
         }
         position
-    }
-
-    /// `frame`, then its parent, then its parent's parent, and so on up to
-    /// and including the root — nearest first.
-    fn ancestors(&self, frame: FrameId) -> Vec<FrameId> {
-        let mut chain = vec![frame];
-        let mut current = frame;
-        while let Some(parent) = self.parent(current) {
-            chain.push(parent);
-            current = parent;
-        }
-        chain
     }
 
     fn node(&self, frame: FrameId) -> &Node {
@@ -474,6 +480,19 @@ mod tests {
         let local = tree.local_state(spacecraft, Epoch::J2000);
         let relative = tree.state_of_relative_to(spacecraft, earth, Epoch::J2000);
         assert_eq!(local, relative);
+    }
+
+    #[test]
+    fn common_ancestor_across_depths() {
+        let (mut tree, sun, earth, spacecraft) = sample_tree();
+        let moon = tree.add("Moon", earth, Offset(DVec3::X));
+        let root = tree.root();
+        assert_eq!(tree.common_ancestor(spacecraft, moon), earth);
+        assert_eq!(tree.common_ancestor(spacecraft, earth), earth);
+        assert_eq!(tree.common_ancestor(earth, spacecraft), earth);
+        assert_eq!(tree.common_ancestor(spacecraft, sun), root);
+        assert_eq!(tree.common_ancestor(root, spacecraft), root);
+        assert_eq!(tree.common_ancestor(moon, moon), moon);
     }
 
     #[test]

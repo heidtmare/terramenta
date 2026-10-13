@@ -19,12 +19,16 @@ impl Default for Interpolation {
     }
 }
 
+/// Window size cap; higher degrees are clamped.
+const MAX_POINTS: usize = 16;
+
 impl Interpolation {
     fn points(self) -> usize {
         match self {
             Self::Lagrange { degree } => degree + 1,
             Self::Hermite { degree } => degree.div_ceil(2).max(1),
         }
+        .min(MAX_POINTS)
     }
 }
 
@@ -114,10 +118,13 @@ impl Ephemeris for SampledEphemeris {
         let w = self.window(t);
         let (ts, ss) = (&self.times[w.clone()], &self.states[w]);
         match self.method {
-            Interpolation::Lagrange { .. } => StateVector::new(
-                lagrange(ts, ss.iter().map(|s| s.position_km), t),
-                lagrange(ts, ss.iter().map(|s| s.velocity_km_s), t),
-            ),
+            Interpolation::Lagrange { .. } => {
+                let w = lagrange_weights(ts, t);
+                StateVector::new(
+                    weighted(&w, ss.iter().map(|s| s.position_km)),
+                    weighted(&w, ss.iter().map(|s| s.velocity_km_s)),
+                )
+            }
             Interpolation::Hermite { .. } => {
                 let (r, v) = hermite(ts, ss, t);
                 StateVector::new(r, v)
@@ -130,35 +137,43 @@ impl Ephemeris for SampledEphemeris {
         let w = self.window(t);
         let (ts, ss) = (&self.times[w.clone()], &self.states[w]);
         match self.method {
-            Interpolation::Lagrange { .. } => lagrange(ts, ss.iter().map(|s| s.position_km), t),
+            Interpolation::Lagrange { .. } => {
+                weighted(&lagrange_weights(ts, t), ss.iter().map(|s| s.position_km))
+            }
             Interpolation::Hermite { .. } => hermite(ts, ss, t).0,
         }
     }
 }
 
-fn lagrange(ts: &[f64], ys: impl Iterator<Item = DVec3>, t: f64) -> DVec3 {
-    ys.enumerate()
-        .map(|(i, y)| {
-            let w: f64 = ts
-                .iter()
-                .enumerate()
-                .filter(|(j, _)| *j != i)
-                .map(|(_, tj)| (t - tj) / (ts[i] - tj))
-                .product();
-            y * w
-        })
-        .sum()
+/// Lagrange basis at `t`; `ts.len() <= MAX_POINTS`.
+fn lagrange_weights(ts: &[f64], t: f64) -> [f64; MAX_POINTS] {
+    let mut w = [0.0; MAX_POINTS];
+    for (i, ti) in ts.iter().enumerate() {
+        w[i] = ts
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != i)
+            .map(|(_, tj)| (t - tj) / (ti - tj))
+            .product();
+    }
+    w
+}
+
+fn weighted(w: &[f64], ys: impl Iterator<Item = DVec3>) -> DVec3 {
+    ys.zip(w).map(|(y, w)| y * *w).sum()
 }
 
 /// Newton divided differences on doubled nodes; returns `(p(t), p'(t))`.
+/// `ts.len() <= MAX_POINTS`.
 fn hermite(ts: &[f64], ss: &[StateVector], t: f64) -> (DVec3, DVec3) {
     let n = 2 * ts.len();
-    let z: Vec<f64> = ts.iter().flat_map(|t| [*t, *t]).collect();
-    let mut q: Vec<DVec3> = ss
-        .iter()
-        .flat_map(|s| [s.position_km, s.position_km])
-        .collect();
-    let mut coef = vec![q[0]];
+    let mut z = [0.0; 2 * MAX_POINTS];
+    let mut q = [DVec3::ZERO; 2 * MAX_POINTS];
+    for (i, (t, s)) in ts.iter().zip(ss).enumerate() {
+        z[2 * i..2 * i + 2].fill(*t);
+        q[2 * i..2 * i + 2].fill(s.position_km);
+    }
+    // In place: after pass `j`, `q[j]` is the `j`th Newton coefficient.
     for j in 1..n {
         for i in (j..n).rev() {
             q[i] = if j == 1 && i % 2 == 1 {
@@ -167,12 +182,11 @@ fn hermite(ts: &[f64], ss: &[StateVector], t: f64) -> (DVec3, DVec3) {
                 (q[i] - q[i - 1]) / (z[i] - z[i - j])
             };
         }
-        coef.push(q[j]);
     }
-    let (mut p, mut dp) = (coef[n - 1], DVec3::ZERO);
+    let (mut p, mut dp) = (q[n - 1], DVec3::ZERO);
     for i in (0..n - 1).rev() {
         dp = dp * (t - z[i]) + p;
-        p = p * (t - z[i]) + coef[i];
+        p = p * (t - z[i]) + q[i];
     }
     (p, dp)
 }
