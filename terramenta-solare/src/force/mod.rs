@@ -59,6 +59,8 @@ pub struct ForceContext<'a> {
     /// Epoch for on/off switching: midpoint of the current segment between
     /// [`ForceModel::discontinuities`], so stages on a segment boundary see the segment's regime.
     pub switch_epoch: Epoch,
+    /// Mass for on/off switching: mass at the start of the current segment.
+    pub switch_mass_kg: f64,
 }
 
 impl ForceContext<'_> {
