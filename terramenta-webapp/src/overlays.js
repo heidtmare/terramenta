@@ -39,13 +39,8 @@ let added = 0;
 /** Nothing sensible polls faster than this, and the globe clamps it anyway. */
 const MIN_REFRESH_SECONDS = 5;
 
-/**
- * Puts a feed up: a URL, a name for it, and how often to go back for more.
- *
- * Exported because `main.js` puts two up at boot — the layer is the whole
- * feature, and a panel showing an empty list is a poor way to introduce it.
- */
-export function addFeed({ id, url, label, refreshSeconds = null, options = {} }) {
+/** Puts a feed up: a URL, a name for it, and how often to go back for more. */
+function addFeed({ id, url, label, refreshSeconds = null, options = {} }) {
   const { fillAlpha, ...rest } = options;
   globe.addOverlay(id ?? idForUrl(url), {
     url,

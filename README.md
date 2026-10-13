@@ -29,8 +29,9 @@ until the spacecraft enters Mars' sphere of influence.*
 
 [![The mission-planning demo flying Earth to Mars](docs/mission-demo.gif)](docs/mission-demo.mp4)
 
-*Recorded from [`terramenta-webapp/mission-demo.html`](terramenta-webapp/mission-demo.html)
-in Chromium over WebGPU. The page searches for an Earth–Mars launch window,
+*Recorded from the [`mars-mission`](terramenta-webapp/projects/mars-mission.terramenta.json)
+project (`index.html?project=projects/mars-mission.terramenta.json`) in Chromium
+over WebGPU. The project searches for an Earth–Mars launch window,
 jumps the clock to departure, follows the spacecraft out of its parking orbit
 in the globe view, switches to the heliocentric view after Earth escape, and
 stops at Mars capture. White: flown trajectory. Dashed yellow: planned
@@ -43,7 +44,7 @@ trajectory. Cruise is time-accelerated. [Full-resolution video](docs/mission-dem
 | [`terramenta-globe`](terramenta-globe/) | Rendering engine. Earth globe and heliocentric scene, OGC imagery and MVT streaming, GeoJSON overlays, SGP4 satellites, flown missions. Command/state API exposed to JavaScript via `wasm-bindgen`. |
 | [`terramenta-solare`](terramenta-solare/) | Astrodynamics library. Reference-frame tree rooted at the Solar System Barycentre (Sun, Earth, Mars), two-body propagation, Lambert solver, transfer planning, patched-conics spacecraft. Pure Rust, `f64` throughout. |
 | [`terramenta-charta`](terramenta-charta/) | 2D mission-planning charts on top of `terramenta-solare`: porkchop grid and marching-squares contouring, exposed to JavaScript as pure functions. |
-| [`terramenta-webapp`](terramenta-webapp/) | Reference client. Plain HTML/CSS/ES modules (no bundler) embedding the globe and charta modules. Two pages: the full control panel (`index.html`) and the mission demo (`mission-demo.html`). |
+| [`terramenta-webapp`](terramenta-webapp/) | Reference client. Plain HTML/CSS/ES modules (no bundler) embedding the globe and charta modules. Loads `*.terramenta.json` project files; bundled examples in `projects/`. |
 
 Dependencies run one way: `terramenta-globe` and `terramenta-charta` depend on
 `terramenta-solare`; the webapp depends on the compiled WASM modules. Neither
@@ -128,8 +129,8 @@ cd terramenta-webapp
 ./scripts/serve.sh                                 # builds globe + charta modules if needed; http://localhost:8080
 ```
 
-`index.html` is the full control panel; `mission-demo.html` is the mission
-demo. WebGPU requires a secure context, so serve over HTTP(S), not `file://`.
+`index.html?project=projects/<name>.terramenta.json` opens a project; the
+Project tab lists bundled examples, opens local files and saves. WebGPU requires a secure context, so serve over HTTP(S), not `file://`.
 Supported browsers: Chrome/Edge 113+, Safari 26+, Firefox 141+ (Linux requires
 `dom.webgpu.enabled`).
 

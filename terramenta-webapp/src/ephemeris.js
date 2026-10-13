@@ -44,14 +44,8 @@ const MIN_REFRESH_SECONDS = 300;
 /** How many objects one layer's list draws before it asks you to filter. */
 const LIST_LIMIT = 200;
 
-/**
- * Puts a catalogue up.
- *
- * Exported because `main.js` puts one up at boot, for the same reason it puts
- * overlays up: a panel introducing a feature with an empty list is a poor
- * introduction.
- */
-export function addCatalogue({ id, url, label, refreshSeconds = null, options = {} }) {
+/** Puts a catalogue up. */
+function addCatalogue({ id, url, label, refreshSeconds = null, options = {} }) {
   globe.addEphemeris(id ?? `omm:${url}`, {
     url,
     label: label ?? url,

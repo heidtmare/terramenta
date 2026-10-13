@@ -103,7 +103,7 @@ export const FEEDS = [
   },
 ];
 
-/** The live one the app puts up on its own, alongside [`SAMPLE`]. */
+/** Prefilled in the add-layer box. */
 export const DEFAULT_FEED = FEEDS[0];
 
 /** Everything the panel offers as a button, samples first. */

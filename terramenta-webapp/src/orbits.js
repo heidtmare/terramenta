@@ -86,5 +86,5 @@ export const CATALOGUES = [
   },
 ];
 
-/** The one the app puts up on its own. */
+/** Prefilled in the add-layer box. */
 export const DEFAULT_CATALOGUE = CATALOGUES[0];
