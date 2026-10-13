@@ -5,6 +5,7 @@ use glam::DVec3;
 use crate::frame::{Ephemeris, StateVector};
 use crate::time::Epoch;
 
+/// Windows are capped at [`MAX_POINTS`] nodes: Lagrange degree ≤ 31, Hermite degree ≤ 63.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Interpolation {
     /// `degree + 1` points per component; position and velocity interpolated independently.
@@ -20,7 +21,7 @@ impl Default for Interpolation {
 }
 
 /// Window size cap; higher degrees are clamped.
-const MAX_POINTS: usize = 16;
+pub const MAX_POINTS: usize = 32;
 
 impl Interpolation {
     fn points(self) -> usize {
@@ -107,7 +108,8 @@ impl SampledEphemeris {
         let lo = self.breaks[s];
         let hi = self.breaks.get(s + 1).copied().unwrap_or(self.times.len());
         let n = self.method.points().min(hi - lo);
-        let start = i.saturating_sub(n / 2).clamp(lo, hi - n);
+        // ≥ 1 node at or before t, so a node is always in its own window.
+        let start = i.saturating_sub((n / 2).max(1)).clamp(lo, hi - n);
         start..start + n
     }
 }
@@ -234,6 +236,34 @@ mod tests {
             let s = eph.state_at(Epoch::J2000.advanced_by_seconds(600.0));
             assert!((s.position_km - samples[10].1.position_km).length() < 1e-9);
         }
+    }
+
+    #[test]
+    fn one_point_window_is_exact_at_nodes() {
+        let samples: Vec<_> = (0..5)
+            .map(|k| {
+                let k = k as f64;
+                (
+                    Epoch::J2000.advanced_by_seconds(60.0 * k),
+                    StateVector::new(DVec3::splat(k), DVec3::splat(-k)),
+                )
+            })
+            .collect();
+        for method in [
+            Interpolation::Lagrange { degree: 0 },
+            Interpolation::Hermite { degree: 1 },
+        ] {
+            let eph = SampledEphemeris::new(samples.clone(), method);
+            for (e, s) in &samples {
+                assert_eq!(eph.state_at(*e).position_km, s.position_km, "{method:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn degree_above_old_cap_uses_full_window() {
+        assert_eq!(Interpolation::Lagrange { degree: 20 }.points(), 21);
+        assert_eq!(Interpolation::Lagrange { degree: 99 }.points(), MAX_POINTS);
     }
 
     #[test]

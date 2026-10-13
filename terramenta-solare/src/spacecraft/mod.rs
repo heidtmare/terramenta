@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 pub use patched::{PatchedConicSpacecraft, Primary};
 
+use crate::earth::TemeGrid;
 use crate::force::Vehicle;
 use crate::frame::{Ephemeris, StateVector};
 use crate::interpolate::{Interpolation, SampledEphemeris};
@@ -210,12 +211,23 @@ impl Spacecraft {
             )),
             _ => None,
         };
+        let mut teme = match &self.propagation {
+            Propagation::Sgp4(e) => Some((e, TemeGrid::new(|_| e.eop))),
+            _ => None,
+        };
         epochs
             .into_iter()
             .map(|e| {
-                let sv = match &two_body {
-                    Some((el, gm)) => el.state_at(*gm, e.seconds_since(self.state.epoch)),
-                    None => state_vector_at(&self.state, &self.propagation, e)?,
+                let sv = match (&two_body, &mut teme) {
+                    (Some((el, gm)), _) => el.state_at(*gm, e.seconds_since(self.state.epoch)),
+                    (_, Some((sgp4, grid))) => {
+                        let s = sgp4
+                            .state_teme(e)
+                            .ok_or(SpacecraftError::Sgp4 { epoch: e })?;
+                        let m = grid.at(e);
+                        StateVector::new(m * s.position_km, m * s.velocity_km_s)
+                    }
+                    _ => state_vector_at(&self.state, &self.propagation, e)?,
                 };
                 Ok(SpacecraftState::new(e, sv, self.state.mass_kg))
             })
@@ -330,6 +342,28 @@ mod tests {
             .unwrap();
         assert_eq!(s.len(), 4);
         assert_eq!(s[3].epoch.seconds_since(Epoch::J2000), -130.0);
+    }
+
+    #[test]
+    fn sgp4_samples_match_exact_rotation() {
+        let sgp4 = Sgp4Ephemeris::from_tle(
+            "1 00005U 58002B   00179.78495062  .00000023  00000-0  28098-4 0  4753",
+            "2 00005  34.2682 348.7242 1859667 331.7664  19.3264 10.82419157413667",
+        )
+        .unwrap();
+        let sc = Spacecraft::from_sgp4("vanguard", sgp4, 1.5).unwrap();
+        let Propagation::Sgp4(e) = &sc.propagation else {
+            unreachable!()
+        };
+        let samples = sc
+            .samples(sc.epoch().advanced_by_seconds(2.0 * 86_400.0), 997.0)
+            .unwrap();
+        assert_eq!(samples.len(), 175);
+        for s in &samples {
+            let exact = e.state_gcrf(s.epoch, &e.eop).unwrap();
+            assert!((s.position_km - exact.position_km).length() < 1e-5);
+            assert!((s.velocity_km_s - exact.velocity_km_s).length() < 1e-8);
+        }
     }
 
     #[test]

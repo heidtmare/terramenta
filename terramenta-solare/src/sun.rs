@@ -70,6 +70,25 @@ const SATURN: GiantPlanet = GiantPlanet {
     gm_ratio_to_sun: 1.0 / 3_497.898,
 };
 
+impl GiantPlanet {
+    /// Position half of [`Self::heliocentric_state`].
+    fn heliocentric_position(&self, epoch: Epoch) -> DVec3 {
+        let angle_rad = self.mean_longitude_at_j2000_deg.to_radians()
+            + std::f64::consts::TAU / self.orbital_period_days * epoch.days();
+        let (sin_a, cos_a) = angle_rad.sin_cos();
+        self.semi_major_axis_au * AU_KM * DVec3::new(cos_a, sin_a, 0.0)
+    }
+}
+
+/// Position half of [`ssb_relative_state`].
+pub fn ssb_relative_position(epoch: Epoch) -> DVec3 {
+    let wobble: DVec3 = [&JUPITER, &SATURN]
+        .into_iter()
+        .map(|planet| planet.heliocentric_position(epoch) * planet.gm_ratio_to_sun)
+        .sum();
+    to_equatorial(-wobble)
+}
+
 /// The Sun's state relative to the SSB, in equatorial (ICRF-aligned) axes.
 pub fn ssb_relative_state(epoch: Epoch) -> StateVector {
     let wobble = [&JUPITER, &SATURN]
@@ -100,11 +119,24 @@ impl Ephemeris for Sun {
     fn state_at(&self, epoch: Epoch) -> StateVector {
         ssb_relative_state(epoch)
     }
+
+    fn position_at(&self, epoch: Epoch) -> DVec3 {
+        ssb_relative_position(epoch)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn position_matches_state() {
+        for days in [0.0, 1_234.5, -9_000.0] {
+            let epoch = Epoch::J2000.advanced_by_seconds(days * SECONDS_PER_DAY);
+            let d = Sun.position_at(epoch) - Sun.state_at(epoch).position_km;
+            assert!(d.length() < 1e-6, "{days}d: {d:?}");
+        }
+    }
 
     #[test]
     fn the_sun_stays_within_a_couple_of_solar_diameters_of_the_ssb() {
