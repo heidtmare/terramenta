@@ -356,12 +356,13 @@ impl Integrator {
         let n = y.len() as f64;
         let scale = |i: usize| tol.absolute + tol.relative * y[i].abs().max(self.y_new[i].abs());
         let weighted = |coef: &[f64], i: usize| -> f64 {
-            coef.iter()
+            let sum = coef
+                .iter()
                 .enumerate()
                 .filter(|(_, c)| **c != 0.0)
                 .map(|(s, c)| c * self.k[s][i])
-                .sum::<f64>()
-                / scale(i)
+                .sum::<f64>();
+            scaled(sum, scale(i))
         };
         let e5: f64 = (0..y.len()).map(|i| weighted(e, i).powi(2)).sum();
         match err3 {
@@ -393,7 +394,12 @@ impl Integrator {
             .map(|v| tol.absolute + tol.relative * v.abs())
             .collect();
         let rms = |v: &[f64]| {
-            (v.iter().zip(&sc).map(|(a, s)| (a / s).powi(2)).sum::<f64>() / n as f64).sqrt()
+            (v.iter()
+                .zip(&sc)
+                .map(|(a, s)| scaled(*a, *s).powi(2))
+                .sum::<f64>()
+                / n as f64)
+                .sqrt()
         };
         let mut f0 = vec![0.0; n];
         f(t0, y, &mut f0);
@@ -416,6 +422,11 @@ impl Integrator {
         };
         (100.0 * h0).min(h1).max(self.min_step_s)
     }
+}
+
+/// `a / s`; 0 for zero scale (`absolute = 0` with a zero component).
+fn scaled(a: f64, s: f64) -> f64 {
+    if s == 0.0 { 0.0 } else { a / s }
 }
 
 /// Stage node and coefficients `(c, a)`.
@@ -995,6 +1006,24 @@ mod tests {
             integ.integrate(&mut f, 0.0, &mut y, 5.0).unwrap();
             assert!(integ.stats.rejected > 0, "{m:?}");
             assert!((y[0] - (-5.0f64).exp()).abs() < 1e-9, "{m:?}: {}", y[0]);
+        }
+    }
+
+    #[test]
+    fn zero_absolute_tolerance_zero_component() {
+        // Pure relative tolerance; y[1] stays exactly 0.
+        let mut f = |_t: f64, y: &[f64], d: &mut [f64]| {
+            d[0] = -y[0];
+            d[1] = 0.0;
+        };
+        for m in [Method::Rkf78, Method::Dop853] {
+            let mut y = [1.0, 0.0];
+            Integrator::new(m)
+                .with_tolerance(1e-10, 0.0)
+                .integrate(&mut f, 0.0, &mut y, 2.0)
+                .unwrap();
+            assert!((y[0] - (-2.0f64).exp()).abs() < 1e-9, "{m:?}: {}", y[0]);
+            assert_eq!(y[1], 0.0, "{m:?}");
         }
     }
 
