@@ -74,6 +74,28 @@ impl ImpulsiveManeuver {
         };
         (dv, mass)
     }
+
+    /// Inverse of [`Self::apply`] from the post-burn state: `(Δv inertial, mass before)`.
+    /// Local frames depend on the pre-burn velocity, so solve
+    /// `v_pre = v_post − R(r, v_pre)·Δv` by fixed-point iteration (contraction ≈ |Δv|/|v|).
+    pub fn undo(&self, r: DVec3, v_post: DVec3, mass_kg: f64) -> (DVec3, f64) {
+        let mut dv = self.frame.to_inertial(r, v_post) * self.delta_v_km_s;
+        if self.frame != LocalFrame::Inertial {
+            for _ in 0..50 {
+                let next = self.frame.to_inertial(r, v_post - dv) * self.delta_v_km_s;
+                let done = (next - dv).length() <= 1e-15 * v_post.length();
+                dv = next;
+                if done {
+                    break;
+                }
+            }
+        }
+        let mass = match self.isp_s {
+            Some(isp) => mass_kg * (dv.length() * 1e3 / (isp * G0_M_S2)).exp(),
+            None => mass_kg,
+        };
+        (dv, mass)
+    }
 }
 
 /// Constant-thrust burn over `[start, start + duration]`. Cuts off at `dry_mass_kg`.
@@ -152,5 +174,23 @@ mod tests {
         let (dv, mass) = m.apply(DVec3::X * 7000.0, DVec3::Y * 7.5, 1000.0);
         assert!((dv - DVec3::Y * 0.1).length() < 1e-15);
         assert!((mass - 1000.0 * (-100.0 / (300.0 * G0_M_S2)).exp()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn undo_inverts_apply() {
+        let (r, v) = (DVec3::new(7000.0, 100.0, -50.0), DVec3::new(0.5, 7.4, 1.0));
+        let dv_local = DVec3::new(0.3, -0.5, 0.2);
+        for f in [
+            LocalFrame::Inertial,
+            LocalFrame::Vnb,
+            LocalFrame::Rsw,
+            LocalFrame::Lvlh,
+        ] {
+            let m = ImpulsiveManeuver::new(Epoch::J2000, dv_local, f).with_isp(300.0);
+            let (dv, mass) = m.apply(r, v, 1000.0);
+            let (dv_back, mass_back) = m.undo(r, v + dv, mass);
+            assert!((v + dv - dv_back - v).length() < 1e-14, "{f:?}");
+            assert!((mass_back - 1000.0).abs() < 1e-9, "{f:?}");
+        }
     }
 }
