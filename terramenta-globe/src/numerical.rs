@@ -343,6 +343,10 @@ impl Ephemeris for Shared {
     fn state_at(&self, epoch: Epoch) -> StateVector {
         self.0.state_at(epoch)
     }
+
+    fn position_at(&self, epoch: Epoch) -> bevy::math::DVec3 {
+        self.0.position_at(epoch)
+    }
 }
 
 fn propagator(req: &PropagationRequest, env: &Environment) -> Result<Propagator, String> {

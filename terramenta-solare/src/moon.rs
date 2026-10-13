@@ -69,6 +69,10 @@ impl Ephemeris for Moon {
         let behind = position_km(epoch.advanced_by_seconds(-DIFF_STEP_S));
         StateVector::new(position_km(epoch), (ahead - behind) / (2.0 * DIFF_STEP_S))
     }
+
+    fn position_at(&self, epoch: Epoch) -> DVec3 {
+        position_km(epoch)
+    }
 }
 
 #[cfg(test)]

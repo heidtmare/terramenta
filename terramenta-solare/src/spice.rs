@@ -103,6 +103,13 @@ impl Ephemeris for KernelEphemeris {
             .or_else(|| self.fallback.as_ref().map(|f| f.state_at(epoch)))
             .unwrap_or(StateVector::ZERO)
     }
+
+    fn position_at(&self, epoch: Epoch) -> DVec3 {
+        self.try_state_at(epoch)
+            .map(|s| s.position_km)
+            .or_else(|| self.fallback.as_ref().map(|f| f.position_at(epoch)))
+            .unwrap_or(DVec3::ZERO)
+    }
 }
 
 /// [`crate::solar_system`] backed by kernels.
