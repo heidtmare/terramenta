@@ -184,9 +184,7 @@ impl Atmosphere for HarrisPriester {
         let Some((lo, hi)) = Self::bounds(h) else {
             return 0.0;
         };
-        let sun = s
-            .sun_km
-            .unwrap_or_else(|| self.sun.state_at(s.epoch).position_km);
+        let sun = s.sun_km.unwrap_or_else(|| self.sun.position_at(s.epoch));
         let ra = sun.y.atan2(sun.x) + self.lag_rad;
         let dec = (sun.z / sun.length()).asin();
         let bulge = DVec3::new(dec.cos() * ra.cos(), dec.cos() * ra.sin(), dec.sin());

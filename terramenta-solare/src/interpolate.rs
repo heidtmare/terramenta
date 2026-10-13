@@ -124,6 +124,16 @@ impl Ephemeris for SampledEphemeris {
             }
         }
     }
+
+    fn position_at(&self, epoch: Epoch) -> DVec3 {
+        let t = epoch.seconds_since(self.origin);
+        let w = self.window(t);
+        let (ts, ss) = (&self.times[w.clone()], &self.states[w]);
+        match self.method {
+            Interpolation::Lagrange { .. } => lagrange(ts, ss.iter().map(|s| s.position_km), t),
+            Interpolation::Hermite { .. } => hermite(ts, ss, t).0,
+        }
+    }
 }
 
 fn lagrange(ts: &[f64], ys: impl Iterator<Item = DVec3>, t: f64) -> DVec3 {
@@ -203,6 +213,8 @@ mod tests {
                     (s.velocity_km_s - e.velocity_km_s).length() < tol_v,
                     "{method:?} t={t}"
                 );
+                let p = eph.position_at(Epoch::J2000.advanced_by_seconds(t));
+                assert_eq!(p, s.position_km, "{method:?} t={t}");
             }
             // Exact at nodes.
             let s = eph.state_at(Epoch::J2000.advanced_by_seconds(600.0));

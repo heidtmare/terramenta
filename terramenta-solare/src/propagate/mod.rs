@@ -254,7 +254,7 @@ impl Propagator {
             body_fixed: bf.as_ref(),
             switch_epoch: self.switch_epoch.unwrap_or(epoch),
             switch_mass_kg: self.switch_mass.unwrap_or(y[6]),
-            sun_km: self.sun.as_ref().map(|s| s.state_at(epoch).position_km),
+            sun_km: self.sun.as_ref().map(|s| s.position_at(epoch)),
         };
         let (mut a, mut mdot) = (DVec3::ZERO, 0.0);
         for f in &self.forces {

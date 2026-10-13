@@ -99,6 +99,11 @@ impl std::ops::Sub for StateVector {
 pub trait Ephemeris: std::fmt::Debug + Send + Sync {
     /// This body's state relative to its parent frame, at the given epoch.
     fn state_at(&self, epoch: Epoch) -> StateVector;
+
+    /// Position only; override where velocity costs extra.
+    fn position_at(&self, epoch: Epoch) -> DVec3 {
+        self.state_at(epoch).position_km
+    }
 }
 
 /// An [`Ephemeris`] for a frame that sits exactly on its parent — the root's
@@ -159,6 +164,11 @@ impl Ephemeris for Relative {
     fn state_at(&self, epoch: Epoch) -> StateVector {
         self.tree
             .state_of_relative_to(self.target, self.observer, epoch)
+    }
+
+    fn position_at(&self, epoch: Epoch) -> DVec3 {
+        self.tree
+            .position_of_relative_to(self.target, self.observer, epoch)
     }
 }
 
@@ -329,20 +339,27 @@ impl FrameTree {
         other: FrameId,
         epoch: Epoch,
     ) -> StateVector {
+        let common = self.common_ancestor(frame, other);
+        self.state_up_to(frame, common, epoch) - self.state_up_to(other, common, epoch)
+    }
+
+    /// Position-only [`Self::state_of_relative_to`].
+    pub fn position_of_relative_to(&self, frame: FrameId, other: FrameId, epoch: Epoch) -> DVec3 {
+        let common = self.common_ancestor(frame, other);
+        self.position_up_to(frame, common, epoch) - self.position_up_to(other, common, epoch)
+    }
+
+    fn common_ancestor(&self, frame: FrameId, other: FrameId) -> FrameId {
         let (ancestors_of_frame, ancestors_of_other) =
             (self.ancestors(frame), self.ancestors(other));
 
         // The nearest common ancestor is the first of `frame`'s ancestors
         // (root-most last) that also appears among `other`'s.
-        let common = ancestors_of_frame
+        ancestors_of_frame
             .iter()
             .find(|candidate| ancestors_of_other.contains(candidate))
             .copied()
-            .unwrap_or(self.root);
-
-        let up_from_frame = self.state_up_to(frame, common, epoch);
-        let up_from_other = self.state_up_to(other, common, epoch);
-        up_from_frame - up_from_other
+            .unwrap_or(self.root)
     }
 
     /// `frame`'s state relative to `ancestor`, which must be `frame` itself or
@@ -358,6 +375,19 @@ impl FrameTree {
             current = parent;
         }
         state
+    }
+
+    fn position_up_to(&self, frame: FrameId, ancestor: FrameId, epoch: Epoch) -> DVec3 {
+        let mut position = DVec3::ZERO;
+        let mut current = frame;
+        while current != ancestor {
+            let Some(parent) = self.parent(current) else {
+                break;
+            };
+            position += self.node(current).ephemeris.position_at(epoch);
+            current = parent;
+        }
+        position
     }
 
     /// `frame`, then its parent, then its parent's parent, and so on up to
@@ -444,6 +474,20 @@ mod tests {
         let local = tree.local_state(spacecraft, Epoch::J2000);
         let relative = tree.state_of_relative_to(spacecraft, earth, Epoch::J2000);
         assert_eq!(local, relative);
+    }
+
+    #[test]
+    fn position_of_relative_to_matches_state() {
+        let (tree, sun, _earth, spacecraft) = sample_tree();
+        let eph = Relative {
+            tree: std::sync::Arc::new(tree),
+            target: spacecraft,
+            observer: sun,
+        };
+        assert_eq!(
+            eph.position_at(Epoch::J2000),
+            eph.state_at(Epoch::J2000).position_km
+        );
     }
 
     #[test]

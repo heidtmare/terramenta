@@ -76,7 +76,7 @@ impl ForceContext<'_> {
     /// [`Self::sun_km`], else `fallback` at `epoch`.
     pub fn sun(&self, fallback: &dyn Ephemeris) -> DVec3 {
         self.sun_km
-            .unwrap_or_else(|| fallback.state_at(self.epoch).position_km)
+            .unwrap_or_else(|| fallback.position_at(self.epoch))
     }
 }
 

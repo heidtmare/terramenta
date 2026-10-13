@@ -47,7 +47,7 @@ impl ForceModel for ThirdBody {
         let s = if self.is_sun {
             ctx.sun(&*self.ephemeris)
         } else {
-            self.ephemeris.state_at(ctx.epoch).position_km
+            self.ephemeris.position_at(ctx.epoch)
         };
         third_body_acceleration(self.gm_km3_s2, ctx.position_km, s)
     }
