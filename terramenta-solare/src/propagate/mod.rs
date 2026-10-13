@@ -105,6 +105,8 @@ impl From<IntegrationError> for PropagationError {
     }
 }
 
+const ORIENTATION_CACHE: usize = 16;
+
 #[derive(Debug, Clone)]
 pub struct Propagator {
     pub forces: Vec<Arc<dyn ForceModel>>,
@@ -118,9 +120,9 @@ pub struct Propagator {
     pub sun: Option<Arc<dyn Ephemeris>>,
     pub maneuvers: Vec<ImpulsiveManeuver>,
     pub integrator: Integrator,
-    /// `(anchor TT s, transform)`, most recent first. Two entries so stages straddling an
-    /// anchor boundary don't thrash.
-    cache: [Option<(f64, TerrestrialTransform)>; 2],
+    /// `(anchor TT s, transform)`, LRU, most recent first. Holds every anchor one RKF78
+    /// step (13 stages) can touch.
+    cache: [Option<(f64, TerrestrialTransform)>; ORIENTATION_CACHE],
     switch_epoch: Option<Epoch>,
     switch_mass: Option<f64>,
 }
@@ -135,7 +137,7 @@ impl Propagator {
             sun: None,
             maneuvers: Vec::new(),
             integrator,
-            cache: [None; 2],
+            cache: [None; ORIENTATION_CACHE],
             switch_epoch: None,
             switch_mass: None,
         }
@@ -148,7 +150,7 @@ impl Propagator {
 
     pub fn with_orientation(mut self, orientation: impl BodyOrientation + 'static) -> Self {
         self.orientation = Some(Arc::new(orientation));
-        self.cache = [None; 2];
+        self.cache = [None; ORIENTATION_CACHE];
         self
     }
 
@@ -227,12 +229,13 @@ impl Propagator {
             .position(|c| c.is_some_and(|(a, _)| a == anchor));
         let base = match hit {
             Some(i) => {
-                self.cache.swap(0, i);
+                self.cache[..=i].rotate_right(1);
                 self.cache[0].unwrap().1
             }
             None => {
                 let tf = orientation.transform(Epoch::from_tt_seconds_j2000(anchor));
-                self.cache = [Some((anchor, tf)), self.cache[0]];
+                self.cache.rotate_right(1);
+                self.cache[0] = Some((anchor, tf));
                 tf
             }
         };
@@ -711,6 +714,39 @@ mod tests {
         let anchors = (86_400.0 / p.orientation_refresh_s) as usize + 2;
         let n = calls.0.load(Ordering::Relaxed);
         assert!(n <= anchors, "{n} > {anchors}");
+    }
+
+    #[test]
+    fn orientation_cache_survives_long_steps() {
+        use std::sync::Mutex;
+
+        #[derive(Debug)]
+        struct Logged(Mutex<Vec<f64>>);
+        impl BodyOrientation for Arc<Logged> {
+            fn transform(&self, epoch: Epoch) -> TerrestrialTransform {
+                self.0.lock().unwrap().push(epoch.tt_seconds());
+                EarthOrientation::default().transform(epoch)
+            }
+        }
+
+        // GEO RKF78 steps span many 60 s anchors; stage order revisits them.
+        let log = Arc::new(Logged(Mutex::new(Vec::new())));
+        let s0 = SpacecraftState::new(
+            Epoch::from_utc(2024, 1, 1, 0, 0, 0.0),
+            StateVector::new(DVec3::new(42_164.0, 0.0, 0.0), DVec3::new(0.0, 3.0747, 0.0)),
+            1000.0,
+        );
+        let mut p = Propagator::new(Integrator::new(Method::Rkf78))
+            .with_force(SphericalHarmonics::egm2008(4, 4))
+            .with_orientation(log.clone());
+        p.orientation_refresh_s = 60.0;
+        p.propagate(&s0, s0.epoch.advanced_by_seconds(86_400.0))
+            .unwrap();
+        let mut a = log.0.lock().unwrap().clone();
+        let n = a.len();
+        a.sort_by(f64::total_cmp);
+        a.dedup();
+        assert!(n == a.len(), "{n} builds, {} anchors", a.len());
     }
 
     #[test]
