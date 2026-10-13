@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use terramenta_solare::bodies::{GM_MOON_KM3_S2, GM_SUN_KM3_S2};
 use terramenta_solare::ccsds::{Oem, OemMetadata, OemSegment, TimeSystem};
 use terramenta_solare::earth::EarthModel;
-use terramenta_solare::eop::{Eop, EopTable, FinalsKind};
+use terramenta_solare::eop::{EopTable, FinalsKind};
 use terramenta_solare::force::{
     Drag, ExponentialAtmosphere, GravityField, HarrisPriester, Nrlmsise00, PointMass, Relativity,
     SolarRadiationPressure, SphericalHarmonics, ThirdBody, Vehicle,
@@ -80,13 +80,9 @@ pub fn load_space_weather(text: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// EOP at `epoch`, zero when none are loaded.
-pub fn eop_at(epoch: Epoch) -> Eop {
-    environment()
-        .eop
-        .as_ref()
-        .map(|t| t.at(epoch))
-        .unwrap_or_default()
+/// Loaded EOP table, if any.
+pub fn eop_table() -> Option<Arc<EopTable>> {
+    environment().eop.clone()
 }
 
 #[derive(Serialize, Debug, Clone, Copy)]

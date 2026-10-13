@@ -37,12 +37,14 @@
 //! [CCSDS 502.0-B-3]: https://public.ccsds.org/Pubs/502x0b3e1.pdf
 //! [`geozero`]: https://github.com/georust/geozero
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
+use bevy::math::DMat3;
 use serde::Deserialize;
 use terramenta_solare::ccsds::Oem;
 use terramenta_solare::earth::teme_to_gcrf;
+use terramenta_solare::eop::EopTable;
 use terramenta_solare::interpolate::{Interpolation, SampledEphemeris};
 use terramenta_solare::orbit::OrbitalElements;
 use terramenta_solare::{Epoch, StateVector};
@@ -283,12 +285,49 @@ const SYNTHETIC_ID_BASE: u64 = 900_000_000;
 /// `(OBJECT_NAME, interpolation, states)`.
 type OemObject = (String, Interpolation, Vec<(Epoch, StateVector)>);
 
+/// GCRF → TEME grid spacing, s. TEME − GCRF is precession–nutation (shortest
+/// IAU-1980 term ~5 d); linear interpolation error ≪ 1 µrad.
+const TEME_GRID_S: f64 = 3600.0;
+
+/// GCRF → TEME, linearly interpolated between [`TEME_GRID_S`] nodes.
+struct TemeGrid {
+    eop: Option<Arc<EopTable>>,
+    nodes: HashMap<i64, DMat3>,
+}
+
+impl TemeGrid {
+    fn new(eop: Option<Arc<EopTable>>) -> Self {
+        Self {
+            eop,
+            nodes: HashMap::new(),
+        }
+    }
+
+    fn node(&mut self, k: i64) -> DMat3 {
+        let eop = &self.eop;
+        *self.nodes.entry(k).or_insert_with(|| {
+            let epoch = Epoch::from_unix_seconds(k as f64 * TEME_GRID_S);
+            let eop = eop.as_ref().map(|t| t.at(epoch)).unwrap_or_default();
+            teme_to_gcrf(epoch, &eop).transpose()
+        })
+    }
+
+    fn at(&mut self, epoch: Epoch) -> DMat3 {
+        let x = epoch.to_unix_seconds() / TEME_GRID_S;
+        let k = x.floor();
+        let f = x - k;
+        let k = k as i64;
+        self.node(k) * (1.0 - f) + self.node(k + 1) * f
+    }
+}
+
 fn parse_oem(text: &str) -> Result<Catalogue, OmmError> {
     let oem = Oem::from_kvn(text).map_err(|error| OmmError::Malformed(error.to_string()))?;
     let mut catalogue = Catalogue::default();
     // Segments grouped per object, in first-seen order.
     let mut order: Vec<String> = Vec::new();
     let mut objects: BTreeMap<String, OemObject> = BTreeMap::new();
+    let mut gcrf_to_teme = TemeGrid::new(crate::numerical::eop_table());
     for segment in oem.segments {
         let m = &segment.metadata;
         let to_teme = match m.ref_frame.to_ascii_uppercase().as_str() {
@@ -313,7 +352,7 @@ fn parse_oem(text: &str) -> Result<Catalogue, OmmError> {
             if !convert {
                 return (epoch, s);
             }
-            let r = teme_to_gcrf(epoch, &crate::numerical::eop_at(epoch)).transpose();
+            let r = gcrf_to_teme.at(epoch);
             (
                 epoch,
                 StateVector::new(r * s.position_km, r * s.velocity_km_s),
@@ -551,6 +590,17 @@ mod tests {
         let gcrf = teme_to_gcrf(t, &Default::default()) * teme;
         assert!((gcrf - el.state_at(gm, 1234.0).position_km).length() < 1e-3);
         assert!(sat.position_teme_km(t0.to_unix_seconds() - 60.0).is_none());
+    }
+
+    #[test]
+    fn teme_grid_matches_exact_rotation() {
+        let mut grid = TemeGrid::new(None);
+        let r = bevy::math::DVec3::new(7000.0, -1200.0, 300.0);
+        for i in 0..50 {
+            let t = Epoch::from_unix_seconds(1.79e9 + i as f64 * 1234.5);
+            let exact = teme_to_gcrf(t, &Default::default()).transpose() * r;
+            assert!((grid.at(t) * r - exact).length() < 1e-6);
+        }
     }
 
     #[test]
