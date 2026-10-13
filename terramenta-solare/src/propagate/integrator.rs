@@ -199,19 +199,23 @@ impl Integrator {
                 k0 = true;
             }
             self.stage(f, &tab, t, y, dir * h_try);
-            if self.y_new.iter().any(|v| !v.is_finite()) {
-                return Err(IntegrationError::NonFinite { t });
-            }
-
+            let finite = self.y_new.iter().all(|v| v.is_finite());
             let norm = match tab.e {
-                Some(e) => self.error_norm(y, e, h_try, tab.err3),
-                None => 0.0,
+                Some(e) if finite => self.error_norm(y, e, h_try, tab.err3),
+                Some(_) => f64::INFINITY,
+                None if finite => 0.0,
+                None => return Err(IntegrationError::NonFinite { t }),
             };
-            if norm > 1.0 {
+            // Non-finite trial: reject at the minimum factor (0.2).
+            if norm.is_nan() || norm > 1.0 {
                 self.stats.rejected += 1;
                 h = h_try * (0.9 * norm.powf(-1.0 / (tab.order as f64 + 1.0))).max(0.2);
                 if h < self.min_step_s {
-                    return Err(IntegrationError::StepSizeUnderflow { t, h });
+                    return Err(if norm.is_finite() {
+                        IntegrationError::StepSizeUnderflow { t, h }
+                    } else {
+                        IntegrationError::NonFinite { t }
+                    });
                 }
                 continue;
             }
@@ -966,6 +970,38 @@ mod tests {
         let (e2, _) = oscillator(Method::Rk4 { step_s: 0.01 });
         let p = (e1 / e2).log2();
         assert!((p - 4.0).abs() < 0.2, "{p}");
+    }
+
+    #[test]
+    fn non_finite_trial_is_rejected() {
+        // NaN for y < 0, reached only by an oversized step.
+        let mut f = |_t: f64, y: &[f64], d: &mut [f64]| {
+            d[0] = if y[0] < 0.0 { f64::NAN } else { -y[0] };
+        };
+        for m in [Method::Rkf78, Method::Dop853] {
+            let mut integ = Integrator::new(m);
+            integ.h_next = Some(100.0);
+            let mut y = [1.0];
+            integ.integrate(&mut f, 0.0, &mut y, 5.0).unwrap();
+            assert!(integ.stats.rejected > 0, "{m:?}");
+            assert!((y[0] - (-5.0f64).exp()).abs() < 1e-9, "{m:?}: {}", y[0]);
+        }
+    }
+
+    #[test]
+    fn persistent_non_finite_errors() {
+        let mut f = |t: f64, _y: &[f64], d: &mut [f64]| {
+            d[0] = if t > 1.0 { f64::NAN } else { 1.0 };
+        };
+        for m in [Method::Rk4 { step_s: 0.3 }, Method::Dop853] {
+            let err = Integrator::new(m)
+                .integrate(&mut f, 0.0, &mut [0.0], 2.0)
+                .unwrap_err();
+            assert!(
+                matches!(err, IntegrationError::NonFinite { .. }),
+                "{m:?}: {err}"
+            );
+        }
     }
 
     #[test]
