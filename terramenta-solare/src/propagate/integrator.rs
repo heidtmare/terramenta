@@ -229,6 +229,16 @@ impl Integrator {
                 if !last || pending {
                     f(t_new, &self.y_new, &mut self.k[tab.stages]);
                     self.stats.evaluations += 1;
+                    // Non-finite FSAL derivative: reject as a non-finite trial.
+                    if !self.k[tab.stages].iter().all(|v| v.is_finite()) {
+                        self.stats.rejected += 1;
+                        h = h_try * 0.2;
+                        if h < self.min_step_s {
+                            return Err(IntegrationError::NonFinite { t });
+                        }
+                        k0 = true;
+                        continue;
+                    }
                     if pending {
                         self.dense(f, &tab, d, t, y, dir * h_try);
                     }
@@ -993,7 +1003,7 @@ mod tests {
         let mut f = |t: f64, _y: &[f64], d: &mut [f64]| {
             d[0] = if t > 1.0 { f64::NAN } else { 1.0 };
         };
-        for m in [Method::Rk4 { step_s: 0.3 }, Method::Dop853] {
+        for m in [Method::Rk4 { step_s: 0.3 }, Method::Rkf78, Method::Dop853] {
             let err = Integrator::new(m)
                 .integrate(&mut f, 0.0, &mut [0.0], 2.0)
                 .unwrap_err();
@@ -1002,6 +1012,22 @@ mod tests {
                 "{m:?}: {err}"
             );
         }
+    }
+
+    #[test]
+    fn non_finite_fsal_errors() {
+        // Finite step endpoint, NaN derivative there.
+        let mut f = |_t: f64, y: &[f64], d: &mut [f64]| {
+            d[0] = if y[0] < 0.5 { f64::NAN } else { -1.0 };
+        };
+        let mut out = Vec::new();
+        let err = Integrator::new(Method::Dop853)
+            .integrate_dense(&mut f, 0.0, &mut [1.0], 1.0, &[0.3, 0.6], &mut |t, y| {
+                out.push((t, y[0]))
+            })
+            .unwrap_err();
+        assert!(matches!(err, IntegrationError::NonFinite { .. }), "{err}");
+        assert!(out.iter().all(|(_, y)| y.is_finite()), "{out:?}");
     }
 
     #[test]
