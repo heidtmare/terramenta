@@ -118,7 +118,9 @@ pub struct Propagator {
     pub sun: Option<Arc<dyn Ephemeris>>,
     pub maneuvers: Vec<ImpulsiveManeuver>,
     pub integrator: Integrator,
-    cache: Option<(f64, TerrestrialTransform)>,
+    /// `(anchor TT s, transform)`, most recent first. Two entries so stages straddling an
+    /// anchor boundary don't thrash.
+    cache: [Option<(f64, TerrestrialTransform)>; 2],
     switch_epoch: Option<Epoch>,
     switch_mass: Option<f64>,
 }
@@ -133,7 +135,7 @@ impl Propagator {
             sun: None,
             maneuvers: Vec::new(),
             integrator,
-            cache: None,
+            cache: [None; 2],
             switch_epoch: None,
             switch_mass: None,
         }
@@ -146,7 +148,7 @@ impl Propagator {
 
     pub fn with_orientation(mut self, orientation: impl BodyOrientation + 'static) -> Self {
         self.orientation = Some(Arc::new(orientation));
-        self.cache = None;
+        self.cache = [None; 2];
         self
     }
 
@@ -219,11 +221,18 @@ impl Propagator {
         } else {
             t
         };
-        let base = match self.cache {
-            Some((a, tf)) if a == anchor => tf,
-            _ => {
+        let hit = self
+            .cache
+            .iter()
+            .position(|c| c.is_some_and(|(a, _)| a == anchor));
+        let base = match hit {
+            Some(i) => {
+                self.cache.swap(0, i);
+                self.cache[0].unwrap().1
+            }
+            None => {
                 let tf = orientation.transform(Epoch::from_tt_seconds_j2000(anchor));
-                self.cache = Some((anchor, tf));
+                self.cache = [Some((anchor, tf)), self.cache[0]];
                 tf
             }
         };
@@ -231,7 +240,11 @@ impl Propagator {
     }
 
     fn eval(&mut self, epoch: Epoch, y: &[f64], d: &mut [f64]) {
-        let bf = self.body_fixed(epoch);
+        let bf = if self.forces.iter().any(|f| f.requires_body_fixed()) {
+            self.body_fixed(epoch)
+        } else {
+            None
+        };
         let ctx = ForceContext {
             epoch,
             position_km: DVec3::new(y[0], y[1], y[2]),
@@ -671,6 +684,33 @@ mod tests {
             "{} km",
             ((cached - direct) * r).length()
         );
+    }
+
+    #[test]
+    fn orientation_built_once_per_anchor() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        #[derive(Debug)]
+        struct Counted(AtomicUsize);
+        impl BodyOrientation for Arc<Counted> {
+            fn transform(&self, epoch: Epoch) -> TerrestrialTransform {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                EarthOrientation::default().transform(epoch)
+            }
+        }
+
+        let calls = Arc::new(Counted(AtomicUsize::new(0)));
+        let s0 = leo();
+        let to = s0.epoch.advanced_by_seconds(86_400.0);
+        let mut p = two_body(Method::Dop853).with_orientation(calls.clone());
+        p.propagate(&s0, to).unwrap();
+        assert_eq!(calls.0.load(Ordering::Relaxed), 0, "no force needs it");
+
+        let mut p = p.with_force(SphericalHarmonics::egm2008(4, 4));
+        p.propagate(&s0, to).unwrap();
+        let anchors = (86_400.0 / p.orientation_refresh_s) as usize + 2;
+        let n = calls.0.load(Ordering::Relaxed);
+        assert!(n <= anchors, "{n} > {anchors}");
     }
 
     #[test]
