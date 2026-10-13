@@ -460,6 +460,7 @@ pub fn propagate(req: &PropagationRequest) -> Result<Propagated, String> {
             .unwrap_or_default();
         Spacecraft::from_sgp4("", s.with_eop(eop), mass).map_err(|e| e.to_string())
     };
+    let numerical = || Ok::<_, String>(Propagation::Numerical(Box::new(propagator(req, &env)?)));
     let mut sc = match &req.initial {
         Initial::Tle { tle } => {
             sgp4(Sgp4Ephemeris::from_tle(&tle[0], &tle[1]).map_err(|e| e.to_string())?)?
@@ -480,10 +481,9 @@ pub fn propagate(req: &PropagationRequest) -> Result<Propagated, String> {
                 StateVector::new((*position_km).into(), (*velocity_km_s).into()),
                 mass,
             ),
-            Propagation::TwoBody {
-                gm_km3_s2: GravityField::egm2008(2).gm_km3_s2,
-            },
-        ),
+            numerical()?,
+        )
+        .with_vehicle(req.vehicle.resolve()),
     };
     let start = req
         .start
@@ -502,10 +502,13 @@ pub fn propagate(req: &PropagationRequest) -> Result<Propagated, String> {
             "stepS must be positive and yield ≤ {MAX_SAMPLES} samples"
         ));
     }
-    // Initial model carries the state to `start`; numerical from there.
+    // SGP4 carries TLE/OMM to `start`; a state is numerical from its own epoch so
+    // maneuvers between it and `start` apply.
     sc.step_to(start).map_err(|e| e.to_string())?;
-    sc.vehicle = req.vehicle.resolve();
-    sc.set_propagation(Propagation::Numerical(Box::new(propagator(req, &env)?)));
+    if !matches!(req.initial, Initial::State { .. }) {
+        sc.vehicle = req.vehicle.resolve();
+        sc.set_propagation(numerical()?);
+    }
     let states = sc.samples(stop, step).map_err(|e| e.to_string())?;
     let name = req.name.clone().unwrap_or_else(|| "SPACECRAFT".into());
     Ok(Propagated {
@@ -616,6 +619,27 @@ mod tests {
         assert_eq!(back.segments[0].states.len(), 121);
         let spk = out.to_spk().unwrap();
         assert_eq!(&spk[..8], b"DAF/SPK ");
+    }
+
+    #[test]
+    fn state_before_start_applies_gap_maneuvers() {
+        let run = |maneuvers: &str| {
+            let req = request(&format!(
+                r#"{{
+                    "initial": {{ "epoch": "2024-03-01T00:00:00Z",
+                                 "positionKm": [6778.137, 0, 0], "velocityKmS": [0, 4.7, 6.0] }},
+                    "start": "2024-03-01T01:00:00Z", "durationS": 600, "stepS": 60,
+                    "vehicle": {{ "massKg": 500 }},
+                    "maneuvers": [{maneuvers}]
+                }}"#
+            ));
+            propagate(&req).unwrap().states[0]
+        };
+        let coast = run("");
+        let burn = run(
+            r#"{ "epoch": "2024-03-01T00:30:00Z", "deltaVKmS": [0.01, 0, 0], "frame": "VNB" }"#,
+        );
+        assert!((burn.velocity_km_s - coast.velocity_km_s).length() > 1e-3);
     }
 
     #[test]
