@@ -38,6 +38,7 @@ use terramenta_solare::bodies::{GM_SUN_KM3_S2, sphere_of_influence_km};
 use terramenta_solare::lambert::TransferDirection;
 use terramenta_solare::mission::{TransferPlan, find_best_transfer_window};
 use terramenta_solare::spacecraft::Primary;
+use terramenta_solare::time::hifitime::TimeScale;
 use terramenta_solare::{Epoch, FrameId, escape_injection_state};
 
 use crate::solar::{SolarSystem, TrackedSpacecraft, spawn_spacecraft};
@@ -561,32 +562,10 @@ fn despawn_retired_missions(mut commands: Commands, mut settings: ResMut<Mission
     }
 }
 
+/// UTC calendar date.
 fn format_epoch(epoch: Epoch) -> String {
-    let (year, month, day) = civil_from_days(epoch.days().floor() as i64);
+    let (year, month, day, ..) = epoch.to_gregorian(TimeScale::UTC);
     format!("{year:04}-{month:02}-{day:02}")
-}
-
-/// Days since J2000.0 to a proleptic Gregorian date, via Unix days — Howard
-/// Hinnant's `civil_from_days` algorithm, also used by
-/// `terramenta-solare`'s `earth_to_mars` example.
-fn civil_from_days(days_since_j2000: i64) -> (i64, u32, u32) {
-    const J2000_UNIX_DAYS: i64 = 10_957; // 2000-01-01 is Unix day 10957.
-    let days = days_since_j2000 + J2000_UNIX_DAYS;
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let day_of_era = (z - era * 146_097) as u64;
-    let year_of_era =
-        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let year = year_of_era as i64 + era * 400;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_prime = (5 * day_of_year + 2) / 153;
-    let day = (day_of_year - (153 * month_prime + 2) / 5 + 1) as u32;
-    let month = if month_prime < 10 {
-        month_prime + 3
-    } else {
-        month_prime - 9
-    } as u32;
-    (if month <= 2 { year + 1 } else { year }, month, day)
 }
 
 // ---------------------------------------------------------------------------
@@ -818,6 +797,15 @@ mod tests {
     /// (in `terramenta-solare`) scans for — departure ~53 days into the
     /// default request's 120-day search range — rather than wall-clock
     /// "now", so this is deterministic.
+    #[test]
+    fn format_epoch_is_utc_date() {
+        for (h, m) in [(0, 0), (11, 59), (12, 0), (23, 59)] {
+            let e = Epoch::from_utc(2026, 3, 1, h, m, 0.0);
+            assert_eq!(format_epoch(e), "2026-03-01", "{h:02}:{m:02}");
+        }
+        assert_eq!(format_epoch(Epoch::from_utc(1999, 12, 31, 6, 0, 0.0)), "1999-12-31");
+    }
+
     #[test]
     fn a_default_mission_escapes_earth_and_is_captured_by_mars() {
         let start_unix_seconds = Epoch::J2000
