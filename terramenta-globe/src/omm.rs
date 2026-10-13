@@ -322,11 +322,9 @@ fn parse_oem(text: &str) -> Result<Catalogue, OmmError> {
     }
     for (index, id) in order.iter().enumerate() {
         let (name, method, mut states) = objects.remove(id).expect("grouped above");
+        // Stable: a boundary epoch repeated across segments stays a segment break
+        // (maneuver), so interpolation does not span it.
         states.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-        // Segment boundaries repeat an epoch; keep the later segment's state.
-        states.reverse();
-        states.dedup_by(|a, b| a.0.seconds_since(b.0).abs() < 1e-6);
-        states.reverse();
         if states.len() < 2 {
             catalogue.rejected += 1;
             continue;
@@ -553,6 +551,56 @@ mod tests {
         let gcrf = teme_to_gcrf(t, &Default::default()) * teme;
         assert!((gcrf - el.state_at(gm, 1234.0).position_km).length() < 1e-3);
         assert!(sat.position_teme_km(t0.to_unix_seconds() - 60.0).is_none());
+    }
+
+    #[test]
+    fn oem_segments_at_a_burn_are_not_interpolated_across() {
+        use terramenta_solare::ccsds::{OemMetadata, OemSegment};
+        let gm = terramenta_solare::bodies::GM_EARTH_KM3_S2;
+        let t0 = Epoch::from_utc(2024, 3, 1, 0, 0, 0.0);
+        let a = OrbitalElements::from_state(
+            StateVector::new([6778.0, 0.0, 0.0].into(), [0.0, 4.7, 6.0].into()),
+            gm,
+            0.0,
+        );
+        let burn = a.state_at(gm, 1800.0);
+        let b = OrbitalElements::from_state(
+            StateVector::new(burn.position_km, burn.velocity_km_s * 1.02),
+            gm,
+            0.0,
+        );
+        let arc = |el: &OrbitalElements, ks: std::ops::RangeInclusive<i32>, t_el: f64| {
+            ks.map(|k| {
+                let dt = k as f64 * 60.0;
+                (t0.advanced_by_seconds(dt), el.state_at(gm, dt - t_el))
+            })
+            .collect::<Vec<_>>()
+        };
+        let segment = |states: Vec<(Epoch, StateVector)>| OemSegment {
+            metadata: OemMetadata {
+                object_name: "DEMO".into(),
+                object_id: "2024-001A".into(),
+                ..Default::default()
+            },
+            states,
+        };
+        let oem = Oem {
+            segments: vec![
+                segment(arc(&a, 0..=30, 0.0)),
+                segment(arc(&b, 30..=60, 1800.0)),
+            ],
+            ..Default::default()
+        };
+        let sat = &parse(&oem.to_kvn()).unwrap().satellites[0];
+        for (dt, truth) in [
+            (1770.0, a.state_at(gm, 1770.0)),
+            (1830.0, b.state_at(gm, 30.0)),
+        ] {
+            let t = t0.advanced_by_seconds(dt);
+            let (_, v) = sat.state_teme(t.to_unix_seconds()).unwrap();
+            let v = teme_to_gcrf(t, &Default::default()) * bevy::math::DVec3::from_array(v);
+            assert!((v - truth.velocity_km_s).length() < 1e-6, "dt={dt}");
+        }
     }
 
     fn inner(document: &str) -> String {

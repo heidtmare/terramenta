@@ -520,62 +520,83 @@ pub fn propagate(req: &PropagationRequest) -> Result<Propagated, String> {
 }
 
 impl Propagated {
-    /// Single segment, GCRF, UTC, Hermite 7.
-    pub fn to_oem(&self) -> Oem {
+    /// Ascending states split at impulsive maneuvers (repeated epochs); single-state
+    /// segments dropped.
+    fn segments(&self) -> Vec<Vec<(Epoch, StateVector)>> {
         let mut states: Vec<(Epoch, StateVector)> = self
             .states
             .iter()
             .map(|s| (s.epoch, s.state_vector()))
             .collect();
-        if states.len() > 1 && states[1].0 < states[0].0 {
+        if states.first().map(|s| s.0) > states.last().map(|s| s.0) {
             states.reverse();
         }
+        let mut segments: Vec<Vec<(Epoch, StateVector)>> = vec![Vec::new()];
+        for s in states {
+            let seg = segments.last_mut().expect("nonempty");
+            if seg.last().is_some_and(|l| l.0 == s.0) {
+                segments.push(vec![s]);
+            } else {
+                seg.push(s);
+            }
+        }
+        segments.retain(|g| g.len() >= 2);
+        segments
+    }
+
+    /// One segment per maneuver arc; GCRF, UTC, Hermite 7.
+    pub fn to_oem(&self) -> Oem {
+        let metadata = OemMetadata {
+            object_name: self.name.clone(),
+            object_id: self.object_id.clone(),
+            center_name: "EARTH".into(),
+            ref_frame: "GCRF".into(),
+            time_system: TimeSystem::Utc,
+            interpolation: Some(Interpolation::default()),
+        };
         Oem {
-            segments: vec![OemSegment {
-                metadata: OemMetadata {
-                    object_name: self.name.clone(),
-                    object_id: self.object_id.clone(),
-                    center_name: "EARTH".into(),
-                    ref_frame: "GCRF".into(),
-                    time_system: TimeSystem::Utc,
-                    interpolation: Some(Interpolation::default()),
-                },
-                states,
-            }],
+            segments: self
+                .segments()
+                .into_iter()
+                .map(|states| OemSegment {
+                    metadata: metadata.clone(),
+                    states,
+                })
+                .collect(),
             ..Default::default()
         }
     }
 
-    /// Type 13, center Earth, frame J2000 (GCRF; frame bias ≤ 23 mas ignored).
+    /// Type 13 per maneuver arc, center Earth, frame J2000 (GCRF; frame bias ≤ 23 mas
+    /// ignored). Short arcs shrink the window.
     pub fn to_spk(&self) -> Result<Vec<u8>, String> {
-        let oem = self.to_oem();
         let name: String = self
             .name
             .chars()
             .filter(|c| c.is_ascii_graphic() || *c == ' ')
             .take(spk::MAX_NAME_LEN)
             .collect();
-        spk::write_spk(
-            &[SpkSegment {
+        let name = if name.trim().is_empty() {
+            "SPACECRAFT".into()
+        } else {
+            name
+        };
+        let window = SpkSegmentKind::from_interpolation(Interpolation::default()).window();
+        let segments: Vec<SpkSegment> = self
+            .segments()
+            .into_iter()
+            .map(|states| SpkSegment {
                 target: self.naif_id,
                 center: naif::EARTH,
                 frame: spk::J2000_FRAME,
-                kind: SpkSegmentKind::from_interpolation(Interpolation::default()),
-                name: if name.trim().is_empty() {
-                    "SPACECRAFT".into()
-                } else {
-                    name
+                kind: SpkSegmentKind::Hermite {
+                    window: window.min(states.len()),
                 },
-                states: oem
-                    .segments
-                    .into_iter()
-                    .next()
-                    .map(|s| s.states)
-                    .unwrap_or_default(),
-            }],
-            "TERRAMENTA",
-        )
-        .map_err(|e| e.to_string())
+                name: name.clone(),
+                states,
+            })
+            .collect();
+        spk::write_spk(&segments, "TERRAMENTA").map_err(|e| e.to_string())
     }
 
     pub fn info(&self) -> PropagatedInfo {
@@ -612,11 +633,14 @@ mod tests {
             }"#,
         );
         let out = propagate(&req).unwrap();
-        assert_eq!(out.states.len(), 121);
-        assert!(out.states[120].mass_kg < 500.0);
+        // 121 grid samples + pre-burn state at 00:30.
+        assert_eq!(out.states.len(), 122);
+        assert!(out.states[121].mass_kg < 500.0);
         let text = out.info().oem;
         let back = Oem::from_kvn(&text).unwrap();
-        assert_eq!(back.segments[0].states.len(), 121);
+        let lens: Vec<_> = back.segments.iter().map(|s| s.states.len()).collect();
+        assert_eq!(lens, [31, 91]);
+        assert_eq!(back.segments[0].states[30].0, back.segments[1].states[0].0);
         let spk = out.to_spk().unwrap();
         assert_eq!(&spk[..8], b"DAF/SPK ");
     }

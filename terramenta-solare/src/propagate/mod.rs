@@ -163,7 +163,8 @@ impl Propagator {
         self.run(state, to, None, |_| {})
     }
 
-    /// Calls `on_sample` at `state.epoch`, every `step_s`, and at `to`.
+    /// Calls `on_sample` at `state.epoch`, every `step_s`, and at `to`. At each impulsive
+    /// maneuver, also emits the states before and after it (same epoch, in run order).
     pub fn propagate_with(
         &mut self,
         state: &SpacecraftState,
@@ -291,8 +292,11 @@ impl Propagator {
         let mut t = 0.0;
         let mut integ = std::mem::replace(&mut self.integrator, Integrator::new(Method::Rkf78));
         integ.reset();
+        let sampling = step_s.is_some();
+        // Last emitted offset; a burn epoch emits pre- and post-burn states once each.
+        let mut emitted: Option<f64> = None;
         let result = (|| {
-            for &(ts, kind) in &stops {
+            for (i, &(ts, kind)) in stops.iter().enumerate() {
                 if ts != t {
                     self.switch_epoch = Some(start.advanced_by_seconds(0.5 * (t + ts)));
                     integ.integrate(
@@ -305,8 +309,12 @@ impl Propagator {
                 }
                 let epoch = start.advanced_by_seconds(t);
                 match kind {
-                    Stop::Maneuver(i) => {
-                        let m = self.maneuvers[i];
+                    Stop::Maneuver(m) => {
+                        if sampling && emitted != Some(t) {
+                            on_sample(&SpacecraftState::from_slice(epoch, &y));
+                            emitted = Some(t);
+                        }
+                        let m = self.maneuvers[m];
                         let (r, v) = (DVec3::new(y[0], y[1], y[2]), DVec3::new(y[3], y[4], y[5]));
                         let (dv, mass) = if dir > 0.0 {
                             m.apply(r, v, y[6])
@@ -323,8 +331,19 @@ impl Propagator {
                     Stop::Discontinuity => integ.reset(),
                     Stop::Sample | Stop::End => {}
                 }
-                if matches!(kind, Stop::Sample) || (matches!(kind, Stop::End) && step_s.is_some()) {
+                let emit = sampling
+                    && match kind {
+                        // Post-burn, after the last maneuver at this epoch.
+                        Stop::Maneuver(_) => !matches!(
+                            stops.get(i + 1),
+                            Some(&(tn, Stop::Maneuver(_))) if tn == t
+                        ),
+                        Stop::Sample | Stop::End => emitted != Some(t),
+                        Stop::Discontinuity => false,
+                    };
+                if emit {
                     on_sample(&SpacecraftState::from_slice(epoch, &y));
+                    emitted = Some(t);
                 }
             }
             Ok(SpacecraftState::from_slice(to, &y))
@@ -433,6 +452,29 @@ mod tests {
         let back = p.propagate(&s1, s0.epoch).unwrap();
         assert!((back.position_km - s0.position_km).length() < 1e-6);
         assert!((back.mass_kg - 1000.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn samples_bracket_impulsive_maneuver() {
+        // Burn off the sample grid and on it: each yields pre and post states once.
+        let s0 = leo();
+        let to = s0.epoch.advanced_by_seconds(600.0);
+        for burn_s in [150.0, 300.0] {
+            let burn = s0.epoch.advanced_by_seconds(burn_s);
+            let mut p = two_body(Method::Dop853).with_maneuver(ImpulsiveManeuver::new(
+                burn,
+                DVec3::new(0.1, 0.0, 0.0),
+                LocalFrame::Vnb,
+            ));
+            let eph = p.ephemeris(&s0, to, 100.0).unwrap();
+            let at: Vec<_> = eph.iter().filter(|s| s.epoch == burn).collect();
+            assert_eq!(at.len(), 2, "burn at {burn_s}");
+            assert_eq!(at[0].position_km, at[1].position_km);
+            let dv = at[1].velocity_km_s - at[0].velocity_km_s;
+            assert!((dv - 0.1 * at[0].velocity_km_s.normalize()).length() < 1e-12);
+            assert!(eph.windows(2).all(|w| w[1].epoch >= w[0].epoch));
+            assert_eq!(eph.len(), 7 + usize::from(burn_s == 150.0) + 1);
+        }
     }
 
     #[test]
