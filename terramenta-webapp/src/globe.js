@@ -492,6 +492,7 @@ export const propagationEnvironment = () => required().propagationEnvironment();
 
 /**
  * Cowell propagation → `{ oem, samples, finalMassKg, start, stop }`. Throws on bad input.
+ * `kvn: false` omits `oem` (no text build or copy); use `addPropagated`.
  *
  * ```js
  * const { oem } = propagate({
