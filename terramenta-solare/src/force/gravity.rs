@@ -38,10 +38,13 @@ impl std::error::Error for GfcError {}
 /// EGM2008 GM, km³/s² (`earth_gravity_constant` of the embedded `.gfc`).
 pub const EGM2008_GM_KM3_S2: f64 = 398_600.441_5;
 
+/// Largest V̄/W̄ degree held on the stack: embedded field's 20, +1 for acceleration.
+const STACK_DEGREE: usize = 21;
+
 /// EGM2008, degree/order ≤ 20, tide-free.
 const EGM2008_20: &str = include_str!("egm2008_20.gfc");
 
-fn idx(n: usize, m: usize) -> usize {
+const fn idx(n: usize, m: usize) -> usize {
     n * (n + 1) / 2 + m
 }
 
@@ -122,10 +125,30 @@ impl GravityField {
         -((2 * n + 1) as f64).sqrt() * self.coefficient(n, 0).0
     }
 
-    /// Normalised V̄/W̄ to degree `n_max`, order `m_max`, at body-fixed `r`.
-    fn vw(&self, r: DVec3, n_max: usize, m_max: usize) -> (Vec<f64>, Vec<f64>) {
+    /// `f(V̄, W̄)`; stack buffers up to degree [`STACK_DEGREE`], heap above.
+    fn with_vw<T>(
+        &self,
+        r: DVec3,
+        n_max: usize,
+        m_max: usize,
+        f: impl FnOnce(&[f64], &[f64]) -> T,
+    ) -> T {
+        const LEN: usize = idx(STACK_DEGREE, STACK_DEGREE) + 1;
         let size = idx(n_max, n_max) + 1;
-        let (mut v, mut w) = (vec![0.0; size], vec![0.0; size]);
+        if size <= LEN {
+            let (mut v, mut w) = ([0.0; LEN], [0.0; LEN]);
+            let (v, w) = (&mut v[..size], &mut w[..size]);
+            self.vw(r, n_max, m_max, v, w);
+            f(v, w)
+        } else {
+            let (mut v, mut w) = (vec![0.0; size], vec![0.0; size]);
+            self.vw(r, n_max, m_max, &mut v, &mut w);
+            f(&v, &w)
+        }
+    }
+
+    /// Normalised V̄/W̄ to degree `n_max`, order `m_max`, at body-fixed `r`, into zeroed `v`, `w`.
+    fn vw(&self, r: DVec3, n_max: usize, m_max: usize, v: &mut [f64], w: &mut [f64]) {
         let r2 = r.length_squared();
         let re = self.radius_km;
         let (x0, y0, z0, rho) = (r.x * re / r2, r.y * re / r2, r.z * re / r2, re * re / r2);
@@ -154,20 +177,21 @@ impl GravityField {
                 w[idx(n, m)] = wn;
             }
         }
-        (v, w)
     }
 
     /// Potential at body-fixed `r` (km), km²/s². Truncated to (`degree`, `order`).
     pub fn potential(&self, r: DVec3, degree: usize, order: usize) -> f64 {
         let degree = degree.min(self.max_degree);
-        let (v, w) = self.vw(r, degree, order);
-        let mut u = 0.0;
-        for n in 0..=degree {
-            for m in 0..=n.min(order) {
-                let (c, s) = self.coefficient(n, m);
-                u += c * v[idx(n, m)] + s * w[idx(n, m)];
+        let u = self.with_vw(r, degree, order, |v, w| {
+            let mut u = 0.0;
+            for n in 0..=degree {
+                for m in 0..=n.min(order) {
+                    let (c, s) = self.coefficient(n, m);
+                    u += c * v[idx(n, m)] + s * w[idx(n, m)];
+                }
             }
-        }
+            u
+        });
         self.gm_km3_s2 / self.radius_km * u
     }
 
@@ -175,36 +199,38 @@ impl GravityField {
     pub fn acceleration(&self, r: DVec3, degree: usize, order: usize) -> DVec3 {
         let degree = degree.min(self.max_degree);
         let order = order.min(degree);
-        let (v, w) = self.vw(r, degree + 1, order + 1);
-        let (mut ax, mut ay, mut az) = (0.0, 0.0, 0.0);
-        for n in 0..=degree {
-            let nf = n as f64;
-            let q = (2.0 * nf + 1.0) / (2.0 * nf + 3.0);
-            for m in 0..=n.min(order) {
-                let (c, s) = self.coefficient(n, m);
-                if c == 0.0 && s == 0.0 {
-                    continue;
-                }
-                let mf = m as f64;
-                let f3 = (q * (nf - mf + 1.0) * (nf + mf + 1.0)).sqrt();
-                az += f3 * (-c * v[idx(n + 1, m)] - s * w[idx(n + 1, m)]);
-                if m == 0 {
-                    let f1 = ((2.0 * nf + 1.0) * (nf + 1.0) * (nf + 2.0)
-                        / (2.0 * (2.0 * nf + 3.0)))
-                        .sqrt();
-                    ax -= c * f1 * v[idx(n + 1, 1)];
-                    ay -= c * f1 * w[idx(n + 1, 1)];
-                } else {
-                    let f1 = (q * (nf + mf + 1.0) * (nf + mf + 2.0)).sqrt();
-                    let k = if m == 1 { 2.0 } else { 1.0 };
-                    let f2 = (k * q * (nf - mf + 2.0) * (nf - mf + 1.0)).sqrt();
-                    let (vp, wp) = (v[idx(n + 1, m + 1)], w[idx(n + 1, m + 1)]);
-                    let (vm, wm) = (v[idx(n + 1, m - 1)], w[idx(n + 1, m - 1)]);
-                    ax += 0.5 * (f1 * (-c * vp - s * wp) + f2 * (c * vm + s * wm));
-                    ay += 0.5 * (f1 * (-c * wp + s * vp) + f2 * (-c * wm + s * vm));
+        let (ax, ay, az) = self.with_vw(r, degree + 1, order + 1, |v, w| {
+            let (mut ax, mut ay, mut az) = (0.0, 0.0, 0.0);
+            for n in 0..=degree {
+                let nf = n as f64;
+                let q = (2.0 * nf + 1.0) / (2.0 * nf + 3.0);
+                for m in 0..=n.min(order) {
+                    let (c, s) = self.coefficient(n, m);
+                    if c == 0.0 && s == 0.0 {
+                        continue;
+                    }
+                    let mf = m as f64;
+                    let f3 = (q * (nf - mf + 1.0) * (nf + mf + 1.0)).sqrt();
+                    az += f3 * (-c * v[idx(n + 1, m)] - s * w[idx(n + 1, m)]);
+                    if m == 0 {
+                        let f1 = ((2.0 * nf + 1.0) * (nf + 1.0) * (nf + 2.0)
+                            / (2.0 * (2.0 * nf + 3.0)))
+                            .sqrt();
+                        ax -= c * f1 * v[idx(n + 1, 1)];
+                        ay -= c * f1 * w[idx(n + 1, 1)];
+                    } else {
+                        let f1 = (q * (nf + mf + 1.0) * (nf + mf + 2.0)).sqrt();
+                        let k = if m == 1 { 2.0 } else { 1.0 };
+                        let f2 = (k * q * (nf - mf + 2.0) * (nf - mf + 1.0)).sqrt();
+                        let (vp, wp) = (v[idx(n + 1, m + 1)], w[idx(n + 1, m + 1)]);
+                        let (vm, wm) = (v[idx(n + 1, m - 1)], w[idx(n + 1, m - 1)]);
+                        ax += 0.5 * (f1 * (-c * vp - s * wp) + f2 * (c * vm + s * wm));
+                        ay += 0.5 * (f1 * (-c * wp + s * vp) + f2 * (-c * wm + s * vm));
+                    }
                 }
             }
-        }
+            (ax, ay, az)
+        });
         DVec3::new(ax, ay, az) * (self.gm_km3_s2 / (self.radius_km * self.radius_km))
     }
 }

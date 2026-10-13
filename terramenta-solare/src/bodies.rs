@@ -9,6 +9,10 @@
 pub const GM_SUN_KM3_S2: f64 = 1.327_124_400_18e11;
 /// Earth's, including its atmosphere. Matches the value the ephemerides here
 /// and `terramenta-globe`'s propagator both assume.
+///
+/// DE440 (TDB-compatible). EGM2008's TT-compatible
+/// [`crate::force::EGM2008_GM_KM3_S2`] differs by 1.5e-8: ~5 m/day LEO along-track
+/// between two-body and harmonic propagation. Hand off with the matching GM.
 pub const GM_EARTH_KM3_S2: f64 = 398_600.435_507;
 pub const GM_MARS_KM3_S2: f64 = 42_828.375_214;
 /// DE440 (`gm_de440.tpc`).

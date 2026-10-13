@@ -8,6 +8,8 @@
 //! Chain: `r_itrf = W · R(θ) · Q · r_inertial`;
 //! `v_itrf = W · (R(θ) · Q · v_inertial − ω × r_tirs)`, with `ω = Ω_E (1 − LOD/86400) ẑ`.
 
+use std::collections::HashMap;
+
 use glam::{DMat3, DVec3};
 
 use crate::eop::Eop;
@@ -83,7 +85,7 @@ pub fn gcrf_to_itrf(epoch: Epoch, eop: &Eop, model: EarthModel) -> TerrestrialTr
             let (dpsi, deps) = sofars::pnp::nut80(tt1, tt2);
             let epsa = sofars::pnp::obl80(tt1, tt2);
             let n = sofars::pnp::numat(epsa, dpsi + eop.dpsi, deps + eop.deps);
-            let gast = gast_from(epoch, eop.ut1_minus_utc, tt1, tt2, dpsi + eop.dpsi, epsa);
+            let gast = sofars::erst::gmst82(ut1, ut2) + eqeq(tt1, tt2, dpsi + eop.dpsi, epsa);
             (r3(gast) * mat(n) * mat(p), 0.0)
         }
         EarthModel::Iau2006Cio => {
@@ -111,9 +113,50 @@ pub fn teme_to_itrf(epoch: Epoch, eop: &Eop) -> TerrestrialTransform {
 
 /// TEME → GCRF (IAU-76/FK5 chain). Vallado AIAA 2006-6753 eq. 1.
 pub fn teme_to_gcrf(epoch: Epoch, eop: &Eop) -> DMat3 {
-    let fk5 = gcrf_to_itrf(epoch, eop, EarthModel::Iau76Fk5);
-    // GCRF → PEF via FK5, then PEF → TEME via GMST: TEME = R3(−GMST)·FK5.
-    (r3(-gmst82(epoch, eop.ut1_minus_utc)) * fk5.inertial_to_tirs).transpose()
+    // GCRF → TEME = R3(−GMST)·R3(GAST)·N·P = R3(eqeq)·N·P.
+    let (tt1, tt2) = epoch.tt_jd();
+    let p = sofars::pnp::pmat76(tt1, tt2);
+    let (dpsi, deps) = sofars::pnp::nut80(tt1, tt2);
+    let epsa = sofars::pnp::obl80(tt1, tt2);
+    let n = sofars::pnp::numat(epsa, dpsi + eop.dpsi, deps + eop.deps);
+    (r3(eqeq(tt1, tt2, dpsi + eop.dpsi, epsa)) * mat(n) * mat(p)).transpose()
+}
+
+/// [`TemeGrid`] node spacing, s. TEME − GCRF is precession–nutation (shortest
+/// IAU-1980 term ~5 d); linear interpolation error ≪ 1 µrad.
+pub const TEME_GRID_S: f64 = 3600.0;
+
+/// [`teme_to_gcrf`], memoised on a [`TEME_GRID_S`] grid and linearly interpolated.
+pub struct TemeGrid<F: Fn(Epoch) -> Eop> {
+    eop: F,
+    nodes: HashMap<i64, DMat3>,
+}
+
+impl<F: Fn(Epoch) -> Eop> TemeGrid<F> {
+    /// `eop` is evaluated once per node.
+    pub fn new(eop: F) -> Self {
+        Self {
+            eop,
+            nodes: HashMap::new(),
+        }
+    }
+
+    fn node(&mut self, k: i64) -> DMat3 {
+        let eop = &self.eop;
+        *self.nodes.entry(k).or_insert_with(|| {
+            let epoch = Epoch::from_tt_seconds_j2000(k as f64 * TEME_GRID_S);
+            teme_to_gcrf(epoch, &eop(epoch))
+        })
+    }
+
+    /// TEME → GCRF.
+    pub fn at(&mut self, epoch: Epoch) -> DMat3 {
+        let x = epoch.tt_seconds() / TEME_GRID_S;
+        let k = x.floor();
+        let f = x - k;
+        let k = k as i64;
+        self.node(k) * (1.0 - f) + self.node(k + 1) * f
+    }
 }
 
 /// Greenwich mean sidereal time (IAU-1982), rad.
@@ -127,19 +170,19 @@ pub fn gast82(epoch: Epoch, eop: &Eop) -> f64 {
     let (tt1, tt2) = epoch.tt_jd();
     let (dpsi, _) = sofars::pnp::nut80(tt1, tt2);
     let epsa = sofars::pnp::obl80(tt1, tt2);
-    gast_from(epoch, eop.ut1_minus_utc, tt1, tt2, dpsi + eop.dpsi, epsa)
+    (gmst82(epoch, eop.ut1_minus_utc) + eqeq(tt1, tt2, dpsi + eop.dpsi, epsa))
+        .rem_euclid(std::f64::consts::TAU)
 }
 
-/// GMST82 + eqeq94 from precomputed total Δψ (incl. δΔψ) and mean obliquity; avoids
+/// eqeq94 from precomputed total Δψ (incl. δΔψ) and mean obliquity; avoids
 /// `eqeq94` re-evaluating `nut80`/`obl80`.
-fn gast_from(epoch: Epoch, ut1_minus_utc: f64, tt1: f64, tt2: f64, dpsi: f64, epsa: f64) -> f64 {
+fn eqeq(tt1: f64, tt2: f64, dpsi: f64, epsa: f64) -> f64 {
     const AS2R: f64 = std::f64::consts::PI / 648_000.0;
     let t = ((tt1 - 2_451_545.0) + tt2) / 36_525.0;
     // eqeq94 complementary terms; Ω mod 2π is irrelevant under sin.
     let om = (450_160.280 + (-482_890.539 + (7.455 + 0.008 * t) * t) * t) * AS2R
         + (-5.0 * t % 1.0) * std::f64::consts::TAU;
-    let ee = dpsi * epsa.cos() + AS2R * (0.002_64 * om.sin() + 0.000_063 * (2.0 * om).sin());
-    (gmst82(epoch, ut1_minus_utc) + ee).rem_euclid(std::f64::consts::TAU)
+    dpsi * epsa.cos() + AS2R * (0.002_64 * om.sin() + 0.000_063 * (2.0 * om).sin())
 }
 
 /// Earth rotation angle (IAU-2000), rad.
@@ -195,6 +238,17 @@ fn mat(m: [[f64; 3]; 3]) -> DMat3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn teme_grid_matches_exact_rotation() {
+        let mut grid = TemeGrid::new(|_| Eop::default());
+        let r = DVec3::new(7000.0, -1200.0, 300.0);
+        for i in 0..50 {
+            let t = Epoch::from_unix_seconds(1.79e9 + i as f64 * 1234.5);
+            let exact = teme_to_gcrf(t, &Eop::default()) * r;
+            assert!((grid.at(t) * r - exact).length() < 1e-6);
+        }
+    }
 
     #[test]
     fn r3_matches_sofa() {

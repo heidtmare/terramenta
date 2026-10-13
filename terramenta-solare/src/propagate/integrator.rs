@@ -13,10 +13,10 @@ pub type Derivative<'a> = dyn FnMut(f64, &[f64], &mut [f64]) + 'a;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Method {
     /// Fixed step, s.
-    Rk4 {
-        step_s: f64,
-    },
+    Rk4 { step_s: f64 },
+    /// No dense output: stops at every sample. Prefer [`Self::Dop853`] for sampled runs.
     Rkf78,
+    /// 7th-order dense output.
     Dop853,
 }
 
@@ -123,8 +123,8 @@ impl Integrator {
         self.integrate_dense(f, t0, y, t1, &[], &mut |_, _| {})
     }
 
-    /// As [`Self::integrate`], calling `on_output(t, y)` at each of `outputs` (strictly between
-    /// `t0` and `t1`, ordered from `t0`). DOP853 interpolates; other methods stop on each.
+    /// As [`Self::integrate`], calling `on_output(t, y)` at each of `outputs` (within
+    /// `[t0, t1]`, ordered from `t0`). DOP853 interpolates; other methods stop on each.
     pub fn integrate_dense(
         &mut self,
         f: &mut Derivative,

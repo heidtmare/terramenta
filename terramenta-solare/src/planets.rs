@@ -19,7 +19,9 @@
 use crate::ecliptic::to_equatorial;
 use crate::frame::{Ephemeris, StateVector};
 use crate::orbit::OrbitalElements;
-use crate::sun::ssb_relative_state;
+use glam::DVec3;
+
+use crate::sun::{ssb_relative_position, ssb_relative_state};
 use crate::time::Epoch;
 
 use crate::bodies::GM_SUN_KM3_S2;
@@ -153,6 +155,12 @@ impl Ephemeris for HeliocentricPlanet {
         );
         ssb_relative_state(epoch) + heliocentric_equatorial
     }
+
+    fn position_at(&self, epoch: Epoch) -> DVec3 {
+        let elements = self.series.elements_at(epoch);
+        let heliocentric = elements.state_at(GM_SUN_KM3_S2, epoch.tt_seconds());
+        ssb_relative_position(epoch) + to_equatorial(heliocentric.position_km)
+    }
 }
 
 pub const EARTH: HeliocentricPlanet = HeliocentricPlanet {
@@ -165,6 +173,17 @@ pub const MARS: HeliocentricPlanet = HeliocentricPlanet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn position_matches_state() {
+        for planet in [EARTH, MARS] {
+            for days in [0.0, 500.0, -3_000.0] {
+                let epoch = Epoch::J2000.advanced_by_seconds(days * 86_400.0);
+                let d = planet.position_at(epoch) - planet.state_at(epoch).position_km;
+                assert!(d.length() < 1e-6, "{days}d: {d:?}");
+            }
+        }
+    }
 
     #[test]
     fn earth_stays_close_to_one_astronomical_unit_from_the_sun() {

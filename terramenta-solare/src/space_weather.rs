@@ -252,7 +252,6 @@ fn parse_date_mjd(s: &str) -> Option<i64> {
     Some(civil_to_mjd(y, m, d))
 }
 
-/// Gregorian date → MJD (Fliegel & Van Flandern JDN − 2400001).
 /// Day of year (1-based) of MJD `mjd`.
 pub(crate) fn mjd_day_of_year(mjd: i64) -> i32 {
     // 51_544 = 2000-01-01. Years ≥ 365 d, so the estimate is never low; walk back.
@@ -263,6 +262,7 @@ pub(crate) fn mjd_day_of_year(mjd: i64) -> i32 {
     (mjd - civil_to_mjd(y, 1, 1) + 1) as i32
 }
 
+/// Gregorian date → MJD (Fliegel & Van Flandern JDN − 2400001).
 pub(crate) fn civil_to_mjd(y: i64, m: i64, d: i64) -> i64 {
     let a = (14 - m) / 12;
     let (yy, mm) = (y + 4800 - a, m + 12 * a - 3);

@@ -263,6 +263,7 @@ fn moon_matches_de440s() {
 fn full_force(almanac: &Arc<spice::anise::prelude::Almanac>, method: Method) -> Propagator {
     let k = |t| KernelEphemeris::new(almanac.clone(), t, naif::EARTH);
     Propagator::new(Integrator::new(method).with_tolerance(1e-12, 1e-9))
+        .with_sun(k(naif::SUN))
         .with_force(SphericalHarmonics::egm2008(20, 20))
         .with_force(ThirdBody::new(GM_SUN_KM3_S2, k(naif::SUN)))
         .with_force(ThirdBody::new(GM_MOON_KM3_S2, k(naif::MOON)))
