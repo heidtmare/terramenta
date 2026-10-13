@@ -1067,6 +1067,7 @@ pub fn propagation_environment() -> JsValue {
 /// Synchronous: a day of LEO at 60 s steps takes tens of milliseconds. Throws on bad input.
 #[wasm_bindgen]
 pub fn propagate(options: JsValue) -> Result<JsValue, JsError> {
+    PROPAGATED.with_borrow_mut(|p| *p = None);
     let request = propagation_request(&options)?;
     let out = crate::numerical::propagate(&request).map_err(|e| JsError::new(&e))?;
     let oem = out.to_oem();
@@ -1076,14 +1077,15 @@ pub fn propagate(options: JsValue) -> Result<JsValue, JsError> {
 }
 
 thread_local! {
-    /// Last [`propagate`] result, for [`add_propagated`].
+    /// Last [`propagate`] result, for [`add_propagated`]. Cleared on entry, so a failed
+    /// call leaves nothing; [`propagate_spk`] does not touch it.
     static PROPAGATED: RefCell<Option<Arc<terramenta_solare::ccsds::Oem>>> =
         const { RefCell::new(None) };
 }
 
 /// Puts the last [`propagate`] result up as an ephemeris layer without the KVN round
-/// trip. Options as `addEphemeris`; `url`/`text` ignored. `false` if nothing has been
-/// propagated or the options are bad.
+/// trip. Options as `addEphemeris`; `url`/`text` ignored. `false` if the last
+/// `propagate` failed or never ran, or the options are bad. `propagateSpk` not included.
 ///
 /// ```js
 /// propagate({ ... });
