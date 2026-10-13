@@ -16,7 +16,7 @@ pub mod srp;
 pub mod third_body;
 
 pub use drag::{Atmosphere, Drag, ExponentialAtmosphere, HarrisPriester};
-pub use gravity::{GravityField, PointMass, SphericalHarmonics};
+pub use gravity::{EGM2008_GM_KM3_S2, GravityField, PointMass, SphericalHarmonics};
 pub use msis::Nrlmsise00;
 pub use relativity::Relativity;
 pub use srp::{SolarRadiationPressure, shadow_fraction};

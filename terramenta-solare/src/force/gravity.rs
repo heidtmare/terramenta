@@ -35,6 +35,9 @@ impl std::fmt::Display for GfcError {
 
 impl std::error::Error for GfcError {}
 
+/// EGM2008 GM, km³/s² (`earth_gravity_constant` of the embedded `.gfc`).
+pub const EGM2008_GM_KM3_S2: f64 = 398_600.441_5;
+
 /// EGM2008, degree/order ≤ 20, tide-free.
 const EGM2008_20: &str = include_str!("egm2008_20.gfc");
 
@@ -273,7 +276,7 @@ mod tests {
     #[test]
     fn parses_embedded_egm2008() {
         let f = field();
-        assert!((f.gm_km3_s2 - 398_600.441_5).abs() < 1e-9);
+        assert_eq!(f.gm_km3_s2, EGM2008_GM_KM3_S2);
         assert!((f.radius_km - 6378.1363).abs() < 1e-12);
         assert_eq!(f.coefficient(2, 0).0, -0.484165143790815e-03);
         assert_eq!(f.coefficient(20, 20).1, -0.126949126479726e-07);
