@@ -11,10 +11,17 @@ pub const GM_SUN_KM3_S2: f64 = 1.327_124_400_18e11;
 /// and `terramenta-globe`'s propagator both assume.
 pub const GM_EARTH_KM3_S2: f64 = 398_600.435_507;
 pub const GM_MARS_KM3_S2: f64 = 42_828.375_214;
+/// DE440 (`gm_de440.tpc`).
+pub const GM_MOON_KM3_S2: f64 = 4_902.800_118;
+pub const GM_VENUS_KM3_S2: f64 = 324_858.592;
+/// System (barycentre) values, DE440.
+pub const GM_JUPITER_SYSTEM_KM3_S2: f64 = 126_712_764.1;
+pub const GM_SATURN_SYSTEM_KM3_S2: f64 = 37_940_584.841_8;
 
 pub const EARTH_MEAN_RADIUS_KM: f64 = 6_371.0;
 pub const MARS_MEAN_RADIUS_KM: f64 = 3_389.5;
 pub const SUN_MEAN_RADIUS_KM: f64 = 696_000.0;
+pub const MOON_MEAN_RADIUS_KM: f64 = 1_737.4;
 
 /// The IAU-defined astronomical unit, in kilometres. Scales heliocentric
 /// world space the way `terramenta-globe`'s Earth-centered scene scales in

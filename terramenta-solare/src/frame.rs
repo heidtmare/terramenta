@@ -124,6 +124,44 @@ impl Ephemeris for FixedOffset {
     }
 }
 
+/// `target` relative to `observer` in a shared tree, as an [`Ephemeris`].
+#[derive(Clone)]
+pub struct Relative {
+    pub tree: std::sync::Arc<FrameTree>,
+    pub target: FrameId,
+    pub observer: FrameId,
+}
+
+impl Relative {
+    /// By frame name; `None` if either is missing.
+    pub fn by_name(tree: std::sync::Arc<FrameTree>, target: &str, observer: &str) -> Option<Self> {
+        let (target, observer) = (tree.find(target)?, tree.find(observer)?);
+        Some(Self {
+            tree,
+            target,
+            observer,
+        })
+    }
+}
+
+impl std::fmt::Debug for Relative {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Relative({} wrt {})",
+            self.tree.name(self.target),
+            self.tree.name(self.observer)
+        )
+    }
+}
+
+impl Ephemeris for Relative {
+    fn state_at(&self, epoch: Epoch) -> StateVector {
+        self.tree
+            .state_of_relative_to(self.target, self.observer, epoch)
+    }
+}
+
 /// A node in the [`FrameTree`], identified by the arena index it was inserted
 /// at.
 ///

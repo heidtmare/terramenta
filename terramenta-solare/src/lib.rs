@@ -23,19 +23,25 @@
 //! system scene up to this tree is future work for whatever embeds it.
 
 pub mod bodies;
+pub mod ccsds;
 pub mod departure;
 pub mod earth;
 pub mod ecliptic;
 pub mod eop;
+pub mod force;
 pub mod frame;
+pub mod interpolate;
 pub mod lambert;
+pub mod maneuver;
 pub mod mission;
 pub mod orbit;
 pub mod planets;
+pub mod propagate;
 pub mod spacecraft;
 pub mod spice;
 pub mod sun;
 pub mod time;
+pub mod tle;
 
 pub use departure::{escape_injection_state, injection_state};
 pub use earth::{EarthModel, TerrestrialTransform};
@@ -45,6 +51,7 @@ pub use lambert::{LambertSolution, TransferDirection};
 pub use mission::{
     HohmannTransfer, TransferPlan, find_best_transfer_window, hohmann_transfer, plan_transfer,
 };
+pub use propagate::{Propagator, SpacecraftState};
 pub use time::Epoch;
 
 /// The tree this crate exists to build: the Solar System Barycentre at the

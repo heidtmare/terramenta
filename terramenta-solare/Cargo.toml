@@ -21,4 +21,5 @@ sofars = "0.6.1"
 # SPICE kernels (DE440). `metaload`/`analysis` pull in networking and rayon; not WASM-safe.
 anise = { version = "=0.10.6", default-features = false }
 bytes = "1.6"
-
+# SGP4/SDP4 (TLE/OMM), pure Rust, wasm32-safe. Same version as terramenta-globe.
+sgp4 = "2.4.0"

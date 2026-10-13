@@ -3,6 +3,9 @@
 //! - Unix seconds are UTC (leap seconds applied by hifitime).
 //! - [`Epoch::julian_centuries`] / [`Epoch::days`] are TDB since J2000.0 (ephemeris argument).
 //! - [`Epoch::tt_jd`] / [`Epoch::ut1_jd`] are SOFA two-part Julian dates for Earth orientation.
+//!
+//! TAI → UTC is done here, not by hifitime 4.3: hifitime keys its leap-second lookup on TAI
+//! seconds, which is 1 s off for the ΔAT seconds preceding each leap second.
 
 use hifitime::{Duration, TimeScale, Unit};
 
@@ -12,6 +15,8 @@ const DAYS_PER_JULIAN_CENTURY: f64 = 36_525.0;
 pub const J2000_JD: f64 = 2_451_545.0;
 /// TT − TAI, s.
 const TT_MINUS_TAI_S: f64 = 32.184;
+/// 1900-01-01 → 1970-01-01, s.
+const UNIX_OFFSET_S: f64 = 2_208_988_800.0;
 
 pub use hifitime;
 
@@ -33,7 +38,33 @@ impl Epoch {
 
     /// Unix seconds (UTC).
     pub fn to_unix_seconds(self) -> f64 {
-        self.0.to_unix_seconds()
+        self.utc_label().to_tai_seconds() - UNIX_OFFSET_S
+    }
+
+    /// TAI-scale epoch whose count is the UTC label (seconds since 1900 without leap seconds).
+    /// hifitime's table is keyed on that count. In a leap second, the label repeats the
+    /// following 00:00:00 (POSIX); [`Epoch::to_gregorian`] reports `:60` instead.
+    fn utc_label(self) -> hifitime::Epoch {
+        let first = self.0.leap_seconds(true).unwrap_or(0.0);
+        let guess = self.0 - first * Unit::Second;
+        let dat = guess.leap_seconds(true).unwrap_or(0.0);
+        self.0 - dat * Unit::Second
+    }
+
+    /// Calendar fields `(y, mo, d, h, mi, s, ns)` in `scale`. UTC leap seconds read `s = 60`.
+    pub fn to_gregorian(self, scale: TimeScale) -> (i32, u8, u8, u8, u8, u8, u32) {
+        if scale != TimeScale::UTC {
+            return self.0.to_gregorian(scale);
+        }
+        let label = self.utc_label();
+        let dat = (self.0 - label).to_seconds();
+        let next = label.leap_seconds(true).unwrap_or(0.0);
+        if next != dat {
+            let (y, mo, d, h, mi, s, ns) =
+                (self.0 - next * Unit::Second).to_gregorian(TimeScale::TAI);
+            return (y, mo, d, h, mi, s + 1, ns);
+        }
+        label.to_gregorian(TimeScale::TAI)
     }
 
     pub fn from_hifitime(epoch: hifitime::Epoch) -> Self {
@@ -97,7 +128,7 @@ impl Epoch {
 
     /// TAI − UTC, s.
     pub fn tai_minus_utc(self) -> f64 {
-        self.0.leap_seconds(true).unwrap_or(0.0)
+        (self.0 - self.utc_label()).to_seconds()
     }
 
     /// TT − UTC, s.
@@ -124,7 +155,7 @@ impl Epoch {
 
     /// MJD (UTC), for EOP lookup.
     pub fn mjd_utc(self) -> f64 {
-        self.0.to_mjd_utc_days()
+        self.utc_label().to_mjd_tai_days()
     }
 
     pub fn advanced_by_seconds(self, seconds: f64) -> Self {
@@ -139,7 +170,13 @@ impl Epoch {
 
 impl std::fmt::Display for Epoch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0.to_time_scale(TimeScale::UTC))
+        let (y, mo, d, h, mi, s, ns) = self.to_gregorian(TimeScale::UTC);
+        write!(f, "{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}")?;
+        if ns != 0 {
+            let frac = format!("{ns:09}");
+            write!(f, ".{}", frac.trim_end_matches('0'))?;
+        }
+        write!(f, " UTC")
     }
 }
 
@@ -177,6 +214,31 @@ mod tests {
         let a = Epoch::from_utc(2016, 12, 31, 23, 59, 59.0);
         let b = Epoch::from_utc(2017, 1, 1, 0, 0, 0.0);
         assert!((b.seconds_since(a) - 2.0).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn utc_output_before_leap_second() {
+        // Within ΔAT seconds of the 2017 leap second.
+        let e = Epoch::from_utc(2016, 12, 31, 23, 59, 58.0);
+        assert_eq!(
+            e.to_gregorian(TimeScale::UTC),
+            (2016, 12, 31, 23, 59, 58, 0)
+        );
+        assert_eq!(e.tai_minus_utc(), 36.0);
+        assert_eq!(e.to_unix_seconds(), 1_483_228_798.0);
+        assert_eq!(Epoch::from_unix_seconds(1_483_228_798.0), e);
+        assert_eq!(e.to_string(), "2016-12-31T23:59:58 UTC");
+        // Leap second itself, then the following second.
+        let leap = e.advanced_by_seconds(2.5);
+        assert_eq!(leap.tai_minus_utc(), 36.0);
+        assert_eq!(
+            leap.to_gregorian(TimeScale::UTC),
+            (2016, 12, 31, 23, 59, 60, 500_000_000)
+        );
+        let after = e.advanced_by_seconds(3.0);
+        assert_eq!(after.to_gregorian(TimeScale::UTC), (2017, 1, 1, 0, 0, 0, 0));
+        assert_eq!(after.tai_minus_utc(), 37.0);
+        assert!((after.mjd_utc() - 57_754.0).abs() < 1e-12);
     }
 
     #[test]
