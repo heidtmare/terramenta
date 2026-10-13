@@ -73,7 +73,7 @@ impl KeplerianSeries {
             arg_periapsis_rad: (longitude_of_periapsis - longitude_of_ascending_node).to_radians(),
             mean_anomaly_at_epoch: (self.mean_longitude_deg.at(t) - longitude_of_periapsis)
                 .to_radians(),
-            epoch_seconds: epoch.to_unix_seconds(),
+            epoch_seconds: epoch.tt_seconds(),
         }
     }
 }
@@ -146,7 +146,7 @@ pub struct HeliocentricPlanet {
 impl Ephemeris for HeliocentricPlanet {
     fn state_at(&self, epoch: Epoch) -> StateVector {
         let elements = self.series.elements_at(epoch);
-        let heliocentric = elements.state_at(GM_SUN_KM3_S2, epoch.to_unix_seconds());
+        let heliocentric = elements.state_at(GM_SUN_KM3_S2, epoch.tt_seconds());
         let heliocentric_equatorial = StateVector::new(
             to_equatorial(heliocentric.position_km),
             to_equatorial(heliocentric.velocity_km_s),

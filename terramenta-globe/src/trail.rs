@@ -124,13 +124,18 @@ impl MissionTrail {
         let tree = solar_system.tree();
         let departure_seconds = plan.departure.to_unix_seconds();
         let arrival_seconds = plan.arrival.to_unix_seconds();
+        // Elements run on TT; samples keep the clock's Unix seconds.
+        let tt = |unix: f64| Epoch::from_unix_seconds(unix).tt_seconds();
 
-        let hyperbola =
-            OrbitalElements::from_state(departure_state, origin_gm_km3_s2, departure_seconds);
+        let hyperbola = OrbitalElements::from_state(
+            departure_state,
+            origin_gm_km3_s2,
+            plan.departure.tt_seconds(),
+        );
         let mut planned_departure = Vec::new();
         let mut t = departure_seconds;
         while planned_departure.len() < HYPERBOLA_MAX_SAMPLES {
-            let state = hyperbola.state_at(origin_gm_km3_s2, t);
+            let state = hyperbola.state_at(origin_gm_km3_s2, tt(t));
             planned_departure.push(Sample {
                 unix_seconds: t,
                 origin_km: state.position_km,
@@ -151,7 +156,7 @@ impl MissionTrail {
             origin_at_departure.velocity_km_s + plan.departure_delta_v_km_s,
         );
         let transfer =
-            OrbitalElements::from_state(transfer_start, GM_SUN_KM3_S2, departure_seconds);
+            OrbitalElements::from_state(transfer_start, GM_SUN_KM3_S2, plan.departure.tt_seconds());
         let steps = ((arrival_seconds - departure_seconds) / TRANSFER_STEP_SECONDS)
             .ceil()
             .max(1.0) as usize;
@@ -165,7 +170,7 @@ impl MissionTrail {
                 Sample {
                     unix_seconds: t,
                     origin_km: DVec3::ZERO,
-                    root_km: sun + transfer.state_at(GM_SUN_KM3_S2, t).position_km,
+                    root_km: sun + transfer.state_at(GM_SUN_KM3_S2, tt(t)).position_km,
                 }
             })
             .collect();

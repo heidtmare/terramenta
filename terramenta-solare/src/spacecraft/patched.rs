@@ -113,8 +113,7 @@ struct TwoBodyOrbit {
 
 impl Ephemeris for TwoBodyOrbit {
     fn state_at(&self, epoch: Epoch) -> StateVector {
-        self.elements
-            .state_at(self.gm_km3_s2, epoch.to_unix_seconds())
+        self.elements.state_at(self.gm_km3_s2, epoch.tt_seconds())
     }
 }
 
@@ -141,8 +140,7 @@ impl PatchedConicSpacecraft {
         state: StateVector,
         epoch: Epoch,
     ) -> Self {
-        let elements =
-            OrbitalElements::from_state(state, primary.gm_km3_s2, epoch.to_unix_seconds());
+        let elements = OrbitalElements::from_state(state, primary.gm_km3_s2, epoch.tt_seconds());
         let frame = tree.add(
             name,
             primary.frame,
@@ -191,7 +189,7 @@ impl PatchedConicSpacecraft {
 
         let state_relative_to_primary = self
             .elements
-            .state_at(self.primary.gm_km3_s2, epoch.to_unix_seconds());
+            .state_at(self.primary.gm_km3_s2, epoch.tt_seconds());
         let primary_relative_to_next =
             tree.state_of_relative_to(self.primary.frame, next_primary.frame, epoch);
 
@@ -211,7 +209,7 @@ impl PatchedConicSpacecraft {
         let new_elements = OrbitalElements::from_state(
             state_relative_to_next,
             next_primary.gm_km3_s2,
-            epoch.to_unix_seconds(),
+            epoch.tt_seconds(),
         );
 
         let next_primary = next_primary.clone();
@@ -240,7 +238,7 @@ impl PatchedConicSpacecraft {
 
         let state_relative_to_primary = self
             .elements
-            .state_at(self.primary.gm_km3_s2, epoch.to_unix_seconds());
+            .state_at(self.primary.gm_km3_s2, epoch.tt_seconds());
         let primary_frame = self.primary.frame;
         let primary_gm = self.primary.gm_km3_s2;
 
@@ -270,7 +268,7 @@ impl PatchedConicSpacecraft {
         let new_elements = OrbitalElements::from_state(
             state_relative_to_candidate,
             candidate.gm_km3_s2,
-            epoch.to_unix_seconds(),
+            epoch.tt_seconds(),
         );
         tree.reparent(
             self.frame,
@@ -524,5 +522,20 @@ mod tests {
 
         assert!(escaped, "never escaped Earth");
         assert!(captured, "never captured at Mars");
+    }
+
+    #[test]
+    fn kepler_time_counts_leap_seconds() {
+        let (mut tree, earth) = earth_sun_tree();
+        let leo = StateVector::new(DVec3::new(7000.0, 0.0, 0.0), DVec3::new(0.0, 7.3, 1.0));
+        let t0 = Epoch::from_utc(2016, 12, 31, 23, 0, 0.0);
+        let t1 = Epoch::from_utc(2017, 1, 1, 1, 0, 0.0);
+        let sc = PatchedConicSpacecraft::spawn(&mut tree, "LEO", earth.clone(), leo, t0);
+        let got = tree.state_of_relative_to(sc.frame, earth.frame, t1);
+        let elapsed = t1.seconds_since(t0);
+        assert_eq!(elapsed, 7201.0);
+        let want = OrbitalElements::from_state(leo, earth.gm_km3_s2, 0.0)
+            .state_at(earth.gm_km3_s2, elapsed);
+        assert!((got.position_km - want.position_km).length() < 1e-6);
     }
 }
