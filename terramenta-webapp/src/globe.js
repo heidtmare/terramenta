@@ -80,6 +80,24 @@ function required() {
   return wasm;
 }
 
+// --- Sources -----------------------------------------------------------------
+// Options last passed to each `add*`, by id. The state stream omits inline
+// text, mission search options and explicit selections; `project.js` reads
+// these to save a project.
+
+const sources = {
+  overlays: new Map(),
+  ephemerides: new Map(),
+  missions: new Map(),
+  /** Ephemeris layer ids whose selection was set explicitly. */
+  selected: new Set(),
+  /** `{ mission }` or `{ anchor }`; last camera lock requested. */
+  camera: null,
+};
+
+/** Read-only view of the recorded sources. */
+export const recordedSources = () => sources;
+
 // --- Catalogue -------------------------------------------------------------
 // Both answer from compiled-in tables, so they work before `start()`.
 
@@ -140,7 +158,10 @@ export const toggleView = () => required().toggleView();
  * `"barycenter"`, keeping its current yaw, pitch and distance. Ignored
  * outside the heliocentric view.
  */
-export const setHeliocentricAnchor = (anchor) => required().setHeliocentricAnchor(anchor);
+export function setHeliocentricAnchor(anchor) {
+  sources.camera = { anchor };
+  return required().setHeliocentricAnchor(anchor);
+}
 
 /**
  * Locks the heliocentric camera onto a mission's spacecraft, by the id it was
@@ -149,7 +170,10 @@ export const setHeliocentricAnchor = (anchor) => required().setHeliocentricAncho
  * The globe view holds the same lock once the spacecraft has launched,
  * trailing it out of its parking orbit with Earth behind it.
  */
-export const followMission = (id) => required().followMission(id);
+export function followMission(id) {
+  sources.camera = { mission: id };
+  return required().followMission(id);
+}
 
 // --- Both frames at once ---------------------------------------------------
 // The frame above is a choice; this draws both of them over the scene at the
@@ -283,9 +307,16 @@ export const setVectorTileStyle = (style) => required().setVectorTileStyle(style
  * returns `true`: that failure arrives on the state stream, with its reason,
  * long after the call is over.
  */
-export const addOverlay = (id, options) => required().addOverlay(id, options);
+export function addOverlay(id, options) {
+  const accepted = required().addOverlay(id, options);
+  if (accepted) sources.overlays.set(id, { ...options });
+  return accepted;
+}
 
-export const removeOverlay = (id) => required().removeOverlay(id);
+export function removeOverlay(id) {
+  sources.overlays.delete(id);
+  return required().removeOverlay(id);
+}
 
 export const setOverlayVisible = (id, visible) => required().setOverlayVisible(id, visible);
 
@@ -357,9 +388,21 @@ export const setOverlaysEnabled = (enabled) => required().setOverlaysEnabled(ena
  * the same arc is the corkscrew a ground track is, because the Earth turns
  * underneath it.
  */
-export const addEphemeris = (id, options) => required().addEphemeris(id, options);
+export function addEphemeris(id, options) {
+  const accepted = required().addEphemeris(id, options);
+  if (accepted) {
+    sources.ephemerides.set(id, { ...options });
+    if (options?.select) sources.selected.add(id);
+    else sources.selected.delete(id);
+  }
+  return accepted;
+}
 
-export const removeEphemeris = (id) => required().removeEphemeris(id);
+export function removeEphemeris(id) {
+  sources.ephemerides.delete(id);
+  sources.selected.delete(id);
+  return required().removeEphemeris(id);
+}
 
 export const setEphemerisVisible = (id, visible) => required().setEphemerisVisible(id, visible);
 
@@ -371,12 +414,17 @@ export const setEphemerisStyle = (id, style) => required().setEphemerisStyle(id,
  * everything the document holds, down to the budget the state stream reports as
  * `ephemerides.maxTracked`.
  */
-export const setEphemerisSelection = (id, noradIds) =>
-  required().setEphemerisSelection(id, noradIds ?? undefined);
+export function setEphemerisSelection(id, noradIds) {
+  if (noradIds) sources.selected.add(id);
+  else sources.selected.delete(id);
+  return required().setEphemerisSelection(id, noradIds ?? undefined);
+}
 
 /** Draws one object, or stops drawing it. */
-export const selectSatellite = (id, noradId, selected) =>
-  required().selectSatellite(id, noradId, selected);
+export function selectSatellite(id, noradId, selected) {
+  sources.selected.add(id);
+  return required().selectSatellite(id, noradId, selected);
+}
 
 /** Draws one object's orbit arc, or stops drawing it. */
 export const setSatelliteTrail = (id, noradId, trail) =>
@@ -472,9 +520,17 @@ export const ephemerisGeometry = (id) => required().ephemerisGeometry(id);
  *
  * Returns whether the options could be read.
  */
-export const addMission = (id, options) => required().addMission(id, options);
+export function addMission(id, options) {
+  const accepted = required().addMission(id, options);
+  if (accepted) sources.missions.set(id, { ...options });
+  return accepted;
+}
 
-export const removeMission = (id) => required().removeMission(id);
+export function removeMission(id) {
+  sources.missions.delete(id);
+  if (sources.camera?.mission === id) sources.camera = null;
+  return required().removeMission(id);
+}
 
 // --- Numerical propagation -------------------------------------------------
 
@@ -638,6 +694,6 @@ export const setKeyboardEnabled = (enabled) => required().setKeyboardEnabled(ena
  * `phases` is always four entries — `[{id, label, unixSeconds, reached},
  * ...]` for `"departure"`, `"escape"`, `"arrival"` and `"capture"`, in that
  * order — `unixSeconds` likewise `null` until that milestone is known.
- * `mission.js` and `mission-demo-panel.js` are where this app reads it.
+ * `mission.js` and `flight-panel.js` are where this app reads it.
  */
 export const onState = (callback) => required().onState(callback);

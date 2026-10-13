@@ -1,0 +1,50 @@
+{
+  "terramenta": 1,
+  "name": "Overview",
+  "description": "GeoJSON geometry tour, extruded solid, live USGS earthquakes, Celestrak crewed stations.",
+  "ui": { "tab": "data" },
+  "overlays": {
+    "layers": [
+      {
+        "id": "geometry-tour",
+        "label": "Geometry tour · every shape",
+        "url": "data/geometry-tour.geojson",
+        "refreshSeconds": null,
+        "pointColor": "#ff9e3d",
+        "lineColor": "#ff9e3d",
+        "fillColor": "#ff9e3d3a"
+      },
+      {
+        "id": "extruded-cube",
+        "label": "Extruded cube · walls to the ground",
+        "url": "data/extruded-cube.geojson",
+        "refreshSeconds": null,
+        "extrude": true,
+        "pointColor": "#7fd4ff",
+        "lineColor": "#7fd4ff",
+        "fillColor": "#7fd4ff8c"
+      },
+      {
+        "id": "quakes-hour",
+        "label": "Earthquakes · past hour",
+        "url": "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_hour.geojson",
+        "refreshSeconds": 60,
+        "pointColor": "#ffe066",
+        "lineColor": "#ffe066",
+        "fillColor": "#ffe0663a"
+      }
+    ]
+  },
+  "ephemerides": {
+    "layers": [
+      {
+        "id": "stations",
+        "label": "Crewed stations",
+        "url": "https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=json",
+        "refreshSeconds": null,
+        "pointColor": "#8ce0ff",
+        "lineColor": "#8ce0ffa6"
+      }
+    ]
+  }
+}

@@ -1,8 +1,6 @@
 /**
- * The mission-planning demo's control surface: the clock, the one mission
- * running, and a few quick looks — not a trimmed copy of `panel.js`, but
- * built from the same pieces (`dom.js`, `widgets.js`) since this page has no
- * imagery, overlays, satellites or reference-frame switch to show.
+ * Flight panel (`ui.panel: "flight"`): clock, one mission's phases, camera
+ * anchor, project. For presenting a single mission without the full panel.
  *
  * Follows the same one-way rule every control in this app does: a control
  * sends a command and forgets it, and a state snapshot is what sets it back
@@ -15,11 +13,16 @@
 import { el, row, section } from "./dom.js";
 import { clock, timeScale } from "./format.js";
 import * as globe from "./globe.js";
+import { mountProjectSection } from "./project-panel.js";
 import { button, choice, slider, toggle } from "./widgets.js";
 
 const PHASE_IDS = ["departure", "escape", "arrival", "capture"];
 
-export function mountMissionDemoPanel(root, missionId) {
+/**
+ * `missionId`: the mission shown; `project`/`source` as `loadRequestedProject`
+ * returns them.
+ */
+export function mountFlightPanel(root, { missionId, project, source }) {
   const limits = globe.limits();
   const controls = [];
 
@@ -114,19 +117,25 @@ export function mountMissionDemoPanel(root, missionId) {
     }
   });
 
-  const missionSection = section(
-    "Mission — Earth → Mars",
+  const missionTitle = el("h2", {}, "Mission");
+  bind(missionTitle, (state) => {
+    const mission = state.missions.find((mission) => mission.id === missionId);
+    if (mission) missionTitle.textContent = `Mission — ${mission.origin} → ${mission.destination}`;
+  });
+
+  const missionSection = el(
+    "section",
+    { class: "section" },
+    missionTitle,
     status,
     el("div", { class: "buttons" }, ...Array.from(phaseButtons.values(), (entry) => entry.node)),
   );
 
   // --- Look at -------------------------------------------------------------
 
-  // The page starts out following the spacecraft — see `mission-demo.js` —
-  // so that is what shows as picked. The globe reports no anchor back, so
-  // unlike the rest of this panel the pick is remembered here rather than
-  // set back from a snapshot. The bodies only take effect in the
-  // heliocentric view, and picking one releases the lock.
+  // The globe reports no anchor, so the pick is kept here, initialised from
+  // the project's camera. Bodies apply in the heliocentric view only;
+  // picking one releases the spacecraft lock.
   const anchorChoice = choice(
     [
       ["sun", "Sun"],
@@ -141,11 +150,22 @@ export function mountMissionDemoPanel(root, missionId) {
       else globe.setHeliocentricAnchor(value);
     },
   );
-  anchorChoice.set("spacecraft");
+  anchorChoice.set(
+    project.camera?.anchor ?? (project.camera?.follow === missionId ? "spacecraft" : "sun"),
+  );
 
   const anchorSection = section("Look at", anchorChoice.node);
 
-  root.append(clockSection, missionSection, anchorSection);
+  root.append(
+    el(
+      "div",
+      { class: "panel-body" },
+      clockSection,
+      missionSection,
+      anchorSection,
+      mountProjectSection(bind, project, source),
+    ),
+  );
 
   return {
     sync(state) {

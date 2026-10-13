@@ -1,0 +1,12 @@
+[
+  {
+    "file": "overview.terramenta.json",
+    "name": "Overview",
+    "description": "GeoJSON geometry tour, extruded solid, live USGS earthquakes, Celestrak crewed stations."
+  },
+  {
+    "file": "mars-mission.terramenta.json",
+    "name": "Earth → Mars",
+    "description": "Directed Earth → Mars transfer in the flight layout."
+  }
+]

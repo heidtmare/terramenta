@@ -1,0 +1,22 @@
+{
+  "terramenta": 1,
+  "name": "Earth → Mars",
+  "description": "Patched-conic Earth → Mars transfer from the next launch window: parking-orbit departure, heliocentric cruise, Mars capture. Clock and view are directed.",
+  "ui": { "panel": "flight", "readout": false },
+  "view": "globe",
+  "imagery": { "enabled": false },
+  "vectorTiles": { "enabled": false },
+  "overlays": { "enabled": false },
+  "ephemerides": { "enabled": false },
+  "placemarks": { "enabled": false },
+  "hud": { "visible": false },
+  "missions": [{ "id": "mars", "origin": "Earth", "destination": "Mars" }],
+  "camera": { "follow": "mars" },
+  "director": {
+    "type": "missionFlight",
+    "mission": "mars",
+    "launchLeadSeconds": 3600,
+    "departureTimeScale": 600,
+    "departureDoublingSeconds": 2
+  }
+}

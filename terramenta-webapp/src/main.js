@@ -1,20 +1,17 @@
 /**
- * Boot: put the interface up, start the globe, join the two together.
+ * Boot: load the module, load the project, build the panel it asks for, queue
+ * its scene, start the globe, fan out the state stream.
  *
- * The order matters and is the part worth copying. The panel is built from the
- * catalogue as soon as the module has loaded, before the renderer has drawn
- * anything — `layers()` and `limits()` answer from compiled-in tables, and
- * commands queue until there is a globe to apply them to. The globe is started
- * last, and the state stream is what brings the interface to life.
+ * Commands queue until `start`, so the whole project is applied on the first
+ * frame. `layers()`/`limits()` answer from compiled-in tables, so panels build
+ * before the renderer exists.
  */
 
 import * as globe from "./globe.js";
-import { addCatalogue } from "./ephemeris.js";
-import { CUBE, DEFAULT_FEED, SAMPLE } from "./feeds.js";
 import { mountFeature } from "./feature.js";
-import { DEFAULT_CATALOGUE } from "./orbits.js";
-import { addFeed } from "./overlays.js";
+import { mountFlightPanel } from "./flight-panel.js";
 import { mountPanel } from "./panel.js";
+import { applyProject, directorFor, loadRequestedProject, startOptions } from "./project.js";
 import { mountReadout } from "./readout.js";
 
 const CANVAS_SELECTOR = "#terramenta";
@@ -25,6 +22,7 @@ const panelRoot = document.getElementById("panel");
 const panelToggle = document.getElementById("panel-toggle");
 const readoutRoot = document.getElementById("readout");
 const featureRoot = document.getElementById("feature");
+const subtitle = document.querySelector("#masthead p");
 const shell = document.getElementById("shell");
 
 function fail(html) {
@@ -34,13 +32,23 @@ function fail(html) {
   statusMessage.innerHTML = html;
 }
 
+function escape(text) {
+  const node = document.createElement("span");
+  node.textContent = text;
+  return node.innerHTML;
+}
+
 function dismissStatus() {
-  // The first frame lands a moment after `start` resolves, so the fade covers
-  // the gap rather than exposing a black canvas between the two.
+  // First frame lands shortly after `start` resolves; the fade covers the gap.
   setTimeout(() => {
     status.classList.add("faded");
     setTimeout(() => (status.hidden = true), 400);
   }, 300);
+}
+
+function setCollapsed(collapsed) {
+  document.body.classList.toggle("panel-collapsed", collapsed);
+  panelToggle.setAttribute("aria-expanded", String(!collapsed));
 }
 
 async function boot() {
@@ -53,66 +61,62 @@ async function boot() {
     return;
   }
 
+  let loaded;
   try {
-    await globe.load();
+    [, loaded] = await Promise.all([globe.load(), loadRequestedProject()]);
   } catch (error) {
     console.error(error);
-    fail(`Failed to load the globe: <code>${error}</code>`);
+    const detail = error.errors ? error.errors.map(escape).join("<br>") : escape(String(error));
+    fail(`Failed to load: <code>${detail}</code><br><a href="${location.pathname}">Start an empty project</a>`);
     return;
   }
+  const { project, source } = loaded;
+  const ui = project.ui ?? {};
 
-  const panel = mountPanel(panelRoot);
-  const readout = mountReadout(readoutRoot);
-  // Given the canvas as well as its own root: the globe reports what is under
-  // the pointer, and turning a click on it into a selection is this app's job.
-  const feature = mountFeature(featureRoot, document.querySelector(CANVAS_SELECTOR));
+  document.title = project.name ? `${project.name} — Terramenta` : "Terramenta";
+  subtitle.textContent = project.name ?? "Untitled";
+
+  const listeners = [];
+  if (ui.panel === "flight") {
+    const missionId = project.director?.mission ?? project.missions?.[0]?.id;
+    document.body.classList.add("layout-flight");
+    listeners.push(mountFlightPanel(panelRoot, { missionId, project, source }));
+  } else {
+    listeners.push(mountPanel(panelRoot, { project, source, tab: ui.tab }));
+  }
+
+  if (ui.readout === false) {
+    readoutRoot.hidden = true;
+  } else {
+    listeners.push(mountReadout(readoutRoot));
+    // Clicks on the canvas become pins; see `feature.js`.
+    listeners.push(mountFeature(featureRoot, document.querySelector(CANVAS_SELECTOR)));
+  }
+
+  const director = directorFor(project);
   shell.hidden = false;
 
-  // Collapsing the panel is worth having for its own sake on a phone, and for
-  // seeing the globe unobstructed on anything else.
-  panelToggle.addEventListener("click", () => {
-    const collapsed = document.body.classList.toggle("panel-collapsed");
-    panelToggle.setAttribute("aria-expanded", String(!collapsed));
-  });
+  panelToggle.addEventListener("click", () =>
+    setCollapsed(!document.body.classList.contains("panel-collapsed")),
+  );
+  if (ui.collapsed) setCollapsed(true);
 
-  // One listener, fanned out here: the globe keeps only the most recent one, so
-  // registering twice would silently disconnect the first.
+  // The globe keeps one listener only.
   globe.onState((state) => {
-    panel.sync(state);
-    readout.sync(state);
-    feature.sync(state);
+    for (const listener of listeners) listener.sync(state);
+    director?.(state);
   });
 
-  // This app draws its own readout, so the globe's is switched off — the panel
-  // can turn it back on, which is the quickest way to see they agree.
+  // This app draws its own readout; a project's `hud` overrides.
   globe.setHudVisible(false);
-
-  // Two GeoJSON layers, up before the first frame is drawn. Queued like every
-  // other command, so both fetches start as soon as the globe does.
-  //
-  // The samples first: they are what shows what the overlay can draw. One holds
-  // every geometry GeoJSON has, an antimeridian crossing, a ring with a hole in
-  // it, a track at altitude and an airspace stacked out of rings at different
-  // heights; the other is a box standing on the equator, which is the same
-  // height machinery with walls dropped to the ground. Then a live feed, which
-  // shows the other half — a layer that refetches itself and changes while you
-  // watch, which is not something an empty panel would ever show.
-  addFeed(SAMPLE);
-  addFeed(CUBE);
-  addFeed(DEFAULT_FEED);
-
-  // And one satellite catalogue, which is the same idea a step further on: the
-  // elements are fetched once and the geometry is computed every frame from the
-  // globe's own clock, so this layer is the one that moves while you watch it
-  // even with nothing being refetched at all.
-  addCatalogue(DEFAULT_CATALOGUE);
+  applyProject(project);
 
   try {
-    await globe.start(CANVAS_SELECTOR);
+    await globe.start(CANVAS_SELECTOR, startOptions(project));
     dismissStatus();
   } catch (error) {
     console.error(error);
-    fail(`Failed to start the globe: <code>${error}</code>`);
+    fail(`Failed to start the globe: <code>${escape(String(error))}</code>`);
   }
 }
 

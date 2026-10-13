@@ -12,7 +12,7 @@
  * fights the pointer, so a slider says so while it is being held and `sync`
  * leaves it alone until it is let go.
  *
- * The sections are dealt out into four tabs — the imagery under everything,
+ * The sections are dealt out into five tabs — the project, the imagery under everything,
  * the data drawn over it, the view it is all seen from, and mission, which is
  * two things stacked: a porkchop plot bound to nothing, since it depends on
  * nothing the globe is currently doing, and a launch list bound the same way
@@ -29,9 +29,11 @@ import { altitude, timeScale } from "./format.js";
 import { mountMission } from "./mission.js";
 import { mountOverlays } from "./overlays.js";
 import { PLACES } from "./places.js";
+import { mountProjectSection } from "./project-panel.js";
 import { button, choice, slider, toggle } from "./widgets.js";
 
-export function mountPanel(root) {
+/** `project`/`source` as `loadRequestedProject` returns them; `tab` is the tab opened first. */
+export function mountPanel(root, { project, source, tab }) {
   const limits = globe.limits();
   const layers = globe.layers();
   const vectorTileLayers = globe.vectorLayers();
@@ -401,9 +403,12 @@ export function mountPanel(root) {
   // imagery. What is left is how the scene is viewed rather than what is in it.
   const mission = mountMission(bind);
 
-  const { strip, panes } = tabs([
+  const projectSection = mountProjectSection(bind, project, source);
+
+  const { strip, panes, select } = tabs([
+    { id: "project", label: "Project", panes: [projectSection] },
     { id: "imagery", label: "Imagery", panes: [imagery] },
-    { id: "data", label: "Data layers", panes: [vectorTiles, overlays, ephemerides] },
+    { id: "data", label: "Data", panes: [vectorTiles, overlays, ephemerides] },
     { id: "other", label: "Other", panes: [sun, frame, gnc, camera, chrome] },
     { id: "mission", label: "Mission", panes: [mission] },
   ]);
@@ -411,6 +416,7 @@ export function mountPanel(root) {
   // The strip keeps its place while the pane below it scrolls, so the tabs are
   // still reachable from the bottom of a long one.
   root.append(strip, el("div", { class: "panel-body" }, ...panes));
+  if (tab) select(tab);
 
   return {
     sync(state) {

@@ -2,11 +2,13 @@
 
 Reference client for [`terramenta-globe`](../terramenta-globe/) and
 [`terramenta-charta`](../terramenta-charta/). Plain HTML, CSS and ES modules:
-no npm, no bundler. Two pages:
+no npm, no bundler. One page, `index.html`, which loads a project file.
 
-- **`index.html`** — the full control panel, exercising the globe's API.
-- **`mission-demo.html`** — a single scripted Earth → Mars mission with only
-  mission-related controls (the recording in the [root README](../README.md)).
+| URL | Loads |
+| --- | --- |
+| `index.html` | Empty project |
+| `index.html?project=projects/overview.terramenta.json` | Bundled project (any same-origin or CORS URL) |
+| `index.html?project=session` | Local file opened from the Project tab (`sessionStorage`) |
 
 ## Running
 
@@ -21,15 +23,62 @@ no npm, no bundler. Two pages:
 build step. WebGPU requires a secure context, so the pages must be served (not
 opened from `file://`).
 
-## `index.html`: control panel
+## Project files
 
-The panel has four tabs. All controls stay bound while hidden, so switching
+`*.terramenta.json`. Every project, bundled or user-supplied, loads the same
+way: page load → fetch → validate → queue onto the globe → `start`. Opening
+another project reloads the page, so each starts on a fresh globe. Errors list
+every failing path; unknown keys warn. Omitted fields keep globe defaults.
+
+Relative URLs resolve against the app root (the directory holding
+`index.html`), not the project file.
+
+| Key | Type | Applies |
+| --- | --- | --- |
+| `terramenta` | `1` | Format version. Required. |
+| `name`, `description` | string | Masthead, Project tab, page title |
+| `ui.panel` | `"full"` \| `"flight"` | Full tabbed panel (default) or [flight panel](#flight-panel) |
+| `ui.tab` | `"project"` \| `"imagery"` \| `"data"` \| `"other"` \| `"mission"` | Initial tab (full panel) |
+| `ui.readout`, `ui.collapsed` | bool | Telemetry + picked-item panels (default on); panel collapsed |
+| `view` | `"globe"` \| `"heliocentric"` | Initial view, no transition |
+| `frame` | `"ecef"` \| `"eci"` | `setFrame` |
+| `clock` | `{epoch, timeScale, paused, shaded}` | `epoch`: ISO 8601 UTC or `"now"` |
+| `camera` | `{lat, lon, altitudeKm, follow \| anchor}` | `lookAt`; `follow`: mission id; `anchor`: `sun`/`earth`/`mars`/`barycenter` |
+| `imagery`, `vectorTiles` | `{enabled, layer, style?}` | `layer`: preset label or index |
+| `overlays` | `{enabled, layers: [{id, ...addOverlay options}]}` | One of `url`/`text` per layer |
+| `ephemerides` | `{enabled, layers: [{id, ...addEphemeris options}]}` | OMM JSON or KVN OEM |
+| `missions` | `[{id, ...addMission options}]` | |
+| `placemarks.enabled`, `picking`, `keyboard` | bool | |
+| `gnc` | `{enabled, eciAxes, ecefAxes, graticule, graticuleStepDeg, sidereal, track, trackOrbits, focus: {layer, noradId}}` | |
+| `hud` | `{visible, help}` | Globe's built-in HUD (off unless set) |
+| `director` | `{type, ...}` | Scripted clock/view control; see [`director.js`](src/director.js) |
+
+**Save** (Project tab) writes the current scene: state-stream values plus
+what [`globe.js`](src/globe.js) recorded from `add*` calls (inline text,
+mission search options, explicit satellite selections, camera lock). `ui`,
+`description` and `director` carry over from the loaded project. Not saved:
+per-satellite trail toggles, local-file overlay refresh timers, porkchop
+inputs.
+
+### Bundled projects
+
+Listed in [`projects/manifest.json`](projects/manifest.json).
+
+| Project | Contents |
+| --- | --- |
+| [`overview`](projects/overview.terramenta.json) | Geometry tour, extruded cube, USGS past hour (60 s refresh), Celestrak `stations` |
+| [`mars-mission`](projects/mars-mission.terramenta.json) | Earth → Mars, flight panel, `missionFlight` director, Earth layers off |
+
+## Full panel
+
+The panel has five tabs. All controls stay bound while hidden, so switching
 tabs does not resync anything.
 
 | Tab | Section | Controls |
 | --- | --- | --- |
+| **Project** | Project | Name, description, source; open file/URL; save; new; bundled projects |
 | **Imagery** | Imagery | The eight presets grouped by protocol (WMS/WMTS) with tile size, format and depth; previous/next; streaming on/off |
-| **Data layers** | Vector tiles | Source (MapLibre boundaries, OSM Shortbread), its source layers and depth, colour, ring fill, streaming on/off |
+| **Data** | Vector tiles | Source (MapLibre boundaries, OSM Shortbread), its source layers and depth, colour, ring fill, streaming on/off |
 | | GeoJSON overlays | Add from URL or local file; bundled samples and USGS feeds; refresh period; picking on/off. Per layer: visibility, colour, clamp to surface, extrude, simplestyle on/off, refresh, remove, feature counts and age |
 | | Satellites | Add OMM from URL or local file; five Celestrak groups. Per layer: visibility, colour, trails and trail window, refresh, remove, and a filterable object list with per-object draw and trail toggles |
 | **Other** | Sun & clock | Run/pause, rate (1× to 86,400×), jump to now or by hours/days, terminator shading |
@@ -55,7 +104,7 @@ to the sub-point), apparent solar time at the view centre (15° per hour from th
 subsolar meridian), and lunar elongation and illuminated fraction
 (`(1 − cos elongation) / 2`).
 
-### Startup layers
+### Sample data
 
 - [`data/geometry-tour.geojson`](data/geometry-tour.geojson): one feature per
   GeoJSON geometry type, plus a polygon with a hole, an antimeridian-crossing
@@ -66,40 +115,23 @@ subsolar meridian), and lunar elongation and illuminated fraction
 - [`data/extruded-cube.geojson`](data/extruded-cube.geojson): a square ring at
   222 km over the equator on a layer with `extrude` on, producing a 222 km box.
   Kept separate from the tour because extrusion is per layer.
-- USGS earthquakes, past hour, refreshed every 60 s. The feed's third
-  coordinate is depth; use the layer's clamp-to-surface toggle to ignore it.
-- Celestrak `stations` group.
+- [`data/simplestyle-examples.geojson`](data/simplestyle-examples.geojson): one
+  labelled example per simplestyle member, including a deliberately invalid one
+  that is ignored.
 
-Also available from the overlay catalogue
-([`feeds.js`](src/feeds.js)):
-[`data/simplestyle-examples.geojson`](data/simplestyle-examples.geojson) (one
-labelled example per simplestyle member, including a deliberately invalid one
-that is ignored), USGS past day, and USGS significant past month. The USGS
-feeds are used because they send `Access-Control-Allow-Origin: *`.
+Overlay catalogue ([`feeds.js`](src/feeds.js)): the three samples, USGS past
+hour, past day and significant past month (USGS sends
+`Access-Control-Allow-Origin: *`). USGS third coordinate is depth; use the
+layer's clamp-to-surface toggle to ignore it.
 
 Satellite groups ([`orbits.js`](src/orbits.js)): crewed stations, GPS,
 geostationary, Molniya, and a full Starlink shell (exceeds the 600-object
 marker cap).
 
-## `mission-demo.html`: mission demo
+## Flight panel
 
-[`mission-demo.js`](src/mission-demo.js) disables imagery, vector tiles,
-overlays, satellites, placemarks and the HUD, adds one Earth → Mars mission,
-and calls `followMission` before `start`. On each state update it directs the
-flight:
-
-1. When the mission reaches `waiting`, sets the clock to one hour before
-   departure at 600×.
-2. While orbiting Earth, doubles the rate every 2 s up to the maximum.
-3. On entering heliocentric cruise, sets the maximum rate and switches to the
-   heliocentric view.
-4. On Mars capture, pauses the clock.
-
-The view follows the current primary: globe view around Earth, heliocentric
-elsewhere. All rate changes preserve the sign of the current time scale, so
-the demo also runs backward.
-
-[`mission-demo-panel.js`](src/mission-demo-panel.js) provides:
+`ui.panel: "flight"` ([`flight-panel.js`](src/flight-panel.js)): one mission
+(`director.mission`, else the first), no tabs.
 
 - **Clock**: run/pause, forward/backward, rate slider.
 - **Mission**: status line and four phase buttons (departure, escape, arrival,
@@ -107,6 +139,25 @@ the demo also runs backward.
   reached.
 - **Look at**: Sun, Earth, Mars, barycentre, or spacecraft
   (`setHeliocentricAnchor` / `followMission`).
+- **Project**: as the Project tab.
+
+## Directors
+
+[`director.js`](src/director.js). A director is a state-stream callback that
+drives clock and view.
+
+`missionFlight` — `{mission, launchLeadSeconds = 3600, departureTimeScale = 600,
+departureDoublingSeconds = 2}`:
+
+1. Mission `waiting`: clock to `launchLeadSeconds` before departure at
+   `departureTimeScale`.
+2. Orbiting origin: rate doubles every `departureDoublingSeconds` (wall clock)
+   up to the maximum.
+3. Heliocentric cruise: maximum rate, heliocentric view.
+4. Orbiting destination: pause.
+
+View: globe around the origin, heliocentric elsewhere. Rate changes keep the
+sign of the current time scale, so reverse playback works.
 
 ## Data flow
 
@@ -138,10 +189,11 @@ Other patterns:
 
 ### Boot order
 
-[`main.js`](src/main.js) loads the module, builds the panel from `layers()`,
-`vectorLayers()` and `limits()` (available before the renderer starts), queues
-startup commands, then calls `start`. Commands sent before `start` are applied
-on the first frame.
+[`main.js`](src/main.js) loads the module and the project in parallel, builds
+the panel the project names from `layers()`, `vectorLayers()` and `limits()`
+(available before the renderer starts), queues the project
+([`project.js`](src/project.js) `applyProject`), then calls `start` with the
+project's `view`. Commands sent before `start` are applied on the first frame.
 
 ### Adding a control
 
@@ -159,19 +211,24 @@ Display-only values need only a `GlobeState` field and a line in
 ## Layout
 
 ```
-index.html               Control panel page
-mission-demo.html        Mission demo page
+index.html               The page
 assets/terramenta.png    Loading-screen banner
+projects/
+  manifest.json                 Bundled project list
+  overview.terramenta.json      Layers tour
+  mars-mission.terramenta.json  Directed Earth → Mars flight
 data/
-  geometry-tour.geojson         One feature per geometry type, loaded at boot
-  extruded-cube.geojson         Extruded ring, loaded at boot
+  geometry-tour.geojson         One feature per geometry type
+  extruded-cube.geojson         Extruded ring
   simplestyle-examples.geojson  simplestyle-spec member examples
-styles/app.css           Styles for both pages
+styles/app.css           Styles
 src/
-  main.js                Boot for index.html
-  mission-demo.js        Boot and flight direction for mission-demo.html
-  mission-demo-panel.js  Mission demo controls
-  globe.js               Sole wrapper around the globe WASM module
+  main.js                Boot: project → panel → globe
+  project.js             Project load, validate, apply, capture, save
+  project-panel.js       Project section (open, save, bundled list)
+  director.js            Scripted clock/view control (missionFlight)
+  flight-panel.js        Flight panel
+  globe.js               Sole wrapper around the globe WASM module; records add* sources
   porkchop.js            Sole wrapper around the charta WASM module
   panel.js               Control panel tabs and the one-way bind rule
   overlays.js            GeoJSON layer controls, local-file refresh
