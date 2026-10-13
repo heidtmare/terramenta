@@ -117,6 +117,7 @@ pub struct Propagator {
     pub integrator: Integrator,
     cache: Option<(f64, TerrestrialTransform)>,
     switch_epoch: Option<Epoch>,
+    switch_mass: Option<f64>,
 }
 
 impl Propagator {
@@ -130,6 +131,7 @@ impl Propagator {
             integrator,
             cache: None,
             switch_epoch: None,
+            switch_mass: None,
         }
     }
 
@@ -229,6 +231,7 @@ impl Propagator {
             vehicle: &self.vehicle,
             body_fixed: bf.as_ref(),
             switch_epoch: self.switch_epoch.unwrap_or(epoch),
+            switch_mass_kg: self.switch_mass.unwrap_or(y[6]),
         };
         let (mut a, mut mdot) = (DVec3::ZERO, 0.0);
         for f in &self.forces {
@@ -238,6 +241,18 @@ impl Propagator {
         d[..3].copy_from_slice(&y[3..6]);
         d[3..6].copy_from_slice(&a.to_array());
         d[6] = mdot;
+    }
+
+    /// Offset in `(t, ts)` where mass reaches dry; ṁ is constant between discontinuities.
+    fn depletion(&mut self, start: Epoch, t: f64, y: &[f64], ts: f64) -> Option<f64> {
+        let dry = self.vehicle.dry_mass_kg;
+        if y[6] <= dry {
+            return None;
+        }
+        let mut d = [0.0; 7];
+        self.eval(start.advanced_by_seconds(t), y, &mut d);
+        let td = t + (dry - y[6]) / d[6];
+        (d[6] < 0.0 && td > t && td < ts).then_some(td)
     }
 
     fn run(
@@ -299,6 +314,19 @@ impl Propagator {
             for (i, &(ts, kind)) in stops.iter().enumerate() {
                 if ts != t {
                     self.switch_epoch = Some(start.advanced_by_seconds(0.5 * (t + ts)));
+                    self.switch_mass = Some(y[6]);
+                    if let Some(td) = self.depletion(start, t, &y, ts) {
+                        integ.integrate(
+                            &mut |tt, yy, dd| self.eval(start.advanced_by_seconds(tt), yy, dd),
+                            t,
+                            &mut y,
+                            td,
+                        )?;
+                        y[6] = self.vehicle.dry_mass_kg;
+                        self.switch_mass = Some(y[6]);
+                        integ.reset();
+                        t = td;
+                    }
                     integ.integrate(
                         &mut |tt, yy, dd| self.eval(start.advanced_by_seconds(tt), yy, dd),
                         t,
@@ -350,6 +378,7 @@ impl Propagator {
         })();
         self.integrator = integ;
         self.switch_epoch = None;
+        self.switch_mass = None;
         result
     }
 }
@@ -523,6 +552,40 @@ mod tests {
             1000.0 - 300.0 * mdot
         );
         let dv = 320.0 * crate::force::G0_M_S2 * (1000.0 / s1.mass_kg).ln() * 1e-3;
+        assert!(
+            (s1.velocity_km_s.y - dv).abs() < 1e-12,
+            "{} vs {dv}",
+            s1.velocity_km_s.y
+        );
+    }
+
+    #[test]
+    fn finite_burn_cuts_off_at_dry_mass() {
+        let s0 = SpacecraftState::new(
+            Epoch::J2000,
+            StateVector::new(DVec3::X * 1e6, DVec3::ZERO),
+            1000.0,
+        );
+        let burn = FiniteBurn {
+            start: Epoch::J2000.advanced_by_seconds(10.0),
+            duration_s: 1000.0,
+            thrust_n: 500.0,
+            isp_s: 320.0,
+            direction: DVec3::Y,
+            frame: LocalFrame::Inertial,
+        };
+        let vehicle = crate::force::Vehicle {
+            dry_mass_kg: 900.0,
+            ..Default::default()
+        };
+        let mut p = Propagator::new(Integrator::new(Method::Dop853))
+            .with_vehicle(vehicle)
+            .with_force(burn);
+        let s1 = p
+            .propagate(&s0, Epoch::J2000.advanced_by_seconds(2000.0))
+            .unwrap();
+        assert_eq!(s1.mass_kg, 900.0);
+        let dv = 320.0 * crate::force::G0_M_S2 * (1000.0f64 / 900.0).ln() * 1e-3;
         assert!(
             (s1.velocity_km_s.y - dv).abs() < 1e-12,
             "{} vs {dv}",

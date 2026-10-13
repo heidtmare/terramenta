@@ -122,6 +122,7 @@ mod tests {
             vehicle: &ctx_vehicle,
             body_fixed: None,
             switch_epoch: crate::Epoch::J2000,
+            switch_mass_kg: 1.0,
         };
         let a = srp.acceleration(&ctx);
         // 4.54e-6 m/s² away from the Sun.

@@ -117,7 +117,7 @@ impl FiniteBurn {
 
     fn active(&self, ctx: &ForceContext) -> bool {
         let t = ctx.switch_epoch.seconds_since(self.start);
-        (0.0..self.duration_s).contains(&t) && ctx.mass_kg > ctx.vehicle.dry_mass_kg
+        (0.0..self.duration_s).contains(&t) && ctx.switch_mass_kg > ctx.vehicle.dry_mass_kg
     }
 }
 
