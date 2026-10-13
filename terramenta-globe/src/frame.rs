@@ -28,11 +28,6 @@ use bevy::prelude::*;
 
 use crate::time::SimClock;
 
-/// Seconds from the Unix epoch to J2000.0, the epoch the sidereal angle is
-/// measured from.
-const J2000_UNIX_SECONDS: f64 = 946_728_000.0;
-/// Greenwich's sidereal angle at J2000.0.
-const SIDEREAL_EPOCH_DEGREES: f64 = 280.460_618_37;
 /// Degrees of sidereal rotation per day: a full turn plus the extra the Earth
 /// has to make up to face the sun again, which is what makes a sidereal day
 /// about four minutes short of a solar one.
@@ -248,11 +243,13 @@ fn sidereal_angle(unix_seconds: f64) -> f32 {
 /// into the latitude and longitude the globe draws. Narrowing it here would put
 /// about a metre of jitter under every satellite for no reason: the drawn
 /// vertex is `f32` either way, but the arithmetic in between does not have to be.
+///
+/// GMST (IAU-1982) with UT1 = UTC; ≤ 0.9 s of rotation (≤ 0.4 km at the equator) without EOP.
 pub(crate) fn sidereal_radians(unix_seconds: f64) -> f64 {
-    let days_since_j2000 = (unix_seconds - J2000_UNIX_SECONDS) / SECONDS_PER_DAY;
-    let degrees =
-        (SIDEREAL_EPOCH_DEGREES + SIDEREAL_DEGREES_PER_DAY * days_since_j2000).rem_euclid(360.0);
-    degrees.to_radians()
+    terramenta_solare::earth::gmst82(
+        terramenta_solare::Epoch::from_unix_seconds(unix_seconds),
+        0.0,
+    )
 }
 
 #[cfg(test)]
@@ -261,11 +258,20 @@ mod tests {
 
     #[test]
     fn sidereal_angle_advances_one_turn_per_sidereal_day() {
-        let start = sidereal_angle(J2000_UNIX_SECONDS);
+        let t0 = 946_728_000.0;
+        let start = sidereal_angle(t0);
         // A sidereal day is the solar day scaled by the ratio of the two rates.
         let sidereal_day = SECONDS_PER_DAY * 360.0 / SIDEREAL_DEGREES_PER_DAY;
-        let later = sidereal_angle(J2000_UNIX_SECONDS + sidereal_day);
+        let later = sidereal_angle(t0 + sidereal_day);
         assert!((later - start).abs() < 1.0e-3, "{later} vs {start}");
+    }
+
+    #[test]
+    fn sidereal_angle_matches_vallado_gmst() {
+        // Vallado Ex. 3-5: 1992-08-20 12:14 UT1 → GMST 152.578 787 886°.
+        let unix = 714_312_840.0;
+        let gmst = sidereal_radians(unix).to_degrees();
+        assert!((gmst - 152.578_787_886).abs() < 1.0e-6, "{gmst}");
     }
 
     #[test]

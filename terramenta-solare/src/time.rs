@@ -1,55 +1,145 @@
-//! When a state vector is evaluated at.
+//! Epochs, backed by [`hifitime`].
 //!
-//! Every ephemeris here is a function of time since J2000.0, the only clock
-//! this crate knows about — no leap seconds, no time scales beyond what a
-//! low-precision orbit model can tell apart. An embedder hands in Unix
-//! seconds, the same clock `terramenta-globe`'s `Sun` resource runs on, so
-//! both crates can be driven from one wall clock without a conversion at
-//! the boundary.
+//! - Unix seconds are UTC (leap seconds applied by hifitime).
+//! - [`Epoch::julian_centuries`] / [`Epoch::days`] are TDB since J2000.0 (ephemeris argument).
+//! - [`Epoch::tt_jd`] / [`Epoch::ut1_jd`] are SOFA two-part Julian dates for Earth orientation.
 
-/// Seconds from the Unix epoch to J2000.0 — noon, 1 January 2000, Terrestrial
-/// Time. Matches the constant `terramenta-globe` measures sidereal time from,
-/// so a moment handed to both crates means the same instant in both.
-const J2000_UNIX_SECONDS: f64 = 946_728_000.0;
+use hifitime::{Duration, TimeScale, Unit};
+
 const SECONDS_PER_DAY: f64 = 86_400.0;
 const DAYS_PER_JULIAN_CENTURY: f64 = 36_525.0;
+/// JD of J2000.0.
+pub const J2000_JD: f64 = 2_451_545.0;
+/// TT − TAI, s.
+const TT_MINUS_TAI_S: f64 = 32.184;
 
-/// A moment in time, as Julian centuries since J2000.0.
-///
-/// Orbital elements are conventionally stated at an epoch and a rate per
-/// century, so this is the unit every ephemeris in this crate wants.
-/// Wrapping it in a type keeps a raw `f64` of days from being handed in
-/// where centuries are expected — an easy mixup with a rate table this
-/// shape.
+pub use hifitime;
+
+/// An instant. Stored in TAI: hifitime arithmetic runs in the left operand's scale, and UTC drops leap seconds.
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
-pub struct Epoch(f64);
+pub struct Epoch(hifitime::Epoch);
 
 impl Epoch {
-    pub const J2000: Epoch = Epoch(0.0);
+    /// 2000-01-01T12:00:00 TT. hifitime TAI origin is 1900-01-01T00:00 TAI (36 524 d earlier).
+    pub const J2000: Epoch = Epoch(hifitime::Epoch::from_tai_duration(Duration::from_parts(
+        0,
+        3_155_716_767_816_000_000,
+    )));
 
-    /// Builds an epoch from Unix seconds — the wall clock an embedder runs on.
+    /// From Unix seconds (UTC).
     pub fn from_unix_seconds(unix_seconds: f64) -> Self {
-        let days_since_j2000 = (unix_seconds - J2000_UNIX_SECONDS) / SECONDS_PER_DAY;
-        Self(days_since_j2000 / DAYS_PER_JULIAN_CENTURY)
+        Self::from_hifitime(hifitime::Epoch::from_unix_seconds(unix_seconds))
     }
 
+    /// Unix seconds (UTC).
     pub fn to_unix_seconds(self) -> f64 {
-        self.0 * DAYS_PER_JULIAN_CENTURY * SECONDS_PER_DAY + J2000_UNIX_SECONDS
+        self.0.to_unix_seconds()
     }
 
-    /// Julian centuries since J2000.0 — the unit the planetary element tables
-    /// in [`crate::planets`] are stated in.
-    pub fn julian_centuries(self) -> f64 {
+    pub fn from_hifitime(epoch: hifitime::Epoch) -> Self {
+        Self(epoch.to_time_scale(TimeScale::TAI))
+    }
+
+    pub fn as_hifitime(self) -> hifitime::Epoch {
         self.0
     }
 
-    /// Days since J2000.0.
+    /// From TT seconds since J2000.0.
+    pub fn from_tt_seconds_j2000(seconds: f64) -> Self {
+        Self(Self::J2000.0 + seconds * Unit::Second)
+    }
+
+    /// From TDB seconds since J2000.0 (SPICE ET).
+    pub fn from_tdb_seconds_j2000(seconds: f64) -> Self {
+        Self::from_hifitime(hifitime::Epoch::from_tdb_seconds(seconds))
+    }
+
+    /// From UTC calendar fields.
+    pub fn from_utc(year: i32, month: u8, day: u8, hour: u8, minute: u8, second: f64) -> Self {
+        let whole = second.floor();
+        let nanos = ((second - whole) * 1.0e9).round() as u32;
+        Self::from_hifitime(hifitime::Epoch::from_gregorian(
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            whole as u8,
+            nanos,
+            TimeScale::UTC,
+        ))
+    }
+
+    /// TDB Julian centuries since J2000.0.
+    pub fn julian_centuries(self) -> f64 {
+        self.0.to_tdb_centuries_since_j2000()
+    }
+
+    /// TDB days since J2000.0.
     pub fn days(self) -> f64 {
-        self.0 * DAYS_PER_JULIAN_CENTURY
+        self.0.to_tdb_days_since_j2000()
+    }
+
+    /// TDB seconds since J2000.0 (SPICE ET).
+    pub fn tdb_seconds(self) -> f64 {
+        self.0.to_tdb_seconds()
+    }
+
+    /// TT seconds since J2000.0.
+    pub fn tt_seconds(self) -> f64 {
+        (self.0 - Self::J2000.0).to_seconds()
+    }
+
+    /// TT Julian centuries since J2000.0.
+    pub fn tt_centuries(self) -> f64 {
+        self.tt_seconds() / SECONDS_PER_DAY / DAYS_PER_JULIAN_CENTURY
+    }
+
+    /// TAI − UTC, s.
+    pub fn tai_minus_utc(self) -> f64 {
+        self.0.leap_seconds(true).unwrap_or(0.0)
+    }
+
+    /// TT − UTC, s.
+    pub fn tt_minus_utc(self) -> f64 {
+        self.tai_minus_utc() + TT_MINUS_TAI_S
+    }
+
+    /// TT as SOFA two-part JD `(J2000_JD, days)`.
+    pub fn tt_jd(self) -> (f64, f64) {
+        (J2000_JD, self.tt_seconds() / SECONDS_PER_DAY)
+    }
+
+    /// UTC as SOFA two-part JD `(J2000_JD, days)`. Leap-second days are not stretched.
+    pub fn utc_jd(self) -> (f64, f64) {
+        let tt_days = self.tt_seconds() / SECONDS_PER_DAY;
+        (J2000_JD, tt_days - self.tt_minus_utc() / SECONDS_PER_DAY)
+    }
+
+    /// UT1 as SOFA two-part JD, given UT1 − UTC in seconds.
+    pub fn ut1_jd(self, ut1_minus_utc: f64) -> (f64, f64) {
+        let (jd1, jd2) = self.utc_jd();
+        (jd1, jd2 + ut1_minus_utc / SECONDS_PER_DAY)
+    }
+
+    /// MJD (UTC), for EOP lookup.
+    pub fn mjd_utc(self) -> f64 {
+        self.0.to_mjd_utc_days()
     }
 
     pub fn advanced_by_seconds(self, seconds: f64) -> Self {
-        Self(self.0 + seconds / SECONDS_PER_DAY / DAYS_PER_JULIAN_CENTURY)
+        Self(self.0 + seconds * Unit::Second)
+    }
+
+    /// Elapsed SI seconds `self − earlier`.
+    pub fn seconds_since(self, earlier: Epoch) -> f64 {
+        (self.0 - earlier.0).to_seconds()
+    }
+}
+
+impl std::fmt::Display for Epoch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0.to_time_scale(TimeScale::UTC))
     }
 }
 
@@ -58,17 +148,47 @@ mod tests {
     use super::*;
 
     #[test]
-    fn j2000_round_trips_through_unix_seconds() {
-        let epoch = Epoch::from_unix_seconds(J2000_UNIX_SECONDS);
-        assert_eq!(epoch, Epoch::J2000);
-        assert_eq!(epoch.to_unix_seconds(), J2000_UNIX_SECONDS);
+    fn j2000_is_tt_noon() {
+        // 2000-01-01T11:58:55.816 UTC (TAI − UTC = 32 s).
+        let utc = Epoch::from_utc(2000, 1, 1, 11, 58, 55.816);
+        assert!(utc.seconds_since(Epoch::J2000).abs() < 1.0e-6);
+        assert!(Epoch::J2000.tt_seconds().abs() < 1.0e-9);
+        // TDB − TT at J2000 ≈ −7.3e-5 s.
+        assert!(Epoch::J2000.tdb_seconds().abs() < 1.0e-3);
     }
 
     #[test]
-    fn a_julian_century_is_36525_days_later() {
-        let one_century_later = Epoch::from_unix_seconds(
-            J2000_UNIX_SECONDS + DAYS_PER_JULIAN_CENTURY * SECONDS_PER_DAY,
-        );
-        assert!((one_century_later.julian_centuries() - 1.0).abs() < 1.0e-9);
+    fn unix_round_trip() {
+        let t = 1_700_000_000.25;
+        assert!((Epoch::from_unix_seconds(t).to_unix_seconds() - t).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn leap_seconds() {
+        assert_eq!(Epoch::from_utc(2004, 4, 6, 0, 0, 0.0).tai_minus_utc(), 32.0);
+        assert_eq!(Epoch::from_utc(2017, 1, 2, 0, 0, 0.0).tai_minus_utc(), 37.0);
+    }
+
+    #[test]
+    fn arithmetic_spans_leap_seconds() {
+        // 5 leap seconds between 1992-08-20 and 2000-01-01.
+        let (jd1, jd2) = Epoch::from_unix_seconds(714_312_840.0).utc_jd();
+        assert!((jd1 + jd2 - 2_448_855.009_722_222).abs() < 1.0e-9);
+        let a = Epoch::from_utc(2016, 12, 31, 23, 59, 59.0);
+        let b = Epoch::from_utc(2017, 1, 1, 0, 0, 0.0);
+        assert!((b.seconds_since(a) - 2.0).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn utc_jd_matches_calendar() {
+        let (jd1, jd2) = Epoch::from_utc(2004, 4, 6, 7, 51, 28.386009).utc_jd();
+        assert!((jd1 + jd2 - 2_453_101.827_411_875).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn a_julian_century_is_36525_days() {
+        let later = Epoch::J2000.advanced_by_seconds(DAYS_PER_JULIAN_CENTURY * SECONDS_PER_DAY);
+        assert!((later.tt_centuries() - 1.0).abs() < 1.0e-12);
+        assert!((later.julian_centuries() - 1.0).abs() < 1.0e-9);
     }
 }

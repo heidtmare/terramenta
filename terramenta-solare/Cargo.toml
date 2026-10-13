@@ -14,3 +14,11 @@ name = "terramenta_solare"
 # barycentric position is on the order of 10^8 km, where an `f32` has less
 # precision than a house.
 glam = { version = "0.32", default-features = false, features = ["std"] }
+# Time scales and leap seconds.
+hifitime = { version = "4.3.1", default-features = false, features = ["std"] }
+# SOFA: precession, nutation, sidereal time, polar motion.
+sofars = "0.6.1"
+# SPICE kernels (DE440). `metaload`/`analysis` pull in networking and rayon; not WASM-safe.
+anise = { version = "=0.10.6", default-features = false }
+bytes = "1.6"
+
