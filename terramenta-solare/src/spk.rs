@@ -104,7 +104,8 @@ impl SpkSegment {
         }
     }
 
-    fn validate(&self, index: usize) -> Result<Vec<f64>, SpkError> {
+    /// First and last ET.
+    fn validate(&self, index: usize) -> Result<(f64, f64), SpkError> {
         let err = |reason| SpkError::Segment { index, reason };
         check_name(&self.name, MAX_NAME_LEN).map_err(err)?;
         let degree = self.kind.degree();
@@ -118,32 +119,42 @@ impl SpkSegment {
         if self.states.len() < self.kind.window() || self.states.len() < 2 {
             return Err(err(SegmentFault::TooFewStates(self.states.len())));
         }
-        let ets: Vec<f64> = self.states.iter().map(|(e, _)| et_seconds(*e)).collect();
-        for (i, (et, (_, s))) in ets.iter().zip(&self.states).enumerate() {
+        let mut prev = f64::NEG_INFINITY;
+        for (i, (e, s)) in self.states.iter().enumerate() {
+            let et = et_seconds(*e);
             let finite = et.is_finite() && s.position_km.is_finite() && s.velocity_km_s.is_finite();
             if !finite {
                 return Err(err(SegmentFault::NonFinite(i)));
             }
-            if i > 0 && *et <= ets[i - 1] {
+            if et <= prev {
                 return Err(err(SegmentFault::EpochsNotIncreasing(i)));
             }
+            prev = et;
         }
-        Ok(ets)
+        Ok((et_seconds(self.states[0].0), prev))
     }
 
-    /// Segment data array in doubles.
-    fn data(&self, ets: &[f64]) -> Vec<f64> {
+    /// Data array length in doubles.
+    fn data_len(&self) -> usize {
         let n = self.states.len();
-        let mut d = Vec::with_capacity(7 * n + n / DIRECTORY_STRIDE + 2);
-        for (_, s) in &self.states {
-            d.extend(s.position_km.to_array());
-            d.extend(s.velocity_km_s.to_array());
-        }
-        d.extend_from_slice(ets);
-        d.extend((1..=(n - 1) / DIRECTORY_STRIDE).map(|k| ets[k * DIRECTORY_STRIDE - 1]));
-        d.push((self.kind.window() - 1) as f64);
-        d.push(n as f64);
-        d
+        7 * n + (n - 1) / DIRECTORY_STRIDE + 2
+    }
+
+    /// Segment data array, streamed.
+    fn data(&self) -> impl Iterator<Item = f64> + '_ {
+        let n = self.states.len();
+        let et = |i: usize| et_seconds(self.states[i].0);
+        self.states
+            .iter()
+            .flat_map(|(_, s)| {
+                s.position_km
+                    .to_array()
+                    .into_iter()
+                    .chain(s.velocity_km_s.to_array())
+            })
+            .chain((0..n).map(et))
+            .chain((1..=(n - 1) / DIRECTORY_STRIDE).map(move |k| et(k * DIRECTORY_STRIDE - 1)))
+            .chain([(self.kind.window() - 1) as f64, n as f64])
     }
 }
 
@@ -229,20 +240,17 @@ pub fn write_spk(segments: &[SpkSegment], internal_name: &str) -> Result<Vec<u8>
         return Err(SpkError::NoSegments);
     }
     check_name(internal_name, MAX_INTERNAL_NAME_LEN).map_err(SpkError::InternalName)?;
-    let data: Vec<(Vec<f64>, f64, f64)> = segments
+    let spans: Vec<(f64, f64)> = segments
         .iter()
         .enumerate()
-        .map(|(i, s)| {
-            let ets = s.validate(i)?;
-            Ok((s.data(&ets), ets[0], ets[ets.len() - 1]))
-        })
+        .map(|(i, s)| s.validate(i))
         .collect::<Result<_, SpkError>>()?;
 
     // Records are 1-based; word addresses are 1-based and record r starts at (r - 1) * 128 + 1.
     let blocks = segments.len().div_ceil(SUMMARIES_PER_RECORD);
     let summary_record = |b: usize| 2 + 2 * b;
     let first_data_record = summary_record(blocks);
-    let total_words: usize = data.iter().map(|d| d.0.len()).sum();
+    let total_words: usize = segments.iter().map(SpkSegment::data_len).sum();
     let data_records = total_words.div_ceil(RECORD_WORDS);
     let free = (first_data_record - 1) * RECORD_WORDS + total_words + 1;
     if free > i32::MAX as usize {
@@ -277,11 +285,11 @@ pub fn write_spk(segments: &[SpkSegment], internal_name: &str) -> Result<Vec<u8>
         let mut summaries = Vec::with_capacity(chunk.len() * SUMMARY_WORDS * 8);
         let mut names = Vec::with_capacity(RECORD_BYTES);
         for (j, seg) in chunk.iter().enumerate() {
-            let (d, start, end) = &data[b * SUMMARIES_PER_RECORD + j];
-            let (begin, last) = (addr, addr + d.len() - 1);
-            let at = (begin - 1) * 8;
-            for (k, w) in d.iter().enumerate() {
-                out[at + 8 * k..at + 8 * k + 8].copy_from_slice(&w.to_le_bytes());
+            let (start, end) = spans[b * SUMMARIES_PER_RECORD + j];
+            let (begin, last) = (addr, addr + seg.data_len() - 1);
+            let words = out[(begin - 1) * 8..last * 8].chunks_exact_mut(8);
+            for (dst, w) in words.zip(seg.data()) {
+                dst.copy_from_slice(&w.to_le_bytes());
             }
             addr = last + 1;
             summaries.extend(start.to_le_bytes());
@@ -409,8 +417,9 @@ mod tests {
                 name: "D".into(),
                 states: samples(0.0, 10.0, n),
             };
-            let ets = seg.validate(0).unwrap();
-            assert_eq!(seg.data(&ets).len(), 7 * n + dirs + 2, "n={n}");
+            seg.validate(0).unwrap();
+            assert_eq!(seg.data_len(), 7 * n + dirs + 2, "n={n}");
+            assert_eq!(seg.data().count(), seg.data_len(), "n={n}");
         }
     }
 
