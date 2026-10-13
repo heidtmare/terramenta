@@ -10,6 +10,9 @@
 //! documentation is `terramenta-webapp/src/globe.js`, which wraps every one of
 //! these calls.
 
+use std::cell::RefCell;
+use std::sync::Arc;
+
 use serde::Deserialize;
 use wasm_bindgen::prelude::*;
 
@@ -40,7 +43,11 @@ use crate::view::ViewMode;
 /// is expected to catch and ignore. `terramenta-webapp/src/globe.js` shows what
 /// that looks like.
 #[wasm_bindgen]
-pub fn start(canvas_selector: Option<String>, asset_path: Option<String>, initial_view: Option<String>) {
+pub fn start(
+    canvas_selector: Option<String>,
+    asset_path: Option<String>,
+    initial_view: Option<String>,
+) {
     let defaults = GlobeConfig::default();
     crate::app(GlobeConfig {
         canvas_selector: canvas_selector.unwrap_or(defaults.canvas_selector),
@@ -716,6 +723,7 @@ pub fn add_ephemeris(id: String, options: JsValue) -> bool {
         id,
         label: options.label.unwrap_or_default(),
         source,
+        oem: None,
         style: options.style.resolve_or(crate::api::ephemeris_style()),
         trail: options.trail.resolve(),
         trails: options.trails.unwrap_or(true),
@@ -1053,7 +1061,7 @@ pub fn propagation_environment() -> JsValue {
 ///   finiteBurns: [{ start, durationS: 120, thrustN: 20, ispS: 220,
 ///                   direction: [1, 0, 0], frame: "vnb" }],
 /// });
-/// addEphemeris("demo", { text: oem });
+/// addEphemeris("demo", { text: oem }); // or addPropagated("demo", {})
 /// ```
 ///
 /// Synchronous: a day of LEO at 60 s steps takes tens of milliseconds. Throws on bad input.
@@ -1061,7 +1069,52 @@ pub fn propagation_environment() -> JsValue {
 pub fn propagate(options: JsValue) -> Result<JsValue, JsError> {
     let request = propagation_request(&options)?;
     let out = crate::numerical::propagate(&request).map_err(|e| JsError::new(&e))?;
-    Ok(to_js(&out.info()))
+    let oem = out.to_oem();
+    let info = out.info(&oem);
+    PROPAGATED.with_borrow_mut(|p| *p = Some(Arc::new(oem)));
+    Ok(to_js(&info))
+}
+
+thread_local! {
+    /// Last [`propagate`] result, for [`add_propagated`].
+    static PROPAGATED: RefCell<Option<Arc<terramenta_solare::ccsds::Oem>>> =
+        const { RefCell::new(None) };
+}
+
+/// Puts the last [`propagate`] result up as an ephemeris layer without the KVN round
+/// trip. Options as `addEphemeris`; `url`/`text` ignored. `false` if nothing has been
+/// propagated or the options are bad.
+///
+/// ```js
+/// propagate({ ... });
+/// addPropagated("demo", { leadingOrbits: 1 });
+/// ```
+#[wasm_bindgen(js_name = addPropagated)]
+pub fn add_propagated(id: String, options: JsValue) -> bool {
+    let Some(oem) = PROPAGATED.with_borrow(Clone::clone) else {
+        return false;
+    };
+    let options = if options.is_undefined() || options.is_null() {
+        EphemerisOptions::default()
+    } else {
+        match from_js::<EphemerisOptions>(&options) {
+            Some(o) => o,
+            None => return false,
+        }
+    };
+    api::send(GlobeCommand::AddEphemeris(EphemerisRequest {
+        id,
+        label: options.label.unwrap_or_default(),
+        source: OverlaySource::Text(String::new()),
+        oem: Some(oem),
+        style: options.style.resolve_or(crate::api::ephemeris_style()),
+        trail: options.trail.resolve(),
+        trails: options.trails.unwrap_or(true),
+        selection: options.select.map_or(Selection::All, Selection::only),
+        refresh_seconds: None,
+        visible: options.visible.unwrap_or(true),
+    }));
+    true
 }
 
 /// As [`propagate`], as a Type 13 SPK (`naifId`, default −100900; center 399; J2000).
