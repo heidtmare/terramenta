@@ -8,6 +8,8 @@
 //! `floor((N - 1) / 100)` directory epochs (every 100th), then type 9 degree
 //! (`window - 1`) or type 13 `window - 1`, then `N`.
 
+use std::borrow::Cow;
+
 use crate::frame::StateVector;
 use crate::interpolate::{Interpolation, SampledEphemeris};
 use crate::time::Epoch;
@@ -75,18 +77,18 @@ impl SpkSegmentKind {
 
 /// One SPK segment: `target` relative to `center` in `frame` (NAIF codes).
 #[derive(Debug, Clone, PartialEq)]
-pub struct SpkSegment {
+pub struct SpkSegment<'a> {
     pub target: i32,
     pub center: i32,
     pub frame: i32,
     pub kind: SpkSegmentKind,
     /// Segment identifier, ≤ [`MAX_NAME_LEN`] printable ASCII.
     pub name: String,
-    /// Strictly increasing.
-    pub states: Vec<(Epoch, StateVector)>,
+    /// Strictly increasing. Borrowed to avoid copying large exports.
+    pub states: Cow<'a, [(Epoch, StateVector)]>,
 }
 
-impl SpkSegment {
+impl SpkSegment<'_> {
     /// Type and window from `eph.method`; J2000 frame.
     pub fn from_sampled(
         eph: &SampledEphemeris,
@@ -100,7 +102,7 @@ impl SpkSegment {
             frame: J2000_FRAME,
             kind: SpkSegmentKind::from_interpolation(eph.method),
             name: name.into(),
-            states: eph.samples().collect(),
+            states: Cow::Owned(eph.samples().collect()),
         }
     }
 
@@ -376,7 +378,7 @@ mod tests {
             frame: J2000_FRAME,
             kind: SpkSegmentKind::Lagrange { window: 4 },
             name: "TEST".into(),
-            states: samples(0.0, 60.0, 201),
+            states: samples(0.0, 60.0, 201).into(),
         };
         let b = write_spk(&[seg], "terramenta").unwrap();
         assert_eq!(b.len() % RECORD_BYTES, 0);
@@ -415,7 +417,7 @@ mod tests {
                 frame: J2000_FRAME,
                 kind: SpkSegmentKind::Hermite { window: 4 },
                 name: "D".into(),
-                states: samples(0.0, 10.0, n),
+                states: samples(0.0, 10.0, n).into(),
             };
             seg.validate(0).unwrap();
             assert_eq!(seg.data_len(), 7 * n + dirs + 2, "n={n}");
@@ -484,7 +486,7 @@ mod tests {
                 },
                 name: format!("SEG {i}"),
                 // Adjacent segments share a boundary node.
-                states: src[i * (per - 1)..=(i + 1) * (per - 1)].to_vec(),
+                states: src[i * (per - 1)..=(i + 1) * (per - 1)].into(),
             })
             .collect();
         let b = write_spk(&segs, "chained").unwrap();
@@ -514,7 +516,7 @@ mod tests {
             frame: J2000_FRAME,
             kind: SpkSegmentKind::Hermite { window: 4 },
             name: "OK".into(),
-            states: samples(0.0, 60.0, 10),
+            states: samples(0.0, 60.0, 10).into(),
         };
         let fault = |seg: SpkSegment| match write_spk(&[seg], "x") {
             Err(SpkError::Segment { reason, .. }) => reason,
@@ -533,7 +535,7 @@ mod tests {
         s.kind = SpkSegmentKind::Lagrange { window: 11 };
         assert_eq!(fault(s), SegmentFault::TooFewStates(10));
         let mut s = ok.clone();
-        s.states.swap(3, 4);
+        s.states.to_mut().swap(3, 4);
         assert_eq!(fault(s), SegmentFault::EpochsNotIncreasing(4));
         assert_eq!(write_spk(&[], "x"), Err(SpkError::NoSegments));
         assert!(matches!(
