@@ -5,7 +5,7 @@ use glam::DVec3;
 use crate::frame::{Ephemeris, StateVector};
 use crate::time::Epoch;
 
-/// Windows are capped at [`MAX_POINTS`] nodes: Lagrange degree ≤ 31, Hermite degree ≤ 63.
+/// Degree is clamped so a window holds ≤ [`MAX_POINTS`] nodes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Interpolation {
     /// `degree + 1` points per component; position and velocity interpolated independently.
@@ -261,7 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn degree_above_old_cap_uses_full_window() {
+    fn degree_clamps_to_max_points() {
         assert_eq!(Interpolation::Lagrange { degree: 20 }.points(), 21);
         assert_eq!(Interpolation::Lagrange { degree: 99 }.points(), MAX_POINTS);
     }

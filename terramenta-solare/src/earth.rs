@@ -81,12 +81,9 @@ pub fn gcrf_to_itrf(epoch: Epoch, eop: &Eop, model: EarthModel) -> TerrestrialTr
     let (ut1, ut2) = epoch.ut1_jd(eop.ut1_minus_utc);
     let (inertial_to_tirs, sp) = match model {
         EarthModel::Iau76Fk5 => {
-            let p = sofars::pnp::pmat76(tt1, tt2);
-            let (dpsi, deps) = sofars::pnp::nut80(tt1, tt2);
-            let epsa = sofars::pnp::obl80(tt1, tt2);
-            let n = sofars::pnp::numat(epsa, dpsi + eop.dpsi, deps + eop.deps);
-            let gast = sofars::erst::gmst82(ut1, ut2) + eqeq(tt1, tt2, dpsi + eop.dpsi, epsa);
-            (r3(gast) * mat(n) * mat(p), 0.0)
+            let fk5 = Fk5::new(tt1, tt2, eop);
+            let gast = gmst82(epoch, eop.ut1_minus_utc) + fk5.eqeq(tt1, tt2);
+            (r3(gast) * fk5.np, 0.0)
         }
         EarthModel::Iau2006Cio => {
             let (x, y, s) = sofars::pnp::xys06a(tt1, tt2);
@@ -115,19 +112,45 @@ pub fn teme_to_itrf(epoch: Epoch, eop: &Eop) -> TerrestrialTransform {
 pub fn teme_to_gcrf(epoch: Epoch, eop: &Eop) -> DMat3 {
     // GCRF → TEME = R3(−GMST)·R3(GAST)·N·P = R3(eqeq)·N·P.
     let (tt1, tt2) = epoch.tt_jd();
-    let p = sofars::pnp::pmat76(tt1, tt2);
-    let (dpsi, deps) = sofars::pnp::nut80(tt1, tt2);
-    let epsa = sofars::pnp::obl80(tt1, tt2);
-    let n = sofars::pnp::numat(epsa, dpsi + eop.dpsi, deps + eop.deps);
-    (r3(eqeq(tt1, tt2, dpsi + eop.dpsi, epsa)) * mat(n) * mat(p)).transpose()
+    let fk5 = Fk5::new(tt1, tt2, eop);
+    (r3(fk5.eqeq(tt1, tt2)) * fk5.np).transpose()
+}
+
+/// IAU-76/FK5 precession–nutation terms shared by the equinox-based transforms.
+struct Fk5 {
+    /// N·P, GCRF → true of date.
+    np: DMat3,
+    /// Δψ incl. δΔψ, rad.
+    dpsi: f64,
+    /// Mean obliquity, rad.
+    epsa: f64,
+}
+
+impl Fk5 {
+    fn new(tt1: f64, tt2: f64, eop: &Eop) -> Self {
+        let p = sofars::pnp::pmat76(tt1, tt2);
+        let (dpsi, deps) = sofars::pnp::nut80(tt1, tt2);
+        let epsa = sofars::pnp::obl80(tt1, tt2);
+        let (dpsi, deps) = (dpsi + eop.dpsi, deps + eop.deps);
+        let n = sofars::pnp::numat(epsa, dpsi, deps);
+        Self {
+            np: mat(n) * mat(p),
+            dpsi,
+            epsa,
+        }
+    }
+
+    fn eqeq(&self, tt1: f64, tt2: f64) -> f64 {
+        eqeq(tt1, tt2, self.dpsi, self.epsa)
+    }
 }
 
 /// [`TemeGrid`] node spacing, s. TEME − GCRF is precession–nutation (shortest
 /// IAU-1980 term ~5 d); linear interpolation error ≪ 1 µrad.
-pub const TEME_GRID_S: f64 = 3600.0;
+const TEME_GRID_S: f64 = 3600.0;
 
-/// [`teme_to_gcrf`], memoised on a [`TEME_GRID_S`] grid and linearly interpolated.
-pub struct TemeGrid<F: Fn(Epoch) -> Eop> {
+/// [`teme_to_gcrf`], memoised on an hourly TT grid and linearly interpolated.
+pub struct TemeGrid<F> {
     eop: F,
     nodes: HashMap<i64, DMat3>,
 }

@@ -72,8 +72,8 @@ use crate::geo::{EARTH_RADIUS_KM, LatLon};
 use crate::globe::GLOBE_RADIUS;
 use crate::omm::Catalogue;
 use crate::overlays::{Paint, VectorMaterial, VectorMode, WorldPath, world_line_mesh};
-use crate::time::SimClock;
 use crate::tiles::MAX_TILE_RADIUS;
+use crate::time::SimClock;
 
 // ---------------------------------------------------------------------------
 // The frame mathematics

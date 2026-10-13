@@ -113,9 +113,14 @@ pub enum ViewState {
     /// `start_distance` is [`OrbitCamera::distance`] at the moment the leg
     /// began, so the pull-back can ease from wherever the camera actually
     /// was rather than assuming it started at rest.
-    TransitioningOut { elapsed: f32, start_distance: f32 },
+    TransitioningOut {
+        elapsed: f32,
+        start_distance: f32,
+    },
     Heliocentric,
-    TransitioningIn { elapsed: f32 },
+    TransitioningIn {
+        elapsed: f32,
+    },
 }
 
 impl ViewState {
@@ -295,7 +300,10 @@ pub(crate) fn in_heliocentric_view(view: Res<ViewState>) -> bool {
 /// still have upstream work (fetching, ageing, rebuilding) worth doing while
 /// departing.
 pub(crate) fn is_departing_view(view: &ViewState) -> bool {
-    matches!(*view, ViewState::TransitioningOut { .. } | ViewState::Heliocentric)
+    matches!(
+        *view,
+        ViewState::TransitioningOut { .. } | ViewState::Heliocentric
+    )
 }
 
 /// Whether imagery, vector tiles and placemarks should keep streaming,
@@ -359,11 +367,7 @@ fn drive_view_transition(
     mut origin: ResMut<FloatingOrigin>,
     mut fade: ResMut<TransitionFade>,
     solar_system: Res<SolarSystem>,
-    mut camera: Single<(
-        &mut OrbitCamera,
-        &mut HeliocentricCamera,
-        &mut Projection,
-    )>,
+    mut camera: Single<(&mut OrbitCamera, &mut HeliocentricCamera, &mut Projection)>,
 ) {
     let (orbit, helio, projection) = &mut *camera;
 
@@ -502,7 +506,14 @@ fn start_in_heliocentric(
     mut camera: Single<(&mut HeliocentricCamera, &mut Projection)>,
 ) {
     let (helio, projection) = &mut *camera;
-    settle_into_heliocentric(&mut view, &mut changed, &mut origin, projection, helio, &solar_system);
+    settle_into_heliocentric(
+        &mut view,
+        &mut changed,
+        &mut origin,
+        projection,
+        helio,
+        &solar_system,
+    );
 }
 
 /// Spawns the full-screen, initially-clear `Node` [`apply_transition_fade`]

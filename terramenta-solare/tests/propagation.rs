@@ -262,13 +262,14 @@ fn moon_matches_de440s() {
 
 fn full_force(almanac: &Arc<spice::anise::prelude::Almanac>, method: Method) -> Propagator {
     let k = |t| KernelEphemeris::new(almanac.clone(), t, naif::EARTH);
+    let sun = k(naif::SUN);
     Propagator::new(Integrator::new(method).with_tolerance(1e-12, 1e-9))
-        .with_sun(k(naif::SUN))
+        .with_sun(sun.clone())
         .with_force(SphericalHarmonics::egm2008(20, 20))
-        .with_force(ThirdBody::new(GM_SUN_KM3_S2, k(naif::SUN)))
+        .with_force(ThirdBody::new(GM_SUN_KM3_S2, sun.clone()))
         .with_force(ThirdBody::new(GM_MOON_KM3_S2, k(naif::MOON)))
-        .with_force(SolarRadiationPressure::new(k(naif::SUN), 6378.137))
-        .with_force(Drag::new(HarrisPriester::new(k(naif::SUN))))
+        .with_force(SolarRadiationPressure::new(sun.clone(), 6378.137))
+        .with_force(Drag::new(HarrisPriester::new(sun)))
         .with_force(Relativity {
             gm_km3_s2: GM_EARTH_KM3_S2,
         })

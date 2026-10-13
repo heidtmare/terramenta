@@ -3,7 +3,7 @@
 //! AFSPC compatibility mode (WGS-72, as catalogue elements are fitted); matches Vallado's
 //! verification set. Time since element epoch is taken in UTC (no leap seconds).
 
-use glam::DVec3;
+use glam::{DMat3, DVec3};
 
 use crate::earth::teme_to_gcrf;
 use crate::eop::Eop;
@@ -80,8 +80,13 @@ impl Sgp4Ephemeris {
 
     /// GCRF via the IAU-76/FK5 chain. TEME is quasi-inertial: velocity rotates with position.
     pub fn state_gcrf(&self, epoch: Epoch, eop: &Eop) -> Option<StateVector> {
+        self.state_rotated(epoch, teme_to_gcrf(epoch, eop))
+    }
+
+    /// As [`Self::state_gcrf`], with a precomputed TEME → GCRF `m` (e.g. from
+    /// [`crate::earth::TemeGrid`]).
+    pub fn state_rotated(&self, epoch: Epoch, m: DMat3) -> Option<StateVector> {
         let s = self.state_teme(epoch)?;
-        let m = teme_to_gcrf(epoch, eop);
         Some(StateVector::new(m * s.position_km, m * s.velocity_km_s))
     }
 }

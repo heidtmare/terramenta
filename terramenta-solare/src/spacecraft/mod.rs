@@ -204,35 +204,37 @@ impl Spacecraft {
         {
             epochs.push(to);
         }
-        let two_body = match self.propagation {
-            Propagation::TwoBody { gm_km3_s2 } => Some((
-                OrbitalElements::from_state(self.state.state_vector(), gm_km3_s2, 0.0),
-                gm_km3_s2,
-            )),
-            _ => None,
-        };
-        let mut teme = match &self.propagation {
-            Propagation::Sgp4(e) => Some((e, TemeGrid::new(|_| e.eop))),
-            _ => None,
+        let mut path = match &self.propagation {
+            Propagation::TwoBody { gm_km3_s2 } => SamplePath::TwoBody(
+                OrbitalElements::from_state(self.state.state_vector(), *gm_km3_s2, 0.0),
+                *gm_km3_s2,
+            ),
+            Propagation::Sgp4(e) => SamplePath::Sgp4(e, TemeGrid::new(|_| e.eop)),
+            _ => SamplePath::Exact,
         };
         epochs
             .into_iter()
             .map(|e| {
-                let sv = match (&two_body, &mut teme) {
-                    (Some((el, gm)), _) => el.state_at(*gm, e.seconds_since(self.state.epoch)),
-                    (_, Some((sgp4, grid))) => {
-                        let s = sgp4
-                            .state_teme(e)
-                            .ok_or(SpacecraftError::Sgp4 { epoch: e })?;
-                        let m = grid.at(e);
-                        StateVector::new(m * s.position_km, m * s.velocity_km_s)
+                let sv = match &mut path {
+                    SamplePath::TwoBody(el, gm) => {
+                        el.state_at(*gm, e.seconds_since(self.state.epoch))
                     }
-                    _ => state_vector_at(&self.state, &self.propagation, e)?,
+                    SamplePath::Sgp4(sgp4, grid) => sgp4
+                        .state_rotated(e, grid.at(e))
+                        .ok_or(SpacecraftError::Sgp4 { epoch: e })?,
+                    SamplePath::Exact => state_vector_at(&self.state, &self.propagation, e)?,
                 };
                 Ok(SpacecraftState::new(e, sv, self.state.mass_kg))
             })
             .collect()
     }
+}
+
+/// Per-sample evaluation in [`Spacecraft::samples`], with setup hoisted out of the loop.
+enum SamplePath<'a, F> {
+    TwoBody(OrbitalElements, f64),
+    Sgp4(&'a Sgp4Ephemeris, TemeGrid<F>),
+    Exact,
 }
 
 /// `s` carried to `epoch`.

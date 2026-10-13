@@ -294,7 +294,7 @@ pub fn from_oem(oem: &Oem) -> Result<Catalogue, OmmError> {
     let mut order: Vec<String> = Vec::new();
     let mut objects: BTreeMap<String, OemObject> = BTreeMap::new();
     let eop = crate::numerical::eop_table();
-    let mut teme_to_gcrf =
+    let mut teme_grid =
         TemeGrid::new(|epoch| eop.as_ref().map(|t| t.at(epoch)).unwrap_or_default());
     for segment in &oem.segments {
         let m = &segment.metadata;
@@ -320,7 +320,7 @@ pub fn from_oem(oem: &Oem) -> Result<Catalogue, OmmError> {
             if !convert {
                 return (epoch, s);
             }
-            let r = teme_to_gcrf.at(epoch).transpose();
+            let r = teme_grid.at(epoch).transpose();
             (
                 epoch,
                 StateVector::new(r * s.position_km, r * s.velocity_km_s),
