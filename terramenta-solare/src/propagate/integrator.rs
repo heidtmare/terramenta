@@ -171,16 +171,20 @@ impl Integrator {
         self.y_new.resize(n, 0.0);
         self.err.resize(n, 0.0);
 
+        // k[0] = f(t, y) is current: reused after a rejection, after acceptance for FSAL,
+        // and from the initial step estimate.
+        let mut k0 = false;
         let mut t = t0;
         let mut h = match self.method {
             Method::Rk4 { step_s } => step_s.abs(),
             _ => match self.h_next {
                 Some(h) => h.abs(),
-                None => self.initial_step(f, t0, y, dir, tab.order),
+                None => {
+                    k0 = true;
+                    self.initial_step(f, t0, y, dir, tab.order)
+                }
             },
         };
-        // k[0] = f(t, y) is current: reused after a rejection, and after acceptance for FSAL.
-        let mut k0 = false;
         let mut next = 0;
         let mut steps = 0;
         while (t1 - t) * dir > 0.0 {
@@ -378,7 +382,7 @@ impl Integrator {
         }
     }
 
-    /// Hairer, *Solving ODEs I*, §II.4.
+    /// Hairer, *Solving ODEs I*, §II.4. Leaves `k[0] = f(t0, y)`.
     fn initial_step(
         &mut self,
         f: &mut Derivative,
@@ -401,7 +405,7 @@ impl Integrator {
                 / n as f64)
                 .sqrt()
         };
-        let mut f0 = vec![0.0; n];
+        let mut f0 = std::mem::take(&mut self.k[0]);
         f(t0, y, &mut f0);
         let (d0, d1) = (rms(y), rms(&f0));
         let h0 = if d0 < 1e-5 || d1 < 1e-5 {
@@ -415,6 +419,7 @@ impl Integrator {
         self.stats.evaluations += 2;
         let diff: Vec<f64> = f1.iter().zip(&f0).map(|(a, b)| a - b).collect();
         let d2 = rms(&diff) / h0;
+        self.k[0] = f0;
         let h1 = if d1.max(d2) <= 1e-15 {
             (h0 * 1e-3).max(1e-6)
         } else {
@@ -1057,6 +1062,23 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, IntegrationError::NonFinite { .. }), "{err}");
         assert!(out.iter().all(|(_, y)| y.is_finite()), "{out:?}");
+    }
+
+    #[test]
+    fn initial_step_derivative_reused() {
+        for m in [Method::Rkf78, Method::Dop853] {
+            // RKF78 also has a c = 0 stage, at a different y.
+            let mut at_t0 = 0;
+            let mut f = |t: f64, y: &[f64], d: &mut [f64]| {
+                at_t0 += usize::from(t == 0.0 && y[0] == 1.0);
+                d[0] = y[0];
+            };
+            let mut y = [1.0];
+            Integrator::new(m)
+                .integrate(&mut f, 0.0, &mut y, 1.0)
+                .unwrap();
+            assert_eq!(at_t0, 1, "{m:?}");
+        }
     }
 
     #[test]
