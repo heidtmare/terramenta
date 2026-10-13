@@ -531,10 +531,14 @@ pub fn propagate(req: &PropagationRequest) -> Result<Propagated, String> {
     })
 }
 
+/// Maneuver arcs: split at impulsive maneuvers (repeated epochs); single-state arcs dropped.
+fn arcs(states: &[(Epoch, StateVector)]) -> impl Iterator<Item = &[(Epoch, StateVector)]> {
+    states.chunk_by(|a, b| a.0 != b.0).filter(|g| g.len() >= 2)
+}
+
 impl Propagated {
-    /// Ascending states split at impulsive maneuvers (repeated epochs); single-state
-    /// segments dropped.
-    fn segments(&self) -> Vec<Vec<(Epoch, StateVector)>> {
+    /// Time-ordered states.
+    fn ordered_states(&self) -> Vec<(Epoch, StateVector)> {
         let mut states: Vec<(Epoch, StateVector)> = self
             .states
             .iter()
@@ -543,17 +547,7 @@ impl Propagated {
         if states.first().map(|s| s.0) > states.last().map(|s| s.0) {
             states.reverse();
         }
-        let mut segments: Vec<Vec<(Epoch, StateVector)>> = vec![Vec::new()];
-        for s in states {
-            let seg = segments.last_mut().expect("nonempty");
-            if seg.last().is_some_and(|l| l.0 == s.0) {
-                segments.push(vec![s]);
-            } else {
-                seg.push(s);
-            }
-        }
-        segments.retain(|g| g.len() >= 2);
-        segments
+        states
     }
 
     /// One segment per maneuver arc; GCRF, UTC, Hermite 7.
@@ -567,12 +561,10 @@ impl Propagated {
             interpolation: Some(Interpolation::default()),
         };
         Oem {
-            segments: self
-                .segments()
-                .into_iter()
+            segments: arcs(&self.ordered_states())
                 .map(|states| OemSegment {
                     metadata: metadata.clone(),
-                    states,
+                    states: states.to_vec(),
                 })
                 .collect(),
             ..Default::default()
@@ -594,9 +586,8 @@ impl Propagated {
             name
         };
         let window = SpkSegmentKind::from_interpolation(Interpolation::default()).window();
-        let segments: Vec<SpkSegment> = self
-            .segments()
-            .into_iter()
+        let states = self.ordered_states();
+        let segments: Vec<SpkSegment> = arcs(&states)
             .map(|states| SpkSegment {
                 target: self.naif_id,
                 center: naif::EARTH,
@@ -605,7 +596,7 @@ impl Propagated {
                     window: window.min(states.len()),
                 },
                 name: name.clone(),
-                states,
+                states: states.into(),
             })
             .collect();
         spk::write_spk(&segments, "TERRAMENTA").map_err(|e| e.to_string())
