@@ -6,7 +6,7 @@
 //! multi-hundred-million-kilometre wander around the Sun nowhere in the
 //! numbers to lose precision to. Far enough out, Earth stops being the
 //! dominant pull, and a two-body approximation centred on Earth becomes a
-//! worse fit than one centred on the Sun. [`Spacecraft::update`] makes that
+//! worse fit than one centred on the Sun. [`PatchedConicSpacecraft::update`] makes that
 //! call by comparing distance from the current primary against its sphere
 //! of influence ([`crate::bodies::sphere_of_influence_km`]), and
 //! re-expresses the spacecraft's state relative to the next body up the
@@ -14,7 +14,7 @@
 //!
 //! That re-expression has to preserve continuity.
 //! [`crate::frame::FrameTree::reparent`] accepts any ephemeris it's handed,
-//! jump included — [`Spacecraft::update`] keeps continuity by computing the
+//! jump included — [`PatchedConicSpacecraft::update`] keeps continuity by computing the
 //! state relative to the *new* primary from the state relative to the old
 //! one plus the old primary's own state relative to the new one, all at the
 //! same instant, before the swap reaches the tree.
@@ -23,7 +23,7 @@
 //! spacecraft heliocentric under the Sun has nothing further to escape
 //! *from*, but can still be captured *by* whatever it flies close enough to
 //! — so [`Primary`] carries [`Primary::capture_candidates`] as well as
-//! [`Primary::orbits`], and [`Spacecraft::update`] checks both directions
+//! [`Primary::orbits`], and [`PatchedConicSpacecraft::update`] checks both directions
 //! every tick. Together the two checks form the patched-conics
 //! approximation this crate implements: a hyperbolic departure relative to
 //! the origin, a Keplerian ellipse relative to the Sun, and a hyperbolic
@@ -46,7 +46,7 @@ pub struct Primary {
     /// What this primary itself orbits, boxed because the chain is
     /// self-referential in type only: Earth points at the Sun, and the Sun
     /// — the last stop this crate models — points at nothing, which tells
-    /// [`Spacecraft::update`] to stop checking for an escape.
+    /// [`PatchedConicSpacecraft::update`] to stop checking for an escape.
     pub orbits: Option<Box<Primary>>,
     /// The bodies a spacecraft on *this* primary should be checked against
     /// for capture: the inward half of the patched-conics switch, mirroring
@@ -59,7 +59,7 @@ pub struct Primary {
 
 impl Primary {
     /// The last stop this crate models: a primary with nothing left to
-    /// escape to, which tells [`Spacecraft::update`] to stop checking for an
+    /// escape to, which tells [`PatchedConicSpacecraft::update`] to stop checking for an
     /// escape.
     pub fn sun(frame: FrameId) -> Self {
         Self {
@@ -93,7 +93,7 @@ impl Primary {
 
     /// Attaches the bodies a spacecraft on this primary should be checked
     /// against for capture — giving the Sun a [`Primary::mars`], for
-    /// example, lets [`Spacecraft::update`] notice a heliocentric approach
+    /// example, lets [`PatchedConicSpacecraft::update`] notice a heliocentric approach
     /// entering Mars' sphere of influence and hand the spacecraft off to it.
     pub fn with_capture_candidates(mut self, candidates: Vec<Primary>) -> Self {
         self.capture_candidates = candidates;
@@ -104,7 +104,7 @@ impl Primary {
 /// The [`Ephemeris`] a spacecraft's frame reports through: whatever two-body
 /// orbit it is currently on, relative to whatever it currently orbits.
 /// Replaced wholesale, along with the frame's parent, every time
-/// [`Spacecraft::update`] finds it has crossed a sphere of influence.
+/// [`PatchedConicSpacecraft::update`] finds it has crossed a sphere of influence.
 #[derive(Debug, Clone, Copy)]
 struct TwoBodyOrbit {
     elements: OrbitalElements,
@@ -120,13 +120,13 @@ impl Ephemeris for TwoBodyOrbit {
 
 /// A spacecraft on a two-body orbit around its current [`Primary`], as a
 /// frame in a [`FrameTree`].
-pub struct Spacecraft {
+pub struct PatchedConicSpacecraft {
     pub frame: FrameId,
     primary: Primary,
     elements: OrbitalElements,
 }
 
-impl Spacecraft {
+impl PatchedConicSpacecraft {
     /// Adds a spacecraft to the tree, orbiting `primary` on the given state
     /// relative to it.
     ///
@@ -181,7 +181,7 @@ impl Spacecraft {
         self.try_escape(tree, epoch) || self.try_capture(tree, epoch)
     }
 
-    /// The outward half of [`Spacecraft::update`]: whether this spacecraft
+    /// The outward half of [`PatchedConicSpacecraft::update`]: whether this spacecraft
     /// has left its primary's sphere of influence, bound for whatever that
     /// primary orbits.
     fn try_escape(&mut self, tree: &mut FrameTree, epoch: Epoch) -> bool {
@@ -232,7 +232,7 @@ impl Spacecraft {
     /// of influence of one of its primary's [`Primary::capture_candidates`]
     /// — Mars, for example, while still described relative to the Sun — and
     /// if so, reparents to the one it has entered, the same
-    /// continuity-preserving way [`Spacecraft::try_escape`] does.
+    /// continuity-preserving way [`PatchedConicSpacecraft::try_escape`] does.
     fn try_capture(&mut self, tree: &mut FrameTree, epoch: Epoch) -> bool {
         if self.primary.capture_candidates.is_empty() {
             return false;
@@ -312,7 +312,7 @@ mod tests {
         // does not handle (an undefined ascending node).
         let leo = StateVector::new(DVec3::new(7000.0, 0.0, 0.0), DVec3::new(0.0, 7.3, 1.0));
         let mut spacecraft =
-            Spacecraft::spawn(&mut tree, "ISS-like", earth.clone(), leo, Epoch::J2000);
+            PatchedConicSpacecraft::spawn(&mut tree, "ISS-like", earth.clone(), leo, Epoch::J2000);
 
         for hours in 1..48 {
             let epoch = Epoch::J2000.advanced_by_seconds(hours as f64 * 3_600.0);
@@ -327,8 +327,13 @@ mod tests {
         let sun_frame = earth.orbits.as_ref().unwrap().frame;
         // Comfortably above local escape velocity at this altitude.
         let departure = StateVector::new(DVec3::new(7000.0, 0.0, 0.0), DVec3::new(0.0, 11.5, 2.0));
-        let mut spacecraft =
-            Spacecraft::spawn(&mut tree, "Escaper", earth.clone(), departure, Epoch::J2000);
+        let mut spacecraft = PatchedConicSpacecraft::spawn(
+            &mut tree,
+            "Escaper",
+            earth.clone(),
+            departure,
+            Epoch::J2000,
+        );
 
         let mut transitioned = false;
         let mut epoch = Epoch::J2000;
@@ -397,7 +402,8 @@ mod tests {
             DVec3::new(-3.0, 1.0, 0.4),
         );
         let sun = earth.orbits.as_deref().unwrap().clone();
-        let mut spacecraft = Spacecraft::spawn(&mut tree, "Arriver", sun, approach, Epoch::J2000);
+        let mut spacecraft =
+            PatchedConicSpacecraft::spawn(&mut tree, "Arriver", sun, approach, Epoch::J2000);
 
         let before = tree.state_relative_to_root(spacecraft.frame, Epoch::J2000);
         assert!(
@@ -422,7 +428,7 @@ mod tests {
         let far_from_mars =
             StateVector::new(DVec3::new(1.6e8, 0.0, 0.0), DVec3::new(0.0, 25.0, 1.0));
         let mut spacecraft =
-            Spacecraft::spawn(&mut tree, "Passer-by", sun, far_from_mars, Epoch::J2000);
+            PatchedConicSpacecraft::spawn(&mut tree, "Passer-by", sun, far_from_mars, Epoch::J2000);
 
         for hours in 1..48 {
             let epoch = Epoch::J2000.advanced_by_seconds(hours as f64 * 3_600.0);
@@ -437,7 +443,7 @@ mod tests {
         // the heliocentric leg can be sampled without Mars perturbing the
         // decision of when the escape itself happens.
         let (mut probe_tree, probe_earth) = earth_sun_tree();
-        let mut probe = Spacecraft::spawn(
+        let mut probe = PatchedConicSpacecraft::spawn(
             &mut probe_tree,
             "Probe",
             probe_earth.clone(),
@@ -476,7 +482,7 @@ mod tests {
             ..earth
         };
 
-        let mut spacecraft = Spacecraft::spawn(
+        let mut spacecraft = PatchedConicSpacecraft::spawn(
             &mut tree,
             "Trip",
             earth_with_mars_capture,

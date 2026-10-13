@@ -80,7 +80,7 @@ impl Epoch {
         Self(Self::J2000.0 + seconds * Unit::Second)
     }
 
-    /// From TDB seconds since J2000.0 (SPICE ET).
+    /// From TDB seconds since J2000.0 (hifitime TDB; SPICE ET differs by ~10 ns, see `spk::et_seconds`).
     pub fn from_tdb_seconds_j2000(seconds: f64) -> Self {
         Self::from_hifitime(hifitime::Epoch::from_tdb_seconds(seconds))
     }
@@ -111,7 +111,7 @@ impl Epoch {
         self.0.to_tdb_days_since_j2000()
     }
 
-    /// TDB seconds since J2000.0 (SPICE ET).
+    /// TDB seconds since J2000.0 (hifitime TDB; not SPICE ET, see `spk::et_seconds`).
     pub fn tdb_seconds(self) -> f64 {
         self.0.to_tdb_seconds()
     }

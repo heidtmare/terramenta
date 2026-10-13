@@ -30,10 +30,22 @@
 //! not a reason to draw nothing. A document that is not an array of records at
 //! all is refused whole, because that is a wrong URL rather than a bad row.
 //!
+//! **CCSDS OEM.** A KVN OEM (`CCSDS_OEM_VERS` first) is read as tabulated motion: one
+//! object per `OBJECT_ID`, Earth-centred GCRF/EME2000/ICRF/TEME, converted to TEME at load,
+//! interpolated per the segment's `INTERPOLATION`; no position outside coverage.
+//!
 //! [CCSDS 502.0-B-3]: https://public.ccsds.org/Pubs/502x0b3e1.pdf
 //! [`geozero`]: https://github.com/georust/geozero
 
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
 use serde::Deserialize;
+use terramenta_solare::ccsds::Oem;
+use terramenta_solare::earth::teme_to_gcrf;
+use terramenta_solare::interpolate::{Interpolation, SampledEphemeris};
+use terramenta_solare::orbit::OrbitalElements;
+use terramenta_solare::{Epoch, StateVector};
 
 /// Minutes in a day, which is what turns a mean motion into a period.
 const MINUTES_PER_DAY: f64 = 1440.0;
@@ -76,7 +88,15 @@ pub struct Satellite {
     pub period_minutes: f64,
     pub inclination_deg: f64,
     pub eccentricity: f64,
-    constants: sgp4::Constants,
+    motion: Motion,
+}
+
+// SGP4 is the common case across thousands of objects; boxing it costs an allocation each.
+#[allow(clippy::large_enum_variant)]
+enum Motion {
+    Sgp4(sgp4::Constants),
+    /// TEME states.
+    Tabulated(Arc<SampledEphemeris>),
 }
 
 impl Satellite {
@@ -101,9 +121,15 @@ impl Satellite {
     /// and the two speeds genuinely differ. See [`crate::gnc`], which is what
     /// asks.
     pub fn state_teme(&self, unix_seconds: f64) -> Option<([f64; 3], [f64; 3])> {
+        let constants = match &self.motion {
+            Motion::Sgp4(constants) => constants,
+            Motion::Tabulated(table) => {
+                let s = table.try_state_at(Epoch::from_unix_seconds(unix_seconds))?;
+                return Some((s.position_km.to_array(), s.velocity_km_s.to_array()));
+            }
+        };
         let minutes = (unix_seconds - self.epoch_unix_seconds) / 60.0;
-        let prediction = self
-            .constants
+        let prediction = constants
             .propagate_afspc_compatibility_mode(sgp4::MinutesSinceEpoch(minutes))
             .ok()?;
         prediction
@@ -112,6 +138,11 @@ impl Satellite {
             .chain(prediction.velocity.iter())
             .all(|component| component.is_finite())
             .then_some((prediction.position, prediction.velocity))
+    }
+
+    /// Tabulated (OEM): `None` outside coverage rather than divergence.
+    pub fn is_tabulated(&self) -> bool {
+        matches!(self.motion, Motion::Tabulated(_))
     }
 
     /// How far the elements are from a moment, in days, signed.
@@ -195,6 +226,9 @@ impl Document {
 
 /// Reads a document. See the module docs for what is tolerated.
 pub fn parse(text: &str) -> Result<Catalogue, OmmError> {
+    if text.trim_start().starts_with("CCSDS_OEM_VERS") {
+        return parse_oem(text);
+    }
     let document: Document =
         serde_json::from_str(text).map_err(|error| OmmError::Malformed(error.to_string()))?;
 
@@ -239,8 +273,96 @@ fn satellite(elements: &sgp4::Elements) -> Option<Satellite> {
         period_minutes: MINUTES_PER_DAY / elements.mean_motion,
         inclination_deg: elements.inclination,
         eccentricity: elements.eccentricity,
-        constants,
+        motion: Motion::Sgp4(constants),
     })
+}
+
+/// Synthetic catalogue numbers for OEM objects without a numeric `OBJECT_ID`.
+const SYNTHETIC_ID_BASE: u64 = 900_000_000;
+
+/// `(OBJECT_NAME, interpolation, states)`.
+type OemObject = (String, Interpolation, Vec<(Epoch, StateVector)>);
+
+fn parse_oem(text: &str) -> Result<Catalogue, OmmError> {
+    let oem = Oem::from_kvn(text).map_err(|error| OmmError::Malformed(error.to_string()))?;
+    let mut catalogue = Catalogue::default();
+    // Segments grouped per object, in first-seen order.
+    let mut order: Vec<String> = Vec::new();
+    let mut objects: BTreeMap<String, OemObject> = BTreeMap::new();
+    for segment in oem.segments {
+        let m = &segment.metadata;
+        let to_teme = match m.ref_frame.to_ascii_uppercase().as_str() {
+            _ if !m.center_name.eq_ignore_ascii_case("EARTH") => None,
+            "GCRF" | "EME2000" | "ICRF" | "J2000" => Some(true),
+            "TEME" => Some(false),
+            _ => None,
+        };
+        let Some(convert) = to_teme else {
+            catalogue.rejected += 1;
+            continue;
+        };
+        let entry = objects.entry(m.object_id.clone()).or_insert_with(|| {
+            order.push(m.object_id.clone());
+            (
+                m.object_name.clone(),
+                m.interpolation.unwrap_or_default(),
+                Vec::new(),
+            )
+        });
+        entry.2.extend(segment.states.into_iter().map(|(epoch, s)| {
+            if !convert {
+                return (epoch, s);
+            }
+            let r = teme_to_gcrf(epoch, &crate::numerical::eop_at(epoch)).transpose();
+            (
+                epoch,
+                StateVector::new(r * s.position_km, r * s.velocity_km_s),
+            )
+        }));
+    }
+    for (index, id) in order.iter().enumerate() {
+        let (name, method, mut states) = objects.remove(id).expect("grouped above");
+        states.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        // Segment boundaries repeat an epoch; keep the later segment's state.
+        states.reverse();
+        states.dedup_by(|a, b| a.0.seconds_since(b.0).abs() < 1e-6);
+        states.reverse();
+        if states.len() < 2 {
+            catalogue.rejected += 1;
+            continue;
+        }
+        let first = states[0];
+        let el =
+            OrbitalElements::from_state(first.1, terramenta_solare::bodies::GM_EARTH_KM3_S2, 0.0);
+        let span_minutes = states[states.len() - 1].0.seconds_since(first.0) / 60.0;
+        let period_minutes = if el.eccentricity < 1.0 && el.semi_major_axis_km > 0.0 {
+            std::f64::consts::TAU
+                * (el.semi_major_axis_km.powi(3) / terramenta_solare::bodies::GM_EARTH_KM3_S2)
+                    .sqrt()
+                / 60.0
+        } else {
+            span_minutes
+        };
+        let norad_id = match id.parse::<u64>() {
+            Ok(n) if n < SYNTHETIC_ID_BASE => n,
+            _ => SYNTHETIC_ID_BASE + index as u64,
+        };
+        let designator = id.len() >= 9 && id.as_bytes()[4] == b'-';
+        catalogue.satellites.push(Satellite {
+            norad_id,
+            name,
+            international_designator: designator.then(|| id.clone()),
+            epoch_unix_seconds: first.0.to_unix_seconds(),
+            period_minutes,
+            inclination_deg: el.inclination_rad.to_degrees(),
+            eccentricity: el.eccentricity,
+            motion: Motion::Tabulated(Arc::new(SampledEphemeris::new(states, method))),
+        });
+    }
+    if catalogue.satellites.is_empty() {
+        return Err(OmmError::Empty);
+    }
+    Ok(catalogue)
 }
 
 #[cfg(test)]
@@ -385,6 +507,54 @@ mod tests {
 
     /// The one record out of the array literal above, for building documents
     /// that hold more than one.
+    #[test]
+    fn an_oem_becomes_tabulated_motion_in_teme() {
+        use terramenta_solare::ccsds::{OemMetadata, OemSegment};
+        let gm = terramenta_solare::bodies::GM_EARTH_KM3_S2;
+        let t0 = Epoch::from_utc(2024, 3, 1, 0, 0, 0.0);
+        let el = OrbitalElements::from_state(
+            StateVector::new([6778.0, 0.0, 0.0].into(), [0.0, 4.7, 6.0].into()),
+            gm,
+            0.0,
+        );
+        let states: Vec<_> = (0..=60)
+            .map(|k| {
+                let dt = k as f64 * 60.0;
+                (t0.advanced_by_seconds(dt), el.state_at(gm, dt))
+            })
+            .collect();
+        let segment = |states: &[(Epoch, StateVector)]| OemSegment {
+            metadata: OemMetadata {
+                object_name: "DEMO".into(),
+                object_id: "2024-001A".into(),
+                ..Default::default()
+            },
+            states: states.to_vec(),
+        };
+        // Two segments sharing a boundary epoch.
+        let oem = Oem {
+            segments: vec![segment(&states[..31]), segment(&states[30..])],
+            ..Default::default()
+        };
+        let catalogue = parse(&oem.to_kvn()).unwrap();
+        assert_eq!(catalogue.len(), 1);
+        let sat = &catalogue.satellites[0];
+        assert!(sat.is_tabulated());
+        assert_eq!(sat.norad_id, SYNTHETIC_ID_BASE);
+        assert_eq!(sat.international_designator.as_deref(), Some("2024-001A"));
+        assert!(
+            (sat.period_minutes - 92.0).abs() < 3.0,
+            "{}",
+            sat.period_minutes
+        );
+        let t = t0.advanced_by_seconds(1234.0);
+        let teme =
+            bevy::math::DVec3::from_array(sat.position_teme_km(t.to_unix_seconds()).unwrap());
+        let gcrf = teme_to_gcrf(t, &Default::default()) * teme;
+        assert!((gcrf - el.state_at(gm, 1234.0).position_km).length() < 1e-3);
+        assert!(sat.position_teme_km(t0.to_unix_seconds() - 60.0).is_none());
+    }
+
     fn inner(document: &str) -> String {
         document
             .trim()

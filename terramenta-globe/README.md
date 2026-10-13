@@ -98,13 +98,15 @@ from a real failure.
 | `setOverlayAltitude(id, altitude)` | Altitude mode, scale, extrusion |
 | `setOverlayRefresh(id, seconds)` `refreshOverlay(id)` | Overlay refetch |
 | `overlayGeometry(id)` | Overlay coordinates as zero-copy typed arrays |
-| `addEphemeris(id, options)` `removeEphemeris(id)` | Satellite layers from OMM JSON |
+| `addEphemeris(id, options)` `removeEphemeris(id)` | Satellite layers from OMM JSON or CCSDS OEM |
 | `setEphemerisVisible(id, bool)` `setEphemerisStyle(id, style)` `setEphemeridesEnabled(bool)` | Satellite drawing |
 | `setEphemerisSelection(id, noradIds)` `selectSatellite(id, noradId, bool)` | Which objects are drawn |
 | `setEphemerisTrails(id, bool)` `setSatelliteTrail(id, noradId, bool)` `setEphemerisTrail(id, window)` | Orbit trails |
 | `setEphemerisRefresh(id, seconds)` `refreshEphemeris(id)` | Catalogue refetch |
 | `ephemerisObjects(id)` `ephemerisGeometry(id)` | Object list; current positions and arcs |
 | `addMission(id, options)` `removeMission(id)` | Flown interplanetary missions |
+| `propagate(options)` `propagateSpk(options)` | Numerical propagation → OEM text / SPK bytes |
+| `loadKernel(bytes)` `loadEop(text)` `loadSpaceWeather(text)` `propagationEnvironment()` | Propagation data |
 | `setPickingEnabled(bool)` `pinFeature(layer, index)` `clearPinnedFeature()` | Overlay feature picking |
 | `pinSatellite(layer, noradId)` `clearPinnedSatellite()` | Satellite picking |
 | `pinPlacemark("sun" \| "moon")` `clearPinnedPlacemark()` `setPlacemarksEnabled(bool)` | Subsolar/sublunar placemarks |
@@ -464,6 +466,35 @@ globe.pinSatellite("stations", 25544);
   at altitude. Pins are by NORAD id and survive refetch. Picks report orbital
   elements, epoch age and position.
 
+## Numerical propagation
+
+[`numerical.rs`](src/numerical.rs) maps `propagate` options onto a
+`terramenta_solare::spacecraft::Spacecraft`: initial state from TLE, OMM or a GCRF
+state vector (SGP4 carries it to `start`), then Cowell with EGM2008 (≤ 20×20),
+Sun/Moon, SRP, drag (`exponential` | `harrisPriester` | `nrlmsise00`), relativity,
+impulsive and finite burns. Output is a GCRF/UTC OEM, which `addEphemeris` draws
+as tabulated motion.
+
+```js
+globe.loadKernel(new Uint8Array(await (await fetch("de440s.bsp")).arrayBuffer())); // optional
+globe.loadSpaceWeather(await (await fetch("SW-All.csv")).text());                   // for nrlmsise00
+const { oem } = globe.propagate({
+  initial: { tle: [line1, line2] },
+  durationS: 86400, stepS: 60,
+  forces: { gravity: [8, 8], drag: "nrlmsise00" },
+  maneuvers: [{ epoch: "2024-03-01T01:00:00Z", deltaVKmS: [0.01, 0, 0], ispS: 300 }],
+});
+globe.addEphemeris("demo", { text: oem, leadingOrbits: 1 });
+const spk = globe.propagateSpk({ ...sameOptions, naifId: -100900 }); // Uint8Array
+```
+
+- Without a kernel, Sun/Moon come from analytic series (Moon ≤ 0.1°).
+- Without EOP, Earth orientation uses zero polar motion and UT1 = UTC.
+- Synchronous; ≤ 200 000 samples per call. Errors throw.
+- OEM objects: numeric `OBJECT_ID` becomes the catalogue number, otherwise
+  900 000 000 + index. Centre must be Earth; GCRF/EME2000/ICRF/TEME frames.
+  Outside coverage the object is not drawn; arcs keep their covered part.
+
 Operational notes:
 
 - SGP4 accuracy degrades with element age (~1 km/day in LEO); layers report
@@ -677,7 +708,8 @@ src/
   fetch.rs         Slot-addressed asset source for layer documents
   geojson.rs       GeoJSON parsing and flattening
   simplestyle.rs   simplestyle-spec 1.1.0
-  omm.rs           OMM parsing into SGP4 propagators
+  omm.rs           OMM → SGP4 propagators; OEM → tabulated motion
+  numerical.rs     propagate/propagateSpk requests; kernel, EOP, space weather
   tessellate.rs    Ear clipping, holes, antimeridian
   picking.rs       Overlay hit-testing
   overlays.rs      Overlay layers, geojson:// source, refresh, meshes

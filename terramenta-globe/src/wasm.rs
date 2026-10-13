@@ -671,6 +671,9 @@ impl TrailOptions {
 
 /// Puts an ephemeris layer up, or replaces the one already under this id.
 ///
+/// `text` may also be a KVN CCSDS OEM (e.g. from [`propagate`]): tabulated, drawn within
+/// its coverage.
+///
 /// The document is [OMM] JSON — an array of orbit mean-element records, which
 /// is what every current catalogue publishes and the successor to the two-line
 /// element set. Each record becomes an SGP4 propagator; the globe evaluates
@@ -998,6 +1001,81 @@ pub fn add_mission(id: String, options: JsValue) -> bool {
 #[wasm_bindgen(js_name = removeMission)]
 pub fn remove_mission(id: String) {
     api::send(GlobeCommand::RemoveMission(id));
+}
+
+// ---------------------------------------------------------------------------
+// Numerical propagation
+// ---------------------------------------------------------------------------
+
+/// Adds an SPK/PCK (e.g. `de440s.bsp`) for third-body Sun/Moon. Analytic series otherwise.
+///
+/// ```js
+/// loadKernel(new Uint8Array(await (await fetch("de440s.bsp")).arrayBuffer()));
+/// ```
+#[wasm_bindgen(js_name = loadKernel)]
+pub fn load_kernel(bytes: &[u8]) -> Result<(), JsError> {
+    crate::numerical::load_kernel(bytes).map_err(|e| JsError::new(&e))
+}
+
+/// IERS `finals2000A.all` or CelesTrak `EOP-All.csv`. Earth orientation and TEME↔GCRF.
+#[wasm_bindgen(js_name = loadEop)]
+pub fn load_eop(text: &str) -> Result<(), JsError> {
+    crate::numerical::load_eop(text).map_err(|e| JsError::new(&e))
+}
+
+/// CelesTrak `SW-All.csv`. Required by `drag: "nrlmsise00"`.
+#[wasm_bindgen(js_name = loadSpaceWeather)]
+pub fn load_space_weather(text: &str) -> Result<(), JsError> {
+    crate::numerical::load_space_weather(text).map_err(|e| JsError::new(&e))
+}
+
+/// `{ kernel, eop: [mjd0, mjd1] | null, spaceWeather: [mjd0, mjd1] | null }`.
+#[wasm_bindgen(js_name = propagationEnvironment)]
+pub fn propagation_environment() -> JsValue {
+    to_js(&crate::numerical::describe_environment())
+}
+
+/// Cowell propagation (EGM2008, Sun/Moon, drag, SRP, maneuvers) → CCSDS OEM, GCRF/UTC.
+///
+/// ```js
+/// const { oem, finalMassKg } = propagate({
+///   name: "DEMO",
+///   initial: { tle: [line1, line2] },        // or { omm: {...} }
+///                                            // or { epoch, positionKm, velocityKmS } (GCRF)
+///   start: "2024-03-01T00:00:00Z",           // default: initial epoch
+///   durationS: 86400, stepS: 60,             // or stop: ISO UTC
+///   vehicle: { massKg: 500, dryMassKg: 300, dragAreaM2: 4, dragCoefficient: 2.2,
+///              srpAreaM2: 4, reflectivity: 1.3 },
+///   forces: { gravity: [8, 8], thirdBody: true, srp: true, relativity: false,
+///             drag: "exponential" },         // none | exponential | harrisPriester | nrlmsise00
+///   integrator: { method: "dop853" },        // dop853 | rkf78 | rk4 (fixedStepS)
+///   maneuvers: [{ epoch, deltaVKmS: [0.01, 0, 0], frame: "vnb", ispS: 300 }],
+///   finiteBurns: [{ start, durationS: 120, thrustN: 20, ispS: 220,
+///                   direction: [1, 0, 0], frame: "vnb" }],
+/// });
+/// addEphemeris("demo", { text: oem });
+/// ```
+///
+/// Synchronous: a day of LEO at 60 s steps takes tens of milliseconds. Throws on bad input.
+#[wasm_bindgen]
+pub fn propagate(options: JsValue) -> Result<JsValue, JsError> {
+    let request = propagation_request(&options)?;
+    let out = crate::numerical::propagate(&request).map_err(|e| JsError::new(&e))?;
+    Ok(to_js(&out.info()))
+}
+
+/// As [`propagate`], as a Type 13 SPK (`naifId`, default −100900; center 399; J2000).
+#[wasm_bindgen(js_name = propagateSpk)]
+pub fn propagate_spk(options: JsValue) -> Result<Vec<u8>, JsError> {
+    let request = propagation_request(&options)?;
+    let out = crate::numerical::propagate(&request).map_err(|e| JsError::new(&e))?;
+    out.to_spk().map_err(|e| JsError::new(&e))
+}
+
+fn propagation_request(options: &JsValue) -> Result<crate::numerical::PropagationRequest, JsError> {
+    let json = js_sys::JSON::stringify(options)
+        .map_err(|_| JsError::new("options are not JSON-serialisable"))?;
+    serde_json::from_str(&String::from(json)).map_err(|e| JsError::new(&e.to_string()))
 }
 
 // ---------------------------------------------------------------------------

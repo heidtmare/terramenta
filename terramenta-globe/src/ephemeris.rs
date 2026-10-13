@@ -1461,6 +1461,10 @@ fn arcs_of(layer: &Ephemeris, catalogue: &Catalogue, now: f64, mode: FrameMode) 
             let minutes = start + span * f64::from(step) / f64::from(steps);
             let at = now + minutes * 60.0;
             let Some(teme) = satellite.position_teme_km(at) else {
+                // Tabulated motion: outside coverage, draw what is covered.
+                if satellite.is_tabulated() {
+                    continue;
+                }
                 // SGP4 diverges rather than failing gracefully, and the samples
                 // either side of the divergence are not on any orbit. Dropping
                 // the arc is the only honest answer; the marker stays if the
@@ -1473,7 +1477,7 @@ fn arcs_of(layer: &Ephemeris, catalogue: &Catalogue, now: f64, mode: FrameMode) 
                 anchor.unwrap_or_else(|| reference_angle(mode, at)),
             ));
         }
-        if diverged {
+        if diverged || path.len() < 2 {
             continue;
         }
 

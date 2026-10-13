@@ -350,6 +350,9 @@ export const setOverlaysEnabled = (enabled) => required().setOverlaysEnabled(ena
  * `trailSamples`, and the same style fields an overlay takes — `fillColor`
  * excepted, because an ephemeris has no rings in it.
  *
+ * `text` may also be a KVN CCSDS OEM (see `propagate`), drawn within its
+ * coverage.
+ *
  * Switch to the ECI frame to see an orbit as the closed ellipse it is; in ECEF
  * the same arc is the corkscrew a ground track is, because the Earth turns
  * underneath it.
@@ -472,6 +475,41 @@ export const ephemerisGeometry = (id) => required().ephemerisGeometry(id);
 export const addMission = (id, options) => required().addMission(id, options);
 
 export const removeMission = (id) => required().removeMission(id);
+
+// --- Numerical propagation -------------------------------------------------
+
+/** Adds an SPK/PCK (`Uint8Array`, e.g. de440s.bsp) for Sun/Moon. Throws on a bad kernel. */
+export const loadKernel = (bytes) => required().loadKernel(bytes);
+
+/** IERS `finals2000A.all` or CelesTrak `EOP-All.csv` text. Throws on a bad file. */
+export const loadEop = (text) => required().loadEop(text);
+
+/** CelesTrak `SW-All.csv` text; required by `drag: "nrlmsise00"`. Throws on a bad file. */
+export const loadSpaceWeather = (text) => required().loadSpaceWeather(text);
+
+/** `{ kernel, eop, spaceWeather }`: what is loaded, coverage as MJD pairs. */
+export const propagationEnvironment = () => required().propagationEnvironment();
+
+/**
+ * Cowell propagation → `{ oem, samples, finalMassKg, start, stop }`. Throws on bad input.
+ *
+ * ```js
+ * const { oem } = propagate({
+ *   initial: { tle: [line1, line2] },  // or { omm } or { epoch, positionKm, velocityKmS } (GCRF)
+ *   durationS: 86400, stepS: 60,
+ *   vehicle: { massKg: 500 },
+ *   forces: { gravity: [8, 8], drag: "harrisPriester" },
+ *   maneuvers: [{ epoch: "2024-03-01T01:00:00Z", deltaVKmS: [0.01, 0, 0], ispS: 300 }],
+ * });
+ * addEphemeris("demo", { text: oem, leadingOrbits: 1 });
+ * ```
+ *
+ * Full option list: `terramenta-globe/src/wasm.rs`, `propagate`.
+ */
+export const propagate = (options) => required().propagate(options);
+
+/** As `propagate`, returning a Type 13 SPK `Uint8Array` (`naifId`, default -100900). */
+export const propagateSpk = (options) => required().propagateSpk(options);
 
 // --- Geometry --------------------------------------------------------------
 

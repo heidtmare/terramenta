@@ -3548,6 +3548,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "610a5acd306ec67f907abe5567859a3c693fb9886eb1f012ab8f2a47bef3db51"
 
 [[package]]
+name = "nrlmsise00"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6fa9561ea8ce44b569d736328411a2968fb1361de4dc5ec459b0277ba5b811e"
+dependencies = [
+ "num-dual",
+ "num-traits",
+]
+
+[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3584,6 +3594,15 @@ checksum = "73f88a1307638156682bada9d7604135552957b7818057dcef22705b4d509495"
 dependencies = [
  "num-traits",
  "serde",
+]
+
+[[package]]
+name = "num-dual"
+version = "0.15.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f34ea78002ef6a6369e7d9deee0fd51c2ea398de7c3a4e5da78f954e2f41e1c"
+dependencies = [
+ "num-traits",
 ]
 
 [[package]]
@@ -5151,6 +5170,7 @@ dependencies = [
  "bytes",
  "glam 0.32.1",
  "hifitime",
+ "nrlmsise00",
  "sgp4",
  "sofars",
 ]

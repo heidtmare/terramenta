@@ -17,7 +17,7 @@ use glam::DVec3;
 use crate::frame::StateVector;
 
 /// Like [`injection_state`], but targets `escape_velocity_km_s` at
-/// `sphere_of_influence_radius_km` — where [`crate::spacecraft::Spacecraft::update`]
+/// `sphere_of_influence_radius_km` — where [`crate::spacecraft::PatchedConicSpacecraft::update`]
 /// actually reparents to the next body — rather than at infinity.
 ///
 /// [`injection_state`] only reaches its target speed in the limit of
@@ -157,7 +157,7 @@ mod tests {
     }
 
     /// Bisects for the first time this hyperbola's radius crosses
-    /// `radius_km`, mirroring [`crate::spacecraft::Spacecraft::try_escape`]'s
+    /// `radius_km`, mirroring [`crate::spacecraft::PatchedConicSpacecraft::try_escape`]'s
     /// own SOI check without a tree/primary chain.
     fn time_of_radius(elements: &OrbitalElements, gm_km3_s2: f64, radius_km: f64) -> f64 {
         let (mut too_early, mut too_late) = (0.0_f64, 30.0 * 86_400.0);
