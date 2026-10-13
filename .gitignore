@@ -17,3 +17,6 @@
 
 # Coastline data for docs/satellites.py, downloaded on first use.
 /docs/land-110m.json
+
+# Kernels and EOP for terramenta-solare, fetched by terramenta-solare/scripts/fetch-data.sh.
+/terramenta-solare/data

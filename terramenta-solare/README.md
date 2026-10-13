@@ -26,7 +26,10 @@ this example).*
 | [`planets`](src/planets.rs) | Earth and Mars from JPL low-precision mean elements at J2000 plus rates (valid 1800–2050). |
 | [`ecliptic`](src/ecliptic.rs) | Ecliptic → equatorial rotation applied to published planetary elements. |
 | [`bodies`](src/bodies.rs) | `GM` and mean radius per body; `sphere_of_influence_km` (Laplace SOI). |
-| [`time`](src/time.rs) | `Epoch`, seconds since J2000, constructed from Unix seconds. |
+| [`time`](src/time.rs) | `Epoch` on [`hifitime`](https://docs.rs/hifitime), stored in TAI. Unix seconds are UTC with leap seconds. TT/TDB/UTC/UT1 accessors; SOFA two-part JDs. |
+| [`eop`](src/eop.rs) | `EopTable`: IERS `finals*.all` and CelesTrak `EOP-All.csv` parsers; linear interpolation, leap-second-aware UT1−UTC. |
+| [`earth`](src/earth.rs) | GCRF/TEME ↔ ITRF (`EarthModel::{Iau76Fk5, Iau2006Cio}`) via [`sofars`](https://docs.rs/sofars); GMST82, GAST, ERA; WGS-84 geodetic ↔ ECEF. |
+| [`spice`](src/spice.rs) | `KernelEphemeris`: SPK states (DE440/DE440s) via [`anise`](https://docs.rs/anise), with optional low-precision fallback. `solar_system_from_kernels`: SSB, Sun, planets, Moon. |
 | [`orbit`](src/orbit.rs) | `OrbitalElements`: state vector ↔ classical elements, two-body propagation (`state_at`). |
 | [`lambert`](src/lambert.rs) | `solve`: Vallado universal-variable Lambert solver with Stumpff functions; `TransferDirection::{Prograde, Retrograde}`. |
 | [`mission`](src/mission.rs) | `plan_transfer` (dated body-to-body Δv against the ephemeris), `find_best_transfer_window` (grid search for minimum total Δv), `hohmann_transfer` (coplanar circular baseline). |
@@ -35,6 +38,32 @@ this example).*
 
 `solar_system()` returns a `FrameTree` with the SSB at the root and Sun, Earth
 and Mars as children.
+`spice::solar_system_from_kernels(almanac)` returns the same names plus
+Mercury–Pluto (barycentres) and the Moon (under Earth), from loaded kernels.
+
+## Data
+
+```sh
+./scripts/fetch-data.sh   # data/de440s.bsp, data/finals2000A.all, data/EOP-All.csv
+```
+
+Not committed. Kernel- and EOP-dependent tests skip when files are absent.
+
+## Validation
+
+[`tests/validation.rs`](tests/validation.rs):
+
+| Case | Reference | Residual |
+| --- | --- | --- |
+| ITRF → GCRF, IAU-76/FK5 | Vallado 4th ed. Ex. 3-15 | < 2 cm, < 2e-5 m/s |
+| ITRF → GCRF, IAU-2006 CIO | Vallado Ex. 3-15 | < 50 cm |
+| TEME → ITRF, TEME → GCRF | Vallado et al. AIAA 2006-6753 | < 2 cm |
+| GMST82 | Vallado Ex. 3-5 | < 1e-6° |
+| DE440s: Earth, Mars, Sun, Jupiter / SSB; Moon / Earth | JPL Horizons (DE441), 2000 and 2026 | ≤ 5 cm; Moon ≤ 2.3 m |
+| EOP files at 2004-04-06 | Vallado Ex. 3-15 | ≤ 0.5 mas, 0.1 ms |
+
+Low-precision series vs DE440, 1900–2050 (max |Δr|): Earth/Sun 1.3e4 km,
+Mars/Sun 1.0e5 km, Sun/SSB 4.3e5 km.
 
 ## Patched conics
 
