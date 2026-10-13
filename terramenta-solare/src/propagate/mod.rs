@@ -308,11 +308,11 @@ impl Propagator {
                     Stop::Maneuver(i) => {
                         let m = self.maneuvers[i];
                         let (r, v) = (DVec3::new(y[0], y[1], y[2]), DVec3::new(y[3], y[4], y[5]));
-                        let (dv, mass) = m.apply(r, v, y[6]);
                         let (dv, mass) = if dir > 0.0 {
-                            (dv, mass)
+                            m.apply(r, v, y[6])
                         } else {
-                            (-dv, y[6] * y[6] / mass)
+                            let (dv, mass) = m.undo(r, v, y[6]);
+                            (-dv, mass)
                         };
                         y[3] += dv.x;
                         y[4] += dv.y;
@@ -432,6 +432,24 @@ mod tests {
         // Undo by propagating back across the maneuver.
         let back = p.propagate(&s1, s0.epoch).unwrap();
         assert!((back.position_km - s0.position_km).length() < 1e-6);
+        assert!((back.mass_kg - 1000.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn backward_undoes_local_frame_maneuver() {
+        // Radial + normal Δv rotates v, so the frame differs pre/post burn.
+        let s0 = leo();
+        let burn = s0.epoch.advanced_by_seconds(100.0);
+        let mut p = two_body(Method::Dop853).with_maneuver(
+            ImpulsiveManeuver::new(burn, DVec3::new(0.5, 0.0, 0.3), LocalFrame::Rsw)
+                .with_isp(300.0),
+        );
+        let s1 = p
+            .propagate(&s0, s0.epoch.advanced_by_seconds(200.0))
+            .unwrap();
+        let back = p.propagate(&s1, s0.epoch).unwrap();
+        assert!((back.position_km - s0.position_km).length() < 1e-6);
+        assert!((back.velocity_km_s - s0.velocity_km_s).length() < 1e-9);
         assert!((back.mass_kg - 1000.0).abs() < 1e-9);
     }
 
