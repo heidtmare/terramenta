@@ -11,7 +11,7 @@ use std::sync::Arc;
 pub use patched::{PatchedConicSpacecraft, Primary};
 
 use crate::force::Vehicle;
-use crate::frame::Ephemeris;
+use crate::frame::{Ephemeris, StateVector};
 use crate::interpolate::{Interpolation, SampledEphemeris};
 use crate::maneuver::ImpulsiveManeuver;
 use crate::orbit::OrbitalElements;
@@ -203,10 +203,22 @@ impl Spacecraft {
         {
             epochs.push(to);
         }
-        let mut prop = self.propagation.clone();
+        let two_body = match self.propagation {
+            Propagation::TwoBody { gm_km3_s2 } => Some((
+                OrbitalElements::from_state(self.state.state_vector(), gm_km3_s2, 0.0),
+                gm_km3_s2,
+            )),
+            _ => None,
+        };
         epochs
             .into_iter()
-            .map(|e| advance(&self.state, self.vehicle, &mut prop, e))
+            .map(|e| {
+                let sv = match &two_body {
+                    Some((el, gm)) => el.state_at(*gm, e.seconds_since(self.state.epoch)),
+                    None => state_vector_at(&self.state, &self.propagation, e)?,
+                };
+                Ok(SpacecraftState::new(e, sv, self.state.mass_kg))
+            })
             .collect()
     }
 }
@@ -218,7 +230,21 @@ fn advance(
     propagation: &mut Propagation,
     epoch: Epoch,
 ) -> Result<SpacecraftState, SpacecraftError> {
-    let sv = match propagation {
+    if let Propagation::Numerical(p) = propagation {
+        p.vehicle = vehicle;
+        return Ok(p.propagate(s, epoch)?);
+    }
+    let sv = state_vector_at(s, propagation, epoch)?;
+    Ok(SpacecraftState::new(epoch, sv, s.mass_kg))
+}
+
+/// Position/velocity at `epoch` for stateless propagation; mass is unchanged.
+fn state_vector_at(
+    s: &SpacecraftState,
+    propagation: &Propagation,
+    epoch: Epoch,
+) -> Result<StateVector, SpacecraftError> {
+    Ok(match propagation {
         Propagation::TwoBody { gm_km3_s2 } => {
             OrbitalElements::from_state(s.state_vector(), *gm_km3_s2, 0.0)
                 .state_at(*gm_km3_s2, epoch.seconds_since(s.epoch))
@@ -227,12 +253,8 @@ fn advance(
             .state_gcrf(epoch, &e.eop)
             .ok_or(SpacecraftError::Sgp4 { epoch })?,
         Propagation::Tabulated(e) => e.state_at(epoch),
-        Propagation::Numerical(p) => {
-            p.vehicle = vehicle;
-            return Ok(p.propagate(s, epoch)?);
-        }
-    };
-    Ok(SpacecraftState::new(epoch, sv, s.mass_kg))
+        Propagation::Numerical(_) => unreachable!("numerical propagation is stateful"),
+    })
 }
 
 #[cfg(test)]
@@ -242,7 +264,6 @@ mod tests {
     use super::*;
     use crate::bodies::GM_EARTH_KM3_S2;
     use crate::force::PointMass;
-    use crate::frame::StateVector;
     use crate::maneuver::LocalFrame;
     use crate::propagate::{Integrator, Method};
 
