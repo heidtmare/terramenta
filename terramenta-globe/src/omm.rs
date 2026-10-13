@@ -322,13 +322,17 @@ impl TemeGrid {
 }
 
 fn parse_oem(text: &str) -> Result<Catalogue, OmmError> {
-    let oem = Oem::from_kvn(text).map_err(|error| OmmError::Malformed(error.to_string()))?;
+    from_oem(&Oem::from_kvn(text).map_err(|error| OmmError::Malformed(error.to_string()))?)
+}
+
+/// OEM → tabulated catalogue. See the module docs.
+pub fn from_oem(oem: &Oem) -> Result<Catalogue, OmmError> {
     let mut catalogue = Catalogue::default();
     // Segments grouped per object, in first-seen order.
     let mut order: Vec<String> = Vec::new();
     let mut objects: BTreeMap<String, OemObject> = BTreeMap::new();
     let mut gcrf_to_teme = TemeGrid::new(crate::numerical::eop_table());
-    for segment in oem.segments {
+    for segment in &oem.segments {
         let m = &segment.metadata;
         let to_teme = match m.ref_frame.to_ascii_uppercase().as_str() {
             _ if !m.center_name.eq_ignore_ascii_case("EARTH") => None,
@@ -348,7 +352,7 @@ fn parse_oem(text: &str) -> Result<Catalogue, OmmError> {
                 Vec::new(),
             )
         });
-        entry.2.extend(segment.states.into_iter().map(|(epoch, s)| {
+        entry.2.extend(segment.states.iter().map(|&(epoch, s)| {
             if !convert {
                 return (epoch, s);
             }

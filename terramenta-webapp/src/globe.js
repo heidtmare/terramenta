@@ -501,12 +501,18 @@ export const propagationEnvironment = () => required().propagationEnvironment();
  *   forces: { gravity: [8, 8], drag: "harrisPriester" },
  *   maneuvers: [{ epoch: "2024-03-01T01:00:00Z", deltaVKmS: [0.01, 0, 0], ispS: 300 }],
  * });
- * addEphemeris("demo", { text: oem, leadingOrbits: 1 });
+ * addEphemeris("demo", { text: oem, leadingOrbits: 1 }); // or addPropagated("demo", { leadingOrbits: 1 })
  * ```
  *
  * Full option list: `terramenta-globe/src/wasm.rs`, `propagate`.
  */
 export const propagate = (options) => required().propagate(options);
+
+/**
+ * Last `propagate` result as an ephemeris layer, no KVN round trip. Options as
+ * `addEphemeris` (`url`/`text` ignored). `false` if nothing has been propagated.
+ */
+export const addPropagated = (id, options) => required().addPropagated(id, options);
 
 /** As `propagate`, returning a Type 13 SPK `Uint8Array` (`naifId`, default -100900). */
 export const propagateSpk = (options) => required().propagateSpk(options);

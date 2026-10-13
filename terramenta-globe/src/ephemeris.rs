@@ -83,8 +83,9 @@ use crate::overlays::{
     AltitudeMode, FeaturePaint, HIGHLIGHT_COLOR, HIGHLIGHT_GROW_PX, OverlayAltitude, OverlaySource,
     OverlayStyle, OverlayStyleInfo, PICK_SLACK_PX, VectorMaterial, VectorMode,
 };
-use crate::time::SimClock;
 use crate::tiles::MAX_TILE_RADIUS;
+use crate::time::SimClock;
+use terramenta_solare::ccsds::Oem;
 
 /// The asset source OMM catalogues are fetched over.
 pub const EPHEMERIS_SOURCE: &str = "omm";
@@ -300,6 +301,8 @@ pub struct EphemerisRequest {
     /// Where the OMM JSON comes from. The same two kinds an overlay has, and
     /// for the same reasons — see [`crate::overlays`].
     pub source: OverlaySource,
+    /// In-memory OEM (e.g. a propagation); overrides `source`, no KVN round trip.
+    pub oem: Option<Arc<Oem>>,
     /// Marker and line colours and sizes. The fill is unused: an ephemeris has
     /// no rings in it.
     pub style: OverlayStyle,
@@ -321,6 +324,7 @@ impl EphemerisRequest {
             id: id.into(),
             label: String::new(),
             source: OverlaySource::Url(url.into()),
+            oem: None,
             style: default_style(),
             trail: TrailWindow::default(),
             trails: true,
@@ -789,7 +793,7 @@ impl EphemerisSettings {
             pending: None,
             // A URL is fetched on the next tick; text is already here, so it is
             // parsed now and the failure, if it is one, reported straight away.
-            wants_fetch: matches!(request.source, OverlaySource::Url(_)),
+            wants_fetch: request.oem.is_none() && matches!(request.source, OverlaySource::Url(_)),
             wants_restyle: false,
             wants_trails: true,
             since_trails: f32::MAX,
@@ -805,11 +809,15 @@ impl EphemerisSettings {
             source: request.source,
         };
         layer.set_refresh(request.refresh_seconds);
-        if let OverlaySource::Text(text) = &layer.source {
-            match omm::parse(text) {
-                Ok(parsed) => layer.pending = Some(parsed),
-                Err(error) => layer.status = EphemerisStatus::Failed(error.to_string()),
-            }
+        let parsed = match (&request.oem, &layer.source) {
+            (Some(oem), _) => Some(omm::from_oem(oem)),
+            (None, OverlaySource::Text(text)) => Some(omm::parse(text)),
+            (None, OverlaySource::Url(_)) => None,
+        };
+        match parsed {
+            Some(Ok(parsed)) => layer.pending = Some(parsed),
+            Some(Err(error)) => layer.status = EphemerisStatus::Failed(error.to_string()),
+            None => {}
         }
 
         self.layers.push(layer);

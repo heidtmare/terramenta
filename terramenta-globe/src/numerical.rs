@@ -602,10 +602,11 @@ impl Propagated {
         spk::write_spk(&segments, "TERRAMENTA").map_err(|e| e.to_string())
     }
 
-    pub fn info(&self) -> PropagatedInfo {
+    /// `oem`: [`Self::to_oem`], passed in so the caller can keep it.
+    pub fn info(&self, oem: &Oem) -> PropagatedInfo {
         let (first, last) = (self.states[0], self.states[self.states.len() - 1]);
         PropagatedInfo {
-            oem: self.to_oem().to_kvn(),
+            oem: oem.to_kvn(),
             samples: self.states.len(),
             final_mass_kg: last.mass_kg,
             start: TimeSystem::Utc.format(first.epoch),
@@ -639,13 +640,24 @@ mod tests {
         // 121 grid samples + pre-burn state at 00:30.
         assert_eq!(out.states.len(), 122);
         assert!(out.states[121].mass_kg < 500.0);
-        let text = out.info().oem;
+        let text = out.info(&out.to_oem()).oem;
         let back = Oem::from_kvn(&text).unwrap();
         let lens: Vec<_> = back.segments.iter().map(|s| s.states.len()).collect();
         assert_eq!(lens, [31, 91]);
         assert_eq!(back.segments[0].states[30].0, back.segments[1].states[0].0);
         let spk = out.to_spk().unwrap();
         assert_eq!(&spk[..8], b"DAF/SPK ");
+
+        // In-memory load matches the KVN path.
+        let direct = crate::omm::from_oem(&out.to_oem()).unwrap();
+        let parsed = crate::omm::parse(&text).unwrap();
+        let t = out.states[60].epoch.to_unix_seconds();
+        let (a, b) = (
+            direct.satellites[0].position_teme_km(t).unwrap(),
+            parsed.satellites[0].position_teme_km(t).unwrap(),
+        );
+        let d: f64 = (0..3).map(|i| (a[i] - b[i]).powi(2)).sum::<f64>().sqrt();
+        assert!(d < 1e-3, "{d} km");
     }
 
     #[test]
