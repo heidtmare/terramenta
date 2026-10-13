@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fetches ephemeris kernels and Earth orientation data into data/.
+# Fetches ephemeris kernels, Earth orientation, space weather and gravity data into data/.
 # Usage: ./scripts/fetch-data.sh
 set -euo pipefail
 
@@ -24,6 +24,8 @@ fetch de440s.bsp       "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/p
 fetch finals2000A.all  "https://datacenter.iers.org/data/9/finals2000A.all"
 # CelesTrak EOP (CSV): x, y, UT1−UTC, LOD, dψ, dε, dX, dY.
 fetch EOP-All.csv      "https://celestrak.org/SpaceData/EOP-All.csv"
+# CelesTrak space weather (CSV): Ap, F10.7; observed + daily/monthly prediction.
+fetch SW-All.csv       "https://celestrak.org/SpaceData/SW-All.csv"
 
 # EGM2008 (ICGEM, fully normalised, tide-free), truncated to degree 120 while streaming.
 # Degree ≤ 20 is embedded in the crate.

@@ -1106,7 +1106,12 @@ fn satellite_paths(
         // SGP4 diverges rather than failing, and the samples either side of a
         // divergence are not on any orbit — so the window is dropped whole
         // rather than drawn with a kink through the middle of it.
-        let position = DVec3::from_array(satellite.position_teme_km(at)?);
+        let position = match satellite.position_teme_km(at) {
+            Some(p) => DVec3::from_array(p),
+            // Tabulated: draw the covered part.
+            None if satellite.is_tabulated() => continue,
+            None => return None,
+        };
         let gmst = crate::frame::sidereal_radians(at);
 
         if step % keep_orbit.max(1) == 0 || step == steps {

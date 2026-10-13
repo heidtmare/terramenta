@@ -23,3 +23,5 @@ anise = { version = "=0.10.6", default-features = false }
 bytes = "1.6"
 # SGP4/SDP4 (TLE/OMM), pure Rust, wasm32-safe. Same version as terramenta-globe.
 sgp4 = "2.4.0"
+# NRLMSISE-00 (MIT). `drivers` embeds a 0.5 MB GFZ index record; space weather comes from `space_weather` instead.
+nrlmsise00 = { version = "0.2.0", default-features = false }

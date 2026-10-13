@@ -4,6 +4,7 @@
 //!   circular-orbit drag decay.
 //! - External: Moon geocentric state propagated 27 d against DE440s.
 //! - Consistency: RKF78 vs DOP853 under full LEO force model.
+//! - NRLMSISE-00 with CelesTrak space weather vs Harris–Priester decay.
 //!
 //! Kernel/EOP tests skip without `data/` (`scripts/fetch-data.sh`).
 
@@ -18,6 +19,7 @@ use terramenta_solare::eop::{EopTable, FinalsKind};
 use terramenta_solare::force::*;
 use terramenta_solare::orbit::OrbitalElements;
 use terramenta_solare::propagate::{BodyOrientation, EarthOrientation, Integrator, Method};
+use terramenta_solare::space_weather::SpaceWeather;
 use terramenta_solare::spice::{self, KernelEphemeris, naif};
 use terramenta_solare::{Ephemeris, Epoch, Propagator, SpacecraftState, StateVector};
 
@@ -295,6 +297,63 @@ fn full_force_leo_integrators_agree() {
     // Decayed, not escaped.
     let a = |s: &SpacecraftState| elements(s, GM_EARTH_KM3_S2).semi_major_axis_km;
     assert!(a(&out[0]) < a(&s0) + 10.0 && a(&out[0]) > a(&s0) - 20.0);
+}
+
+/// One day at 400 km during solar maximum (2024-03): MSIS decay exceeds mean-activity HP.
+#[test]
+fn nrlmsise_space_weather_decay() {
+    let Some(almanac) = kernels() else { return };
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/SW-All.csv");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        eprintln!("skipped: {} missing", path.display());
+        return;
+    };
+    let weather = Arc::new(SpaceWeather::from_celestrak_csv(&text).unwrap());
+    let d = weather.msis_drivers(epoch0());
+    eprintln!("2024-03-01 drivers: {d:?}");
+    assert!((100.0..300.0).contains(&d.f107_average));
+    let sun = KernelEphemeris::new(almanac.clone(), naif::SUN, naif::EARTH);
+    let s0 = SpacecraftState::new(
+        epoch0(),
+        StateVector::new(DVec3::new(6778.137, 0.0, 0.0), DVec3::new(0.0, 4.7, 6.0)),
+        850.0,
+    );
+    let decay = |atmosphere: Drag| {
+        let mut p = Propagator::new(Integrator::new(Method::Dop853))
+            .with_force(SphericalHarmonics::egm2008(4, 4))
+            .with_force(atmosphere)
+            .with_orientation(EarthOrientation::new(eop(), EarthModel::Iau2006Cio));
+        let t = Instant::now();
+        let s = p
+            .propagate(&s0, epoch0().advanced_by_seconds(86_400.0))
+            .unwrap();
+        eprintln!("{:?}", t.elapsed());
+        elements(&s, GM_EARTH_KM3_S2).semi_major_axis_km
+    };
+    let msis = decay(Drag::new(Nrlmsise00::new(weather)));
+    let hp = decay(Drag::new(HarrisPriester::new(sun)));
+    let a0 = elements(&s0, GM_EARTH_KM3_S2).semi_major_axis_km;
+    eprintln!("Δa 1 d: MSIS {:.3} km, HP {:.3} km", msis - a0, hp - a0);
+    assert!(msis < hp && hp < a0 + 5.0);
+}
+
+/// Analytic Moon vs DE440s over 20 years: direction and distance.
+#[test]
+fn analytic_moon_vs_de440s() {
+    let Some(almanac) = kernels() else { return };
+    let de = KernelEphemeris::new(almanac, naif::MOON, naif::EARTH);
+    let (mut worst_deg, mut worst_km) = (0.0f64, 0.0f64);
+    for k in 0..2000 {
+        let t = Epoch::J2000.advanced_by_seconds(k as f64 * 3.65 * 86_400.0);
+        let (a, b) = (
+            terramenta_solare::moon::position_km(t),
+            de.state_at(t).position_km,
+        );
+        worst_deg = worst_deg.max(a.angle_between(b).to_degrees());
+        worst_km = worst_km.max((a.length() - b.length()).abs());
+    }
+    eprintln!("analytic Moon: {worst_deg:.3}°, {worst_km:.0} km");
+    assert!(worst_deg < 0.2 && worst_km < 1500.0);
 }
 
 /// Degree 120 from `data/EGM2008_120.gfc`: gradient of the potential, and the embedded 20×20

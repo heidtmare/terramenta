@@ -1,6 +1,6 @@
 //! Generates `docs/earth_to_mars.svg` for this crate's README: an animated
 //! plot of a spacecraft followed the way
-//! [`terramenta_solare::spacecraft::Spacecraft::update`] actually flies one —
+//! [`terramenta_solare::spacecraft::PatchedConicSpacecraft::update`] actually flies one —
 //! a heliocentric cruise on a Lambert-solved transfer ellipse from Earth's
 //! position at departure, propagated day by day until it crosses into Mars'
 //! sphere of influence and is captured, with no jump in position at the
@@ -22,7 +22,7 @@ use glam::DVec3;
 
 use terramenta_solare::bodies::GM_SUN_KM3_S2;
 use terramenta_solare::lambert::{self, TransferDirection};
-use terramenta_solare::spacecraft::{Primary, Spacecraft};
+use terramenta_solare::spacecraft::{PatchedConicSpacecraft, Primary};
 use terramenta_solare::{Epoch, FrameId, FrameTree, StateVector, solar_system};
 
 const DAY_SECONDS: f64 = 86_400.0;
@@ -73,12 +73,12 @@ fn main() {
 
     // Heliocentric from the start — [`Primary::sun`] has nothing to escape
     // to ([`Primary::orbits`] is `None`), so the only hand-off
-    // [`Spacecraft::update`] can make from here is inward, into Mars'
+    // [`PatchedConicSpacecraft::update`] can make from here is inward, into Mars'
     // sphere of influence.
     let sun_with_mars_capture =
         Primary::sun(sun).with_capture_candidates(vec![Primary::mars(mars, sun)]);
 
-    let mut spacecraft = Spacecraft::spawn(
+    let mut spacecraft = PatchedConicSpacecraft::spawn(
         &mut tree,
         "Voyager",
         sun_with_mars_capture,
@@ -199,7 +199,7 @@ fn render_svg(
     let mut svg = String::new();
     let _ = writeln!(
         svg,
-        "<!--\n  Terramenta - a heliocentric Earth-to-Mars trip: Spacecraft::update\n  \
+        "<!--\n  Terramenta - a heliocentric Earth-to-Mars trip: PatchedConicSpacecraft::update\n  \
          followed on a Lambert-solved transfer ellipse from Earth's position at\n  \
          departure until it crosses into Mars' own sphere of influence and is\n  \
          captured, with no jump in position at the hand-off. Earth, Mars, and the\n  \

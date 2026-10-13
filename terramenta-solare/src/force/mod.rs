@@ -9,12 +9,14 @@ use crate::time::Epoch;
 
 pub mod drag;
 pub mod gravity;
+pub mod msis;
 pub mod relativity;
 pub mod srp;
 pub mod third_body;
 
 pub use drag::{Atmosphere, Drag, ExponentialAtmosphere, HarrisPriester};
 pub use gravity::{GravityField, PointMass, SphericalHarmonics};
+pub use msis::Nrlmsise00;
 pub use relativity::Relativity;
 pub use srp::{SolarRadiationPressure, shadow_fraction};
 pub use third_body::ThirdBody;

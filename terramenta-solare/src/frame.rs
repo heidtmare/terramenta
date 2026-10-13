@@ -167,7 +167,7 @@ impl Ephemeris for Relative {
 ///
 /// Cheap to copy and compare, which matters because a spacecraft holds one of
 /// these as *which body it currently orbits* and swaps it every tick it
-/// checks — see [`crate::spacecraft::Spacecraft`].
+/// checks — see [`crate::spacecraft::PatchedConicSpacecraft`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FrameId(u32);
 
@@ -267,7 +267,7 @@ impl FrameTree {
     /// time.
     ///
     /// This is the operation a spacecraft crossing a sphere of influence
-    /// needs: see [`crate::spacecraft::Spacecraft::retarget`], which computes
+    /// needs: see [`crate::spacecraft::PatchedConicSpacecraft::retarget`], which computes
     /// the state relative to the *new* parent before calling this, so the
     /// body's actual position in space — its state relative to the SSB —
     /// does not jump when the parent changes. `FrameTree` itself does not

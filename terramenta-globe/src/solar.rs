@@ -27,7 +27,7 @@
 
 use bevy::prelude::*;
 use terramenta_solare::bodies::ASTRONOMICAL_UNIT_KM;
-use terramenta_solare::spacecraft::{Primary, Spacecraft};
+use terramenta_solare::spacecraft::{PatchedConicSpacecraft, Primary};
 use terramenta_solare::{Epoch, FrameId, FrameTree, StateVector};
 
 use crate::frame::{FrameSet, ReferenceFrame};
@@ -87,14 +87,14 @@ pub struct FloatingOrigin {
 pub struct SolarBody(pub FrameId);
 
 /// A spacecraft on a two-body orbit around whichever body currently
-/// dominates it, per [`terramenta_solare::spacecraft::Spacecraft`].
+/// dominates it, per [`terramenta_solare::spacecraft::PatchedConicSpacecraft`].
 /// [`update_spacecraft`] advances it every tick and lets it reparent itself
 /// in [`SolarSystem`]'s tree the moment it crosses a sphere of influence;
 /// nothing else about the entity — its [`SolarBody`] frame id, in
 /// particular — ever changes, since the model's whole point is that the
 /// frame's *parent* moves while the spacecraft's own identity does not.
 #[derive(Component)]
-pub struct TrackedSpacecraft(pub Spacecraft);
+pub struct TrackedSpacecraft(pub PatchedConicSpacecraft);
 
 pub struct SolarSystemPlugin;
 
@@ -132,7 +132,8 @@ pub fn spawn_spacecraft(
     state: StateVector,
     epoch: Epoch,
 ) -> (SolarBody, TrackedSpacecraft, Transform) {
-    let spacecraft = Spacecraft::spawn(&mut solar_system.tree, name, primary, state, epoch);
+    let spacecraft =
+        PatchedConicSpacecraft::spawn(&mut solar_system.tree, name, primary, state, epoch);
     let frame = spacecraft.frame;
     (
         SolarBody(frame),
@@ -143,7 +144,7 @@ pub fn spawn_spacecraft(
 
 /// Advances every [`TrackedSpacecraft`] against the simulated clock and lets
 /// it swap its gravitational parent — the Bevy half of
-/// [`terramenta_solare::spacecraft::Spacecraft::update`], run once a tick so
+/// [`terramenta_solare::spacecraft::PatchedConicSpacecraft::update`], run once a tick so
 /// a spacecraft escaping Earth or being captured by Mars reparents on its
 /// own, entirely inside [`SolarSystem`]'s tree, without any other system
 /// having to name which body is "current".

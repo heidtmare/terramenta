@@ -331,7 +331,7 @@ fn search_missions(
 
 /// Spawns the spacecraft for every [`MissionState::Waiting`] mission whose
 /// planned departure date the simulated clock has reached — not before:
-/// [`terramenta_solare::spacecraft::Spacecraft::spawn`] anchors its orbital
+/// [`terramenta_solare::spacecraft::PatchedConicSpacecraft::spawn`] anchors its orbital
 /// elements to the given epoch, and evaluating them before that epoch lands
 /// on the hyperbola's incoming branch instead of its outgoing one, looking
 /// like an instant, spurious escape.
@@ -488,7 +488,7 @@ fn frame_name(mission_id: &str, launches: u32) -> &'static str {
 /// same transition [`MissionReport`]'s `"enroute"`/`"arrived"` status and
 /// [`crate::heliocentric`]'s drawing also read off
 /// [`crate::solar::update_spacecraft`] driving
-/// [`TrackedSpacecraft::update`](terramenta_solare::spacecraft::Spacecraft::update):
+/// [`TrackedSpacecraft::update`](terramenta_solare::spacecraft::PatchedConicSpacecraft::update):
 /// origin → Sun (escape), then Sun → destination (capture).
 fn log_mission_progress(
     mut settings: ResMut<MissionSettings>,

@@ -8,7 +8,7 @@
 //! position the low-precision way `terramenta-globe`'s sun and moon models
 //! do. [`orbit`] is the two-body mechanics everything propagates with.
 //! [`spacecraft`] is where the tree earns its keep: a
-//! [`spacecraft::Spacecraft`] orbits whichever body currently dominates it
+//! [`spacecraft::PatchedConicSpacecraft`] orbits whichever body currently dominates it
 //! and hands itself off to the next one out the moment that stops being
 //! true, without its actual position jumping.
 //!
@@ -34,11 +34,14 @@ pub mod interpolate;
 pub mod lambert;
 pub mod maneuver;
 pub mod mission;
+pub mod moon;
 pub mod orbit;
 pub mod planets;
 pub mod propagate;
+pub mod space_weather;
 pub mod spacecraft;
 pub mod spice;
+pub mod spk;
 pub mod sun;
 pub mod time;
 pub mod tle;
@@ -74,7 +77,7 @@ pub fn solar_system() -> FrameTree {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::spacecraft::{Primary, Spacecraft};
+    use crate::spacecraft::{PatchedConicSpacecraft, Primary};
     use glam::DVec3;
 
     #[test]
@@ -120,7 +123,7 @@ mod tests {
 
         let departure = StateVector::new(DVec3::new(7000.0, 0.0, 0.0), DVec3::new(0.0, 11.5, 2.0));
         let mut spacecraft =
-            Spacecraft::spawn(&mut tree, "Escaper", primary, departure, Epoch::J2000);
+            PatchedConicSpacecraft::spawn(&mut tree, "Escaper", primary, departure, Epoch::J2000);
 
         let mut epoch = Epoch::J2000;
         let mut escaped = false;
