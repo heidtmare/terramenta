@@ -485,6 +485,8 @@ const { oem } = globe.propagate({
   maneuvers: [{ epoch: "2024-03-01T01:00:00Z", deltaVKmS: [0.01, 0, 0], ispS: 300 }],
 });
 globe.addEphemeris("demo", { text: oem, leadingOrbits: 1 });
+globe.propagate({ ...sameOptions, kvn: false });     // no OEM text; layer via:
+globe.addPropagated("demo", { leadingOrbits: 1 });
 const spk = globe.propagateSpk({ ...sameOptions, naifId: -100900 }); // Uint8Array
 ```
 

@@ -1060,6 +1060,7 @@ pub fn propagation_environment() -> JsValue {
 ///   maneuvers: [{ epoch, deltaVKmS: [0.01, 0, 0], frame: "vnb", ispS: 300 }],
 ///   finiteBurns: [{ start, durationS: 120, thrustN: 20, ispS: 220,
 ///                   direction: [1, 0, 0], frame: "vnb" }],
+///   kvn: true,                               // false: no `oem` text; use addPropagated
 /// });
 /// addEphemeris("demo", { text: oem }); // or addPropagated("demo", {})
 /// ```
@@ -1071,7 +1072,7 @@ pub fn propagate(options: JsValue) -> Result<JsValue, JsError> {
     let request = propagation_request(&options)?;
     let out = crate::numerical::propagate(&request).map_err(|e| JsError::new(&e))?;
     let oem = out.to_oem();
-    let info = out.info(&oem);
+    let info = out.info(request.kvn.then_some(&oem));
     PROPAGATED.with_borrow_mut(|p| *p = Some(Arc::new(oem)));
     Ok(to_js(&info))
 }

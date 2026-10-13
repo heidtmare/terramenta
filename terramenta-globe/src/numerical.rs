@@ -136,6 +136,13 @@ pub struct PropagationRequest {
     pub maneuvers: Vec<ManeuverOptions>,
     #[serde(default)]
     pub finite_burns: Vec<FiniteBurnOptions>,
+    /// Return OEM KVN text. `false` skips formatting and the JS copy (`addPropagated` only).
+    #[serde(default = "default_kvn")]
+    pub kvn: bool,
+}
+
+fn default_kvn() -> bool {
+    true
 }
 
 fn default_step() -> f64 {
@@ -286,7 +293,9 @@ pub struct Propagated {
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct PropagatedInfo {
-    pub oem: String,
+    /// KVN; absent when `kvn: false`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oem: Option<String>,
     pub samples: usize,
     pub final_mass_kg: f64,
     pub start: String,
@@ -603,10 +612,11 @@ impl Propagated {
     }
 
     /// `oem`: [`Self::to_oem`], passed in so the caller can keep it.
-    pub fn info(&self, oem: &Oem) -> PropagatedInfo {
+    /// `oem`: KVN source; `None` omits the text.
+    pub fn info(&self, oem: Option<&Oem>) -> PropagatedInfo {
         let (first, last) = (self.states[0], self.states[self.states.len() - 1]);
         PropagatedInfo {
-            oem: oem.to_kvn(),
+            oem: oem.map(Oem::to_kvn),
             samples: self.states.len(),
             final_mass_kg: last.mass_kg,
             start: TimeSystem::Utc.format(first.epoch),
@@ -640,7 +650,7 @@ mod tests {
         // 121 grid samples + pre-burn state at 00:30.
         assert_eq!(out.states.len(), 122);
         assert!(out.states[121].mass_kg < 500.0);
-        let text = out.info(&out.to_oem()).oem;
+        let text = out.info(Some(&out.to_oem())).oem.unwrap();
         let back = Oem::from_kvn(&text).unwrap();
         let lens: Vec<_> = back.segments.iter().map(|s| s.states.len()).collect();
         assert_eq!(lens, [31, 91]);
@@ -695,6 +705,22 @@ mod tests {
         assert_eq!(out.states.len(), 11);
         let r = out.states[10].position_km.length();
         assert!((6600.0..10_000.0).contains(&r), "{r}");
+    }
+
+    #[test]
+    fn kvn_false_omits_oem_text() {
+        let req = request(
+            r#"{
+                "initial": { "epoch": "2024-03-01T00:00:00", "positionKm": [7000,0,0], "velocityKmS": [0,7.5,0] },
+                "durationS": 600, "forces": { "gravity": [2, 0], "thirdBody": false, "srp": false, "drag": "none" },
+                "kvn": false
+            }"#,
+        );
+        assert!(!req.kvn);
+        let out = propagate(&req).unwrap();
+        let info = serde_json::to_value(out.info(req.kvn.then_some(&out.to_oem()))).unwrap();
+        assert!(info.get("oem").is_none());
+        assert_eq!(info["samples"], 11);
     }
 
     #[test]
