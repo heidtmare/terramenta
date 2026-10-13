@@ -244,7 +244,7 @@ fn moon_matches_de440s() {
         .with_orientation(EarthOrientation::new(eop(), EarthModel::Iau2006Cio));
     // The harmonic model includes its own GM·r/r³ term; cancel it so the central term is μ_E + μ_M.
     p = p.with_force(PointMass {
-        gm_km3_s2: -GravityField::egm2008(2).gm_km3_s2,
+        gm_km3_s2: -EGM2008_GM_KM3_S2,
     });
     let mut worst: f64 = 0.0;
     p.propagate_with(

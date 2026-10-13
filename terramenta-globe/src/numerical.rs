@@ -13,8 +13,8 @@ use terramenta_solare::ccsds::{Oem, OemMetadata, OemSegment, TimeSystem};
 use terramenta_solare::earth::EarthModel;
 use terramenta_solare::eop::{EopTable, FinalsKind};
 use terramenta_solare::force::{
-    Drag, ExponentialAtmosphere, GravityField, HarrisPriester, Nrlmsise00, PointMass, Relativity,
-    SolarRadiationPressure, SphericalHarmonics, ThirdBody, Vehicle,
+    Drag, EGM2008_GM_KM3_S2, ExponentialAtmosphere, HarrisPriester, Nrlmsise00, PointMass,
+    Relativity, SolarRadiationPressure, SphericalHarmonics, ThirdBody, Vehicle,
 };
 use terramenta_solare::frame::Relative;
 use terramenta_solare::interpolate::Interpolation;
@@ -378,7 +378,7 @@ fn propagator(req: &PropagationRequest, env: &Environment) -> Result<Propagator,
         p.with_force(SphericalHarmonics::egm2008(degree, order))
     } else {
         p.with_force(PointMass {
-            gm_km3_s2: GravityField::egm2008(2).gm_km3_s2,
+            gm_km3_s2: EGM2008_GM_KM3_S2,
         })
     };
     let (sun, moon) = sun_and_moon(env);
@@ -410,7 +410,7 @@ fn propagator(req: &PropagationRequest, env: &Environment) -> Result<Propagator,
     };
     if f.relativity {
         p = p.with_force(Relativity {
-            gm_km3_s2: GravityField::egm2008(2).gm_km3_s2,
+            gm_km3_s2: EGM2008_GM_KM3_S2,
         });
     }
     for m in &req.maneuvers {
