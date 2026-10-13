@@ -62,13 +62,13 @@ pub use crate::frame::FrameMode;
 pub use crate::view::ViewMode;
 // `SetHeliocentricAnchor` takes one of these, on the same terms as `ViewMode`
 // above.
-pub use crate::heliocentric::HeliocentricAnchor;
 pub use crate::geo::LatLon;
 pub use crate::gnc::{
     EARTH_RATE_RAD_S, FocusState, GncState, MAX_GRATICULE_STEP, MAX_TRACK_ORBITS,
     MIN_GRATICULE_STEP, MIN_TRACK_ORBITS, SatelliteFocus, ecef_to_eci_quat, eci_to_ecef_dcm,
     eci_to_ecef_quat, velocity_eci_to_ecef,
 };
+pub use crate::heliocentric::HeliocentricAnchor;
 pub use crate::mission::{MissionInfo, MissionRequest};
 pub use crate::overlays::{
     AltitudeMode, MIN_REFRESH_SECONDS, OverlayAltitude, OverlayInfo, OverlayRequest, OverlaySource,
@@ -851,10 +851,7 @@ fn apply_commands(
         mut ephemerides,
         mut missions,
     } = sources;
-    let ClockAndSun {
-        mut clock,
-        mut sun,
-    } = clock_and_sun;
+    let ClockAndSun { mut clock, mut sun } = clock_and_sun;
 
     let commands = take_queued();
     if commands.is_empty() {

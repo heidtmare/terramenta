@@ -38,17 +38,31 @@ impl GiantPlanet {
     /// This planet's own circularised heliocentric position and velocity, in
     /// the ecliptic plane.
     fn heliocentric_state(&self, epoch: Epoch) -> StateVector {
-        let angular_rate_rad_per_day = std::f64::consts::TAU / self.orbital_period_days;
-        let angle_rad =
-            self.mean_longitude_at_j2000_deg.to_radians() + angular_rate_rad_per_day * epoch.days();
-        let radius_km = self.semi_major_axis_au * AU_KM;
-        let angular_rate_rad_per_s = angular_rate_rad_per_day / SECONDS_PER_DAY;
-
-        let (sin_a, cos_a) = angle_rad.sin_cos();
+        let (sin_a, cos_a) = self.angle_rad(epoch).sin_cos();
+        let angular_rate_rad_per_s = self.angular_rate_rad_per_day() / SECONDS_PER_DAY;
         StateVector::new(
-            radius_km * DVec3::new(cos_a, sin_a, 0.0),
-            radius_km * angular_rate_rad_per_s * DVec3::new(-sin_a, cos_a, 0.0),
+            self.radius_km() * DVec3::new(cos_a, sin_a, 0.0),
+            self.radius_km() * angular_rate_rad_per_s * DVec3::new(-sin_a, cos_a, 0.0),
         )
+    }
+
+    /// Position half of [`Self::heliocentric_state`].
+    fn heliocentric_position(&self, epoch: Epoch) -> DVec3 {
+        let (sin_a, cos_a) = self.angle_rad(epoch).sin_cos();
+        self.radius_km() * DVec3::new(cos_a, sin_a, 0.0)
+    }
+
+    fn angular_rate_rad_per_day(&self) -> f64 {
+        std::f64::consts::TAU / self.orbital_period_days
+    }
+
+    fn angle_rad(&self, epoch: Epoch) -> f64 {
+        self.mean_longitude_at_j2000_deg.to_radians()
+            + self.angular_rate_rad_per_day() * epoch.days()
+    }
+
+    fn radius_km(&self) -> f64 {
+        self.semi_major_axis_au * AU_KM
     }
 }
 
@@ -69,16 +83,6 @@ const SATURN: GiantPlanet = GiantPlanet {
     orbital_period_days: 10_759.22,
     gm_ratio_to_sun: 1.0 / 3_497.898,
 };
-
-impl GiantPlanet {
-    /// Position half of [`Self::heliocentric_state`].
-    fn heliocentric_position(&self, epoch: Epoch) -> DVec3 {
-        let angle_rad = self.mean_longitude_at_j2000_deg.to_radians()
-            + std::f64::consts::TAU / self.orbital_period_days * epoch.days();
-        let (sin_a, cos_a) = angle_rad.sin_cos();
-        self.semi_major_axis_au * AU_KM * DVec3::new(cos_a, sin_a, 0.0)
-    }
-}
 
 /// Position half of [`ssb_relative_state`].
 pub fn ssb_relative_position(epoch: Epoch) -> DVec3 {

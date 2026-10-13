@@ -16,11 +16,11 @@
 //! SSB's direct children per [`crate::frame`], without the Sun as an
 //! intermediate hop.
 
+use glam::DVec3;
+
 use crate::ecliptic::to_equatorial;
 use crate::frame::{Ephemeris, StateVector};
 use crate::orbit::OrbitalElements;
-use glam::DVec3;
-
 use crate::sun::{ssb_relative_position, ssb_relative_state};
 use crate::time::Epoch;
 

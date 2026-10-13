@@ -241,8 +241,7 @@ impl HeliocentricCamera {
     fn transform(&self, anchor: Vec3) -> Transform {
         let direction =
             Quat::from_rotation_y(self.yaw) * Quat::from_rotation_x(-self.pitch) * Vec3::Z;
-        Transform::from_translation(anchor + direction * self.distance)
-            .looking_at(anchor, Vec3::Y)
+        Transform::from_translation(anchor + direction * self.distance).looking_at(anchor, Vec3::Y)
     }
 }
 

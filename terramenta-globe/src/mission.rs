@@ -178,7 +178,9 @@ impl MissionSettings {
     /// The id of the first mission still tracked, in the order they were
     /// added — what the heliocentric view's follow key locks onto.
     pub(crate) fn first_id(&self) -> Option<&str> {
-        self.missions.first().map(|mission| mission.request.id.as_str())
+        self.missions
+            .first()
+            .map(|mission| mission.request.id.as_str())
     }
 
     /// Mission `id`'s spacecraft frame, if it is launched right now — what
@@ -278,8 +280,8 @@ fn search_missions(
         let search_start = Epoch::from_unix_seconds(clock.unix_seconds);
         let departure_end =
             search_start.advanced_by_seconds(mission.request.departure_search_days * 86_400.0);
-        let arrival_start = search_start
-            .advanced_by_seconds(mission.request.arrival_search_start_days * 86_400.0);
+        let arrival_start =
+            search_start.advanced_by_seconds(mission.request.arrival_search_start_days * 86_400.0);
         let arrival_end =
             search_start.advanced_by_seconds(mission.request.arrival_search_end_days * 86_400.0);
 
@@ -620,7 +622,12 @@ pub struct MissionPhase {
 }
 
 impl MissionPhase {
-    fn new(id: &'static str, label: String, unix_seconds: Option<f64>, sun_unix_seconds: f64) -> Self {
+    fn new(
+        id: &'static str,
+        label: String,
+        unix_seconds: Option<f64>,
+        sun_unix_seconds: f64,
+    ) -> Self {
         Self {
             id,
             label,
@@ -707,8 +714,11 @@ impl Mission {
         sun_unix_seconds: f64,
     ) -> MissionInfo {
         match &self.state {
-            MissionState::Searching => MissionInfo::new(&self.request, "searching")
-                .with_phases(None, None, sun_unix_seconds),
+            MissionState::Searching => MissionInfo::new(&self.request, "searching").with_phases(
+                None,
+                None,
+                sun_unix_seconds,
+            ),
             MissionState::Waiting { plan, .. } => MissionInfo::new(&self.request, "waiting")
                 .with_plan(plan)
                 .with_phases(None, None, sun_unix_seconds),
@@ -728,13 +738,20 @@ impl Mission {
                 let mut info =
                     MissionInfo::new(&self.request, if arrived { "arrived" } else { "enroute" })
                         .with_plan(plan)
-                        .with_phases(*escape_unix_seconds, *capture_unix_seconds, sun_unix_seconds);
+                        .with_phases(
+                            *escape_unix_seconds,
+                            *capture_unix_seconds,
+                            sun_unix_seconds,
+                        );
                 info.orbiting = orbiting.map(|frame| solar_system.tree().name(frame).to_string());
                 info
             }
             MissionState::Failed { reason } => {
-                let mut info = MissionInfo::new(&self.request, "failed")
-                    .with_phases(None, None, sun_unix_seconds);
+                let mut info = MissionInfo::new(&self.request, "failed").with_phases(
+                    None,
+                    None,
+                    sun_unix_seconds,
+                );
                 info.reason = Some(reason);
                 info
             }
@@ -803,7 +820,10 @@ mod tests {
             let e = Epoch::from_utc(2026, 3, 1, h, m, 0.0);
             assert_eq!(format_epoch(e), "2026-03-01", "{h:02}:{m:02}");
         }
-        assert_eq!(format_epoch(Epoch::from_utc(1999, 12, 31, 6, 0, 0.0)), "1999-12-31");
+        assert_eq!(
+            format_epoch(Epoch::from_utc(1999, 12, 31, 6, 0, 0.0)),
+            "1999-12-31"
+        );
     }
 
     #[test]
@@ -892,7 +912,10 @@ mod tests {
             ..
         } = &mission.state
         else {
-            panic!("expected the mission to still be Launched, got {:?}", mission.state);
+            panic!(
+                "expected the mission to still be Launched, got {:?}",
+                mission.state
+            );
         };
         let escape_unix_seconds = escape_unix_seconds.expect("escape was observed above");
         let capture_unix_seconds = capture_unix_seconds.expect("capture was observed above");
@@ -944,8 +967,12 @@ mod tests {
                 Some(MissionState::Launched { .. })
             )
         };
-        let spacecraft_count =
-            |app: &mut App| app.world_mut().query::<&TrackedSpacecraft>().iter(app.world()).count();
+        let spacecraft_count = |app: &mut App| {
+            app.world_mut()
+                .query::<&TrackedSpacecraft>()
+                .iter(app.world())
+                .count()
+        };
 
         // Run forward past the known-good departure (~53 days in) until launched.
         for _ in 0..(60 * 24) {
