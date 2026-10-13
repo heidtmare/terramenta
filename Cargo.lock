@@ -5151,6 +5151,7 @@ dependencies = [
  "bytes",
  "glam 0.32.1",
  "hifitime",
+ "sgp4",
  "sofars",
 ]
 

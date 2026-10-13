@@ -104,7 +104,7 @@ impl Satellite {
         let minutes = (unix_seconds - self.epoch_unix_seconds) / 60.0;
         let prediction = self
             .constants
-            .propagate(sgp4::MinutesSinceEpoch(minutes))
+            .propagate_afspc_compatibility_mode(sgp4::MinutesSinceEpoch(minutes))
             .ok()?;
         prediction
             .position
@@ -222,7 +222,8 @@ fn satellite(elements: &sgp4::Elements) -> Option<Satellite> {
     if !elements.mean_motion.is_finite() || elements.mean_motion <= 0.0 {
         return None;
     }
-    let constants = sgp4::Constants::from_elements(elements).ok()?;
+    // AFSPC mode: WGS-72, as catalogue elements are fitted (Vallado AIAA 2006-6753).
+    let constants = sgp4::Constants::from_elements_afspc_compatibility_mode(elements).ok()?;
 
     Some(Satellite {
         norad_id: elements.norad_id,

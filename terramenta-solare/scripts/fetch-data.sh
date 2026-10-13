@@ -24,3 +24,17 @@ fetch de440s.bsp       "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/p
 fetch finals2000A.all  "https://datacenter.iers.org/data/9/finals2000A.all"
 # CelesTrak EOP (CSV): x, y, UT1−UTC, LOD, dψ, dε, dX, dY.
 fetch EOP-All.csv      "https://celestrak.org/SpaceData/EOP-All.csv"
+
+# EGM2008 (ICGEM, fully normalised, tide-free), truncated to degree 120 while streaming.
+# Degree ≤ 20 is embedded in the crate.
+EGM_URL="https://icgem.gfz-potsdam.de/getmodel/gfc/c50128797a9cb62e936337c890e4425f03f0461d7329b09a8cc8561504465340/EGM2008.gfc"
+if [[ -s "$DEST/EGM2008_120.gfc" ]]; then
+  echo "  have  EGM2008_120.gfc"
+else
+  echo "  get   EGM2008_120.gfc"
+  # awk exits early; curl's write failure is expected.
+  { curl -fsL --retry 3 "$EGM_URL" || true; } \
+    | awk '$1 == "gfc" && $2 > 120 { exit } { print }' > "$DEST/EGM2008_120.gfc.part"
+  grep -Eq '^gfc +120 +120 ' "$DEST/EGM2008_120.gfc.part"
+  mv "$DEST/EGM2008_120.gfc.part" "$DEST/EGM2008_120.gfc"
+fi

@@ -2,7 +2,8 @@
 
 Solar-system astrodynamics in pure Rust (`f64`, [`glam`](https://docs.rs/glam)
 `DVec3`): a reference-frame tree rooted at the Solar System Barycentre, two-body
-propagation, a Lambert solver, transfer planning, and a patched-conics
+and numerical (Cowell) propagation with force models and maneuvers, SGP4, CCSDS
+OEM/OPM I/O, a Lambert solver, transfer planning, and a patched-conics
 spacecraft. Used by [`terramenta-globe`](../terramenta-globe/) (heliocentric
 view and flown missions) and [`terramenta-charta`](../terramenta-charta/)
 (porkchop plots). No WebAssembly binding of its own; callers link it as a Rust
@@ -21,7 +22,7 @@ this example).*
 
 | Module | Contents |
 | --- | --- |
-| [`frame`](src/frame.rs) | `FrameTree`, `FrameId`, `StateVector`, `Ephemeris`. Each node reports state relative to its parent; `state_of_relative_to` walks to the nearest common ancestor and subtracts there, avoiding precision loss from a single distant origin. |
+| [`frame`](src/frame.rs) | `FrameTree`, `FrameId`, `StateVector`, `Ephemeris`, `Relative` (one tree node relative to another, as an `Ephemeris`). Each node reports state relative to its parent; `state_of_relative_to` walks to the nearest common ancestor and subtracts there, avoiding precision loss from a single distant origin. |
 | [`sun`](src/sun.rs) | Sun position relative to the SSB. |
 | [`planets`](src/planets.rs) | Earth and Mars from JPL low-precision mean elements at J2000 plus rates (valid 1800–2050). |
 | [`ecliptic`](src/ecliptic.rs) | Ecliptic → equatorial rotation applied to published planetary elements. |
@@ -30,6 +31,12 @@ this example).*
 | [`eop`](src/eop.rs) | `EopTable`: IERS `finals*.all` and CelesTrak `EOP-All.csv` parsers; linear interpolation, leap-second-aware UT1−UTC. |
 | [`earth`](src/earth.rs) | GCRF/TEME ↔ ITRF (`EarthModel::{Iau76Fk5, Iau2006Cio}`) via [`sofars`](https://docs.rs/sofars); GMST82, GAST, ERA; WGS-84 geodetic ↔ ECEF. |
 | [`spice`](src/spice.rs) | `KernelEphemeris`: SPK states (DE440/DE440s) via [`anise`](https://docs.rs/anise), with optional low-precision fallback. `solar_system_from_kernels`: SSB, Sun, planets, Moon. |
+| [`propagate`](src/propagate/mod.rs) | `Propagator`: Cowell on `[r, v, m]`, impulsive maneuvers, sampled output, forward/backward. `Integrator`: RK4, RKF7(8), DOP853. `BodyOrientation` / `EarthOrientation` (cached, Earth rotation applied exactly between refreshes). |
+| [`force`](src/force/mod.rs) | `ForceModel` trait. `SphericalHarmonics` (normalised Cunningham V/W, EGM2008 20×20 embedded, ICGEM `.gfc` loader), `PointMass`, `ThirdBody` (Battin f(q)), `Drag` with `ExponentialAtmosphere` (Vallado) / `HarrisPriester`, `SolarRadiationPressure` (conical shadow), `Relativity` (Schwarzschild). |
+| [`maneuver`](src/maneuver.rs) | `ImpulsiveManeuver` (rocket-equation mass), `FiniteBurn` (thrust, Isp, ṁ; cut-off at dry mass), `LocalFrame::{Inertial, Vnb, Rsw, Lvlh}`. |
+| [`interpolate`](src/interpolate.rs) | `SampledEphemeris`: Lagrange / Hermite interpolation of tabulated states; implements `Ephemeris`. |
+| [`ccsds`](src/ccsds.rs) | OEM and OPM (CCSDS 502.0-B-3, KVN) read/write. UTC/TAI/TT/TDB/GPS; UTC leap seconds as `:60`. |
+| [`tle`](src/tle.rs) | `Sgp4Ephemeris`: TLE/OMM via [`sgp4`](https://docs.rs/sgp4) (AFSPC/WGS-72 mode), TEME or GCRF output. |
 | [`orbit`](src/orbit.rs) | `OrbitalElements`: state vector ↔ classical elements, two-body propagation (`state_at`). |
 | [`lambert`](src/lambert.rs) | `solve`: Vallado universal-variable Lambert solver with Stumpff functions; `TransferDirection::{Prograde, Retrograde}`. |
 | [`mission`](src/mission.rs) | `plan_transfer` (dated body-to-body Δv against the ephemeris), `find_best_transfer_window` (grid search for minimum total Δv), `hohmann_transfer` (coplanar circular baseline). |
@@ -44,7 +51,7 @@ Mercury–Pluto (barycentres) and the Moon (under Earth), from loaded kernels.
 ## Data
 
 ```sh
-./scripts/fetch-data.sh   # data/de440s.bsp, data/finals2000A.all, data/EOP-All.csv
+./scripts/fetch-data.sh   # data/de440s.bsp, finals2000A.all, EOP-All.csv, EGM2008_120.gfc
 ```
 
 Not committed. Kernel- and EOP-dependent tests skip when files are absent.
@@ -61,9 +68,54 @@ Not committed. Kernel- and EOP-dependent tests skip when files are absent.
 | GMST82 | Vallado Ex. 3-5 | < 1e-6° |
 | DE440s: Earth, Mars, Sun, Jupiter / SSB; Moon / Earth | JPL Horizons (DE441), 2000 and 2026 | ≤ 5 cm; Moon ≤ 2.3 m |
 | EOP files at 2004-04-06 | Vallado Ex. 3-15 | ≤ 0.5 mas, 0.1 ms |
+| SGP4 case 00005, 0 and 360 min | Vallado AIAA 2006-6753 | < 1 mm |
+
+[`tests/propagation.rs`](tests/propagation.rs):
+
+| Case | Reference | Residual |
+| --- | --- | --- |
+| Moon, 27 d: Earth+Moon GM, J2, Sun, Venus–Saturn | DE440s | 0.21 km |
+| Jacobi integral, 20×20, uniformly rotating, 1 d | Conserved | 8e-13 |
+| Ω̇, ω̇ under J2, 10 d | First-order secular theory | 0.5 %, 0.7 % |
+| Δa, constant-ρ drag, 10 revs | −2πρBa² per rev | 2e-5 |
+| 120×120 acceleration | 4th-order ∇U | < 1e-7 |
+| LEO 1 d, 20×20 + Sun/Moon + SRP + HP drag + GR | RKF78 vs DOP853 | 0.5 m |
+
+Unit tests also check potentials against an independent Legendre evaluation (1e-13),
+Butcher-tableau order conditions, finite-burn mass/Δv against the rocket equation, and
+OEM/OPM round trips across the 2016 leap second.
+
+Timing (release build, development machine): 1 d full-force LEO 36 ms (DOP853); 70×70 gravity 16 µs/eval.
 
 Low-precision series vs DE440, 1900–2050 (max |Δr|): Earth/Sun 1.3e4 km,
 Mars/Sun 1.0e5 km, Sun/SSB 4.3e5 km.
+
+## Numerical propagation
+
+```rust
+use std::sync::Arc;
+use terramenta_solare::{bodies, force::*};
+use terramenta_solare::propagate::{EarthOrientation, Integrator, Method};
+use terramenta_solare::spice::{KernelEphemeris, naif};
+use terramenta_solare::{Epoch, Propagator, SpacecraftState};
+
+let sun = KernelEphemeris::new(almanac.clone(), naif::SUN, naif::EARTH);
+let moon = KernelEphemeris::new(almanac.clone(), naif::MOON, naif::EARTH);
+let mut p = Propagator::new(Integrator::new(Method::Dop853))
+    .with_force(SphericalHarmonics::egm2008(20, 20))
+    .with_force(ThirdBody::new(bodies::GM_SUN_KM3_S2, sun.clone()))
+    .with_force(ThirdBody::new(bodies::GM_MOON_KM3_S2, moon))
+    .with_force(SolarRadiationPressure::new(sun.clone(), 6378.137))
+    .with_force(Drag::new(HarrisPriester::new(sun)))
+    .with_orientation(EarthOrientation::new(Some(eop), Default::default()));
+let ephemeris = p.ephemeris(&state, state.epoch.advanced_by_seconds(86_400.0), 60.0)?;
+```
+
+States are central-body-centred, ICRF axes (GCRF for Earth). `SphericalHarmonics`
+includes the central term; `Drag` and harmonics of degree ≥ 2 require an orientation.
+Impulsive maneuvers fire on `[start, end)`; propagating backward across one undoes it.
+Finite burns switch on the midpoint of each integration segment, so steps never
+straddle ignition or cut-off.
 
 ## Patched conics
 

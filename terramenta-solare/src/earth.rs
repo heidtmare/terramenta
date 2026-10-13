@@ -60,6 +60,14 @@ impl TerrestrialTransform {
         StateVector::new(q_t * r_tirs, q_t * v_tirs)
     }
 
+    /// Rotates by `ω·dt` about the TIRS pole, holding precession–nutation and polar motion.
+    pub fn advanced_by(&self, dt_s: f64) -> Self {
+        Self {
+            inertial_to_tirs: r3(self.omega_rad_s * dt_s) * self.inertial_to_tirs,
+            ..*self
+        }
+    }
+
     fn omega(&self) -> DVec3 {
         DVec3::new(0.0, 0.0, self.omega_rad_s)
     }
