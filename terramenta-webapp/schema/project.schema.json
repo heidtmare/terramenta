@@ -16,7 +16,7 @@
       "properties": {
         "panel": { "enum": ["full", "flight"] },
         "tab": {
-          "enum": ["project", "imagery", "data", "spacecraft", "timeline", "other", "mission"]
+          "enum": ["project", "imagery", "data", "spacecraft", "timeline", "reports", "other", "mission"]
         },
         "readout": { "type": "boolean" },
         "collapsed": { "type": "boolean" }
@@ -134,7 +134,8 @@
     },
     "keyboard": { "type": "boolean" },
     "director": { "$ref": "#/$defs/director" },
-    "timeline": { "$ref": "#/$defs/timeline" }
+    "timeline": { "$ref": "#/$defs/timeline" },
+    "analysis": { "$ref": "#/$defs/analysis" }
   },
   "$defs": {
     "color": {
@@ -227,6 +228,58 @@
         "arrivalSearchEndDays": { "type": "number", "exclusiveMinimum": 0 },
         "searchSteps": { "type": "integer", "minimum": 1 },
         "parkingAltitudeKm": { "type": "number", "minimum": 0 }
+      }
+    },
+    "analysis": {
+      "description": "Saved plots (Reports tab) and porkchop studies (Mission tab); see src/analysis.js.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "plots": { "type": "array", "items": { "$ref": "#/$defs/plot" } },
+        "porkchops": { "type": "array", "items": { "$ref": "#/$defs/porkchop" } }
+      }
+    },
+    "plot": {
+      "description": "One quantity against time for one or more spacecraft.",
+      "type": "object",
+      "required": ["id", "quantity", "spacecraft"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "label": { "type": "string" },
+        "quantity": {
+          "enum": [
+            "altitudeKm", "radiusKm", "speedKmS", "smaKm", "eccentricity", "inclinationDeg", "raanDeg",
+            "argPerigeeDeg", "trueAnomalyDeg", "periodMin", "perigeeAltKm", "apogeeAltKm"
+          ],
+          "description": "src/reports.js QUANTITIES; osculating two-body about Earth, altitudes over the equatorial radius."
+        },
+        "spacecraft": { "type": "array", "minItems": 1, "items": { "type": "string" }, "description": "Spacecraft ids." }
+      }
+    },
+    "porkchop": {
+      "description": "Lambert total-Δv grid between two bodies.",
+      "type": "object",
+      "required": ["id", "origin", "destination", "departure", "arrival"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "label": { "type": "string" },
+        "origin": { "enum": ["Sun", "Earth", "Mars"] },
+        "destination": { "enum": ["Sun", "Earth", "Mars"] },
+        "departure": { "$ref": "#/$defs/dateRange" },
+        "arrival": { "$ref": "#/$defs/dateRange" },
+        "retrograde": { "type": "boolean", "description": "Long-way transfer; default false." },
+        "steps": { "type": "integer", "minimum": 2, "maximum": 101, "description": "Grid steps per axis; default 33." }
+      }
+    },
+    "dateRange": {
+      "type": "object",
+      "required": ["start", "end"],
+      "additionalProperties": false,
+      "properties": {
+        "start": { "type": "string", "format": "date-time", "title": "an ISO 8601 date" },
+        "end": { "type": "string", "format": "date-time", "title": "an ISO 8601 date" }
       }
     },
     "timeline": {

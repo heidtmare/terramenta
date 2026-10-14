@@ -99,3 +99,10 @@ export function tabs(groups) {
   select(groups[0].id);
   return { strip, panes, select };
 }
+
+/** Saves `blob` as `name` through a temporary link. */
+export function download(name, blob) {
+  const link = el("a", { href: URL.createObjectURL(blob), download: name });
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 0);
+}

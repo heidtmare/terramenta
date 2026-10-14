@@ -1,0 +1,57 @@
+{
+  "$schema": "../schema/project.schema.json",
+  "terramenta": 2,
+  "name": "Mars launch windows",
+  "description": "Earth → Mars porkchop studies for the 2026 and 2028 windows; launch a mission from the Mission tab and watch it in the heliocentric view.",
+  "ui": {
+    "tab": "mission"
+  },
+  "view": "heliocentric",
+  "imagery": {
+    "enabled": false
+  },
+  "vectorTiles": {
+    "enabled": false
+  },
+  "overlays": {
+    "enabled": false
+  },
+  "ephemerides": {
+    "enabled": false
+  },
+  "placemarks": {
+    "enabled": false
+  },
+  "analysis": {
+    "porkchops": [
+      {
+        "id": "mars-2026",
+        "label": "Earth → Mars 2026",
+        "origin": "Earth",
+        "destination": "Mars",
+        "departure": {
+          "start": "2026-08-01",
+          "end": "2027-01-31"
+        },
+        "arrival": {
+          "start": "2027-05-01",
+          "end": "2028-03-01"
+        }
+      },
+      {
+        "id": "mars-2028",
+        "label": "Earth → Mars 2028",
+        "origin": "Earth",
+        "destination": "Mars",
+        "departure": {
+          "start": "2028-09-01",
+          "end": "2029-03-01"
+        },
+        "arrival": {
+          "start": "2029-06-01",
+          "end": "2030-03-01"
+        }
+      }
+    ]
+  }
+}

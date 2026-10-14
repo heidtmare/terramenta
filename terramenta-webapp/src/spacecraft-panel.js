@@ -12,7 +12,7 @@
 
 import * as environment from "./environment.js";
 import * as globe from "./globe.js";
-import { el, row, section } from "./dom.js";
+import { download, el, row, section } from "./dom.js";
 import { clock, utcSeconds } from "./format.js";
 import { PROJECT_VERSION, layerDisplay, parseProject } from "./project.js";
 import { button, toggle } from "./widgets.js";
@@ -244,12 +244,6 @@ function exportSpk(id, propagation) {
   } catch (error) {
     alert(`SPK export failed: ${error.message ?? error}`);
   }
-}
-
-function download(name, blob) {
-  const link = el("a", { href: URL.createObjectURL(blob), download: name });
-  link.click();
-  setTimeout(() => URL.revokeObjectURL(link.href), 0);
 }
 
 // --- Editor ------------------------------------------------------------------------

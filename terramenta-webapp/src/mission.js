@@ -8,9 +8,10 @@
  * cheapest date to arrive are a joint choice, not two separate ones. It owns
  * its own state entirely: there is no globe snapshot a porkchop plot could be
  * read off, since what it draws depends on nothing the globe is currently
- * doing. It computes once, on request, into an inline SVG built by hand —
- * `dom.js`'s `el()` creates HTML elements, which is not what an `<svg>`
- * needs, so this file has its own tiny version of it.
+ * doing. It computes once, on request, into an inline SVG (`chart.js`'s
+ * `svg()`). Inputs save as studies in the project's `analysis.porkchops`
+ * (`analysis.js`); the first one opens and computes with the project. The
+ * computed grid exports as CSV.
  *
  * "Launch" is the rest of the panel's own pattern again — `globe.addMission`
  * sent on a click, a list rebuilt from `state.missions` the way
@@ -19,13 +20,15 @@
  * currently doing.
  */
 
-import { el, row, section } from "./dom.js";
+import * as analysis from "./analysis.js";
+import { svg } from "./chart.js";
+import { download, el, row, section } from "./dom.js";
 import { clock, duration } from "./format.js";
 import * as globe from "./globe.js";
 import { button } from "./widgets.js";
 import * as porkchop from "./porkchop.js";
+import { isoUtc, toCsv } from "./reports.js";
 
-const SVG_NS = "http://www.w3.org/2000/svg";
 const CHART_WIDTH = 520;
 const CHART_HEIGHT = 380;
 const MARGIN = { top: 12, right: 12, bottom: 40, left: 60 };
@@ -43,13 +46,6 @@ const COST_CAP_ABOVE_MIN_KM_S = 20;
 // contour levels spaced across it — to stay well under a second.
 const GRID_STEPS = 33;
 const DAY_SECONDS = 86_400;
-
-function svg(tag, attrs = {}, ...children) {
-  const node = document.createElementNS(SVG_NS, tag);
-  for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value);
-  node.append(...children.flat().filter((child) => child != null));
-  return node;
-}
 
 function dateInputValue(date) {
   return date.toISOString().slice(0, 10);
@@ -78,7 +74,7 @@ function isoDate(unixSeconds) {
   return new Date(unixSeconds * 1000).toISOString().slice(0, 10);
 }
 
-export function mountMission(bind) {
+export function mountMission(bind, signal) {
   const originSelect = el(
     "select",
     { class: "select" },
@@ -116,10 +112,20 @@ export function mountMission(bind) {
   });
 
   const computeButton = button("Compute", compute);
+  const stepsInput = el("input", { class: "coordinate", type: "number", min: "2", max: "101", step: "1", value: String(GRID_STEPS) });
+  const best = el("p", { class: "detail", hidden: true });
+  const csvButton = button("CSV", () => lastPlot && exportGrid(lastPlot, originSelect.value, destinationSelect.value));
+  csvButton.disabled = true;
+  let lastPlot = null;
+  const studies = mountStudies(signal, currentStudy, (study) => openStudy(study), status);
 
   porkchop
     .load()
-    .then(populateBodies)
+    .then(() => {
+      populateBodies();
+      const [first] = analysis.savedPorkchops();
+      if (first) openStudy(first);
+    })
     .catch((error) => {
       console.error(error);
       status.textContent = `Failed to load the porkchop module: ${error}`;
@@ -139,7 +145,42 @@ export function mountMission(bind) {
     const start = new Date(`${startInput.value}T00:00:00Z`);
     const end = new Date(`${endInput.value}T00:00:00Z`);
     if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || !(start < end)) return null;
-    return { start, end, steps: GRID_STEPS };
+    return { start, end, steps: gridSteps() };
+  }
+
+  function gridSteps() {
+    const steps = Math.round(Number(stepsInput.value));
+    return Number.isFinite(steps) ? Math.min(Math.max(steps, 2), 101) : GRID_STEPS;
+  }
+
+  /** Fills the inputs from a saved study and computes. */
+  function openStudy(study) {
+    originSelect.value = study.origin;
+    destinationSelect.value = study.destination;
+    departureStart.value = study.departure.start.slice(0, 10);
+    departureEnd.value = study.departure.end.slice(0, 10);
+    arrivalStart.value = study.arrival.start.slice(0, 10);
+    arrivalEnd.value = study.arrival.end.slice(0, 10);
+    retrogradeInput.checked = study.retrograde ?? false;
+    stepsInput.value = String(study.steps ?? GRID_STEPS);
+    studies.label.value = study.label ?? "";
+    compute();
+  }
+
+  /** The inputs as a study; `null` if a range is invalid. */
+  function currentStudy() {
+    const departure = dateRange(departureStart, departureEnd);
+    const arrival = dateRange(arrivalStart, arrivalEnd);
+    if (!departure || !arrival) return null;
+    const study = {
+      origin: originSelect.value,
+      destination: destinationSelect.value,
+      departure: { start: departureStart.value, end: departureEnd.value },
+      arrival: { start: arrivalStart.value, end: arrivalEnd.value },
+    };
+    if (retrogradeInput.checked) study.retrograde = true;
+    if (gridSteps() !== GRID_STEPS) study.steps = gridSteps();
+    return study;
   }
 
   async function compute() {
@@ -169,6 +210,9 @@ export function mountMission(bind) {
           "No transfer solved anywhere in that window — try a wider range, or an " +
           "arrival window further past the departure window's start.";
         chart.replaceChildren();
+        lastPlot = null;
+        best.hidden = true;
+        csvButton.disabled = true;
         return;
       }
 
@@ -179,6 +223,17 @@ export function mountMission(bind) {
         contourLevelsKmS: evenlySpaced(min, displayMax, CONTOUR_COUNT),
       });
       render(plot, displayMax);
+      lastPlot = plot;
+      csvButton.disabled = false;
+      const cheapest = minimumCell(plot);
+      best.hidden = !cheapest;
+      if (cheapest) {
+        best.textContent =
+          `Minimum ${cheapest.totalDeltaVKmS.toFixed(3)} km/s ` +
+          `(${cheapest.departureDeltaVKmS.toFixed(3)} + ${cheapest.arrivalDeltaVKmS.toFixed(3)}): ` +
+          `depart ${isoDate(cheapest.departureUnixSeconds)}, arrive ${isoDate(cheapest.arrivalUnixSeconds)}, ` +
+          `${cheapest.timeOfFlightDays.toFixed(0)} days`;
+      }
       status.textContent =
         displayMax < max
           ? `Δv from ${min.toFixed(2)} km/s, chart capped at ${displayMax.toFixed(0)}+ — the far ` +
@@ -224,7 +279,7 @@ export function mountMission(bind) {
             width: cellWidth,
             height: cellHeight,
             fill: costColor(cell.totalDeltaVKmS, costMin, costMax),
-          }),
+          }, svg("title", {}, `${isoDate(cell.departureUnixSeconds)} → ${isoDate(cell.arrivalUnixSeconds)}: ${cell.totalDeltaVKmS.toFixed(2)} km/s`)),
         );
       }
     }
@@ -271,7 +326,16 @@ export function mountMission(bind) {
       height: plotHeight,
     });
 
-    chart.replaceChildren(...cellRects, ...contourPaths, ...xTicks, ...yTicks, frame);
+    const cheapest = minimumCell(plot);
+    const minimum = cheapest
+      ? svg(
+          "circle",
+          { class: "porkchop-minimum", cx: toX(cheapest.departureUnixSeconds), cy: toY(cheapest.arrivalUnixSeconds), r: 4 },
+          svg("title", {}, `Minimum ${cheapest.totalDeltaVKmS.toFixed(3)} km/s`),
+        )
+      : null;
+
+    chart.replaceChildren(...cellRects, ...contourPaths, ...xTicks, ...yTicks, frame, minimum ?? "");
   }
 
   const dateRangeRow = (start, end) => el("div", { class: "porkchop-date-range" }, start, end);
@@ -282,9 +346,11 @@ export function mountMission(bind) {
     row("To", destinationSelect),
     row("Depart", dateRangeRow(departureStart, departureEnd)),
     row("Arrive", dateRangeRow(arrivalStart, arrivalEnd)),
+    row("Grid steps", stepsInput),
     retrogradeToggle,
-    el("div", { class: "buttons" }, computeButton),
+    el("div", { class: "buttons" }, computeButton, csvButton),
     status,
+    best,
     el("div", { class: "porkchop-chart-wrap" }, chart),
     el(
       "p",
@@ -296,7 +362,7 @@ export function mountMission(bind) {
 
   const launch = mountLaunch(bind, originSelect, destinationSelect);
 
-  return el("div", {}, controls, launch);
+  return el("div", {}, controls, studies.node, launch);
 }
 
 /**
@@ -403,6 +469,106 @@ function describeMission(mission, sunUnixSeconds) {
     default:
       return "—";
   }
+}
+
+/**
+ * Saved studies: Save stores the inputs under the label (replacing a study
+ * with that label); Open fills the inputs and computes.
+ */
+function mountStudies(signal, currentStudy, open, status) {
+  const label = el("input", { class: "coordinate", type: "text", placeholder: "Study label" });
+  const list = el("div", { class: "layers" });
+
+  function rebuild() {
+    const saved = analysis.savedPorkchops();
+    list.replaceChildren(
+      ...saved.map((study) =>
+        el(
+          "div",
+          { class: "layer study" },
+          el(
+            "div",
+            { class: "layer-head" },
+            el("span", { class: "mission-title", title: study.label ?? study.id }, study.label ?? study.id),
+            button("Open", () => open(study)),
+            button("Remove", () => analysis.removePorkchop(study.id)),
+          ),
+          el(
+            "p",
+            { class: "detail" },
+            `${study.origin} → ${study.destination} · depart ${study.departure.start.slice(0, 10)}–` +
+              `${study.departure.end.slice(0, 10)} · arrive ${study.arrival.start.slice(0, 10)}–` +
+              `${study.arrival.end.slice(0, 10)}${study.retrograde ? " · retrograde" : ""}`,
+          ),
+        ),
+      ),
+    );
+    list.classList.toggle("empty", saved.length === 0);
+  }
+
+  function save() {
+    const study = currentStudy();
+    if (!study) {
+      status.textContent = "Each window needs a start strictly before its end.";
+      return;
+    }
+    const text = label.value.trim() || `${study.origin} → ${study.destination}`;
+    const existing = analysis.savedPorkchops().find((other) => (other.label ?? other.id) === text);
+    const id = existing?.id ?? analysis.uniqueId("porkchops", slug(text) || "study");
+    analysis.addPorkchop({ id, label: text, ...study });
+  }
+
+  const unsubscribe = analysis.subscribe(rebuild);
+  signal?.addEventListener("abort", unsubscribe);
+  rebuild();
+
+  const node = section(
+    "Porkchop studies",
+    row("Label", label),
+    el("div", { class: "buttons" }, button("Save study", save)),
+    list,
+  );
+  return { node, label };
+}
+
+/** The solved cell with the lowest total Δv; `null` if none solved. */
+function minimumCell(plot) {
+  let cheapest = null;
+  for (const cell of plot.cells) {
+    if (cell && (!cheapest || cell.totalDeltaVKmS < cheapest.totalDeltaVKmS)) cheapest = cell;
+  }
+  return cheapest;
+}
+
+/** Every grid cell as CSV, unsolved cells with empty values. */
+function exportGrid(plot, origin, destination) {
+  const { departuresUnixSeconds: xs, arrivalsUnixSeconds: ys, cells } = plot;
+  const rows = [];
+  xs.forEach((departure, i) =>
+    ys.forEach((arrival, j) => {
+      const cell = cells[i * ys.length + j];
+      rows.push([
+        isoUtc(departure),
+        isoUtc(arrival),
+        cell?.timeOfFlightDays ?? NaN,
+        cell?.departureDeltaVKmS ?? NaN,
+        cell?.arrivalDeltaVKmS ?? NaN,
+        cell?.totalDeltaVKmS ?? NaN,
+      ]);
+    }),
+  );
+  const header = ["departure_utc", "arrival_utc", "tof_days", "departure_dv_km_s", "arrival_dv_km_s", "total_dv_km_s"];
+  download(
+    `porkchop-${slug(origin)}-${slug(destination)}.csv`,
+    new Blob([toCsv(header, rows)], { type: "text/csv" }),
+  );
+}
+
+function slug(text) {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
 }
 
 /** `count` indices spanning `0..length-1`, including both ends. */
