@@ -113,7 +113,9 @@ async function boot() {
   const readout = mountReadout(readoutRoot);
   const feature = mountFeature(featureRoot, document.querySelector(CANVAS_SELECTOR));
   await workspace.initWorkspace({ mount: mountProject(readout, feature) });
-  await workspace.open(loaded, { force: true });
+  // Scene and UI are in place synchronously; environment and spacecraft finish
+  // while the globe starts.
+  const opened = workspace.open(loaded, { force: true });
 
   shell.hidden = false;
   panelToggle.addEventListener("click", () =>
@@ -123,6 +125,7 @@ async function boot() {
   try {
     await workspace.start(CANVAS_SELECTOR);
     dismissStatus();
+    await opened;
   } catch (error) {
     console.error(error);
     fail(`Failed to start the globe: <code>${escape(String(error))}</code>`);

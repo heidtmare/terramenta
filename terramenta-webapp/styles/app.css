@@ -271,13 +271,15 @@ body.panel-collapsed #panel {
 .panel-tabs {
   flex: 0 0 auto;
   display: flex;
-  gap: 0.35rem;
+  /* Wraps rather than clipping when the labels outgrow the column. */
+  flex-wrap: wrap;
+  gap: 0 0.35rem;
   padding: 0 var(--gutter);
   border-bottom: 1px solid var(--line);
 }
 
 .panel-tab {
-  /* Content-sized then stretched: five labels across a 21rem column. */
+  /* Content-sized then stretched across the column. */
   flex: 1 1 auto;
   padding: 0.45rem 0.2rem;
   font: inherit;
@@ -888,4 +890,56 @@ body.dropping::after {
   background: var(--surface);
   color: var(--ink);
   pointer-events: none;
+}
+
+/* --- Spacecraft editor ------------------------------------------------------- */
+
+.editor {
+  margin-top: 0.8rem;
+}
+
+.editor summary {
+  cursor: pointer;
+  color: var(--ink-dim);
+}
+
+.editor-title {
+  margin: 0.9rem 0 0.45rem;
+  font-size: 0.72rem;
+  font-weight: 400;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.vector {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.3rem;
+}
+
+.vector.two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.editor .layer .vector {
+  margin-bottom: 0.45rem;
+}
+
+.editor .buttons .coordinate {
+  flex: 0 1 4.5rem;
+}
+
+.editor .buttons .row-label {
+  align-self: center;
+}
+
+textarea.coordinate {
+  resize: vertical;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 0.85em;
+}
+
+.layers + .buttons {
+  margin-top: 0.45rem;
 }

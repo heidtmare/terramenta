@@ -14,6 +14,7 @@
 
 import * as globe from "./globe.js";
 import { DIRECTORS } from "./director.js";
+import { applyEnvironment, recordedEnvironment } from "./environment.js";
 import { validate } from "./schema.js";
 import SCHEMA from "../schema/project.schema.json" with { type: "json" };
 
@@ -203,7 +204,17 @@ function referenceErrors(project) {
   };
   const overlayIds = ids("overlays.layers", project.overlays?.layers);
   const ephemerisIds = ids("ephemerides.layers", project.ephemerides?.layers);
+  const spacecraftIds = ids("spacecraft", project.spacecraft);
   const missionIds = ids("missions", project.missions);
+  project.spacecraft?.forEach((spacecraft, index) => {
+    if (ephemerisIds.has(spacecraft.id)) {
+      errors.push(`spacecraft[${index}].id: "${spacecraft.id}" is also an ephemeris layer`);
+    }
+    const { stop, durationS } = spacecraft.propagation;
+    if ((stop === undefined) === (durationS === undefined)) {
+      errors.push(`spacecraft[${index}].propagation: exactly one of stop and durationS`);
+    }
+  });
 
   for (const key of ["overlays", "ephemerides"]) {
     project[key]?.layers?.forEach((layer, index) => {
@@ -223,11 +234,11 @@ function referenceErrors(project) {
   }
 
   const focus = project.gnc?.focus;
-  if (focus && !ephemerisIds.has(focus.layer)) {
+  if (focus && !ephemerisIds.has(focus.layer) && !spacecraftIds.has(focus.layer)) {
     errors.push(
       overlayIds.has(focus.layer)
         ? "gnc.focus.layer: names an overlay, expected an ephemeris layer"
-        : `gnc.focus.layer: no ephemeris layer "${focus.layer}"`,
+        : `gnc.focus.layer: no ephemeris layer or spacecraft "${focus.layer}"`,
     );
   }
 
@@ -298,11 +309,37 @@ export function applyProject(project) {
   for (const { id, ...options } of project.ephemerides?.layers ?? []) {
     globe.addEphemeris(id, withResolvedUrl(options));
   }
-  if (gnc.focus) globe.setGncFocus(gnc.focus.layer, gnc.focus.noradId);
+  // A spacecraft's layer exists only after `applySpacecraft`, which sets this.
+  if (gnc.focus && !project.spacecraft?.some((spacecraft) => spacecraft.id === gnc.focus.layer)) {
+    globe.setGncFocus(gnc.focus.layer, gnc.focus.noradId);
+  }
 
   for (const { id, ...options } of project.missions ?? []) globe.addMission(id, options);
   if (camera.follow !== undefined) globe.followMission(camera.follow);
   if (camera.anchor !== undefined) globe.setHeliocentricAnchor(camera.anchor);
+}
+
+/**
+ * Loads the project's `environment`, then propagates its `spacecraft` (after
+ * `applyProject`). Never throws: environment failures are in
+ * `environment.status()`, spacecraft failures in `globe.recordedSources()`.
+ * `isCurrent()` false after the environment loads (another project opened)
+ * skips the spacecraft.
+ */
+export async function applySpacecraft(project, isCurrent = () => true) {
+  if (project.environment) await applyEnvironment(project.environment, resolveUrl);
+  if (!project.spacecraft || !isCurrent()) return;
+  for (const { id, propagation, ...display } of project.spacecraft) {
+    try {
+      globe.quietly(() => globe.addSpacecraft(id, propagation, display));
+    } catch (error) {
+      console.warn(`Project: spacecraft "${id}" did not propagate`, error);
+    }
+  }
+  const focus = project.gnc?.focus;
+  if (focus && project.spacecraft.some((spacecraft) => spacecraft.id === focus.layer)) {
+    globe.quietly(() => globe.setGncFocus(focus.layer, focus.noradId));
+  }
 }
 
 /** Options for `globe.start`. */
@@ -395,9 +432,12 @@ export function captureProject(state, base = {}) {
     }),
   };
 
+  const spacecraftLayers = new Map(
+    state.ephemerides.layers.filter((layer) => sources.spacecraft.has(layer.id)).map((layer) => [layer.id, layer]),
+  );
   project.ephemerides = {
     enabled: state.ephemerides.enabled,
-    layers: state.ephemerides.layers.map((layer) => {
+    layers: state.ephemerides.layers.filter((layer) => !spacecraftLayers.has(layer.id)).map((layer) => {
       const recorded = sources.ephemerides.get(layer.id) ?? {};
       const entry = {
         id: layer.id,
@@ -420,6 +460,15 @@ export function captureProject(state, base = {}) {
       return entry;
     }),
   };
+
+  const environment = recordedEnvironment();
+  if (environment) project.environment = environment;
+  // In add order; a failed one (no layer) keeps its recorded display options.
+  const spacecraft = [...sources.spacecraft].map(([id, { propagation, display }]) => {
+    const layer = spacecraftLayers.get(id);
+    return { id, ...(layer ? layerDisplay(layer) : display), propagation };
+  });
+  if (spacecraft.length) project.spacecraft = spacecraft;
 
   project.missions = state.missions.map((mission) => ({
     id: mission.id,
@@ -460,6 +509,20 @@ export function downloadProject(project) {
   link.download = `${slug(project.name) || "project"}${PROJECT_EXTENSION}`;
   link.click();
   setTimeout(() => URL.revokeObjectURL(link.href), 0);
+}
+
+/** A state-stream ephemeris layer as `addEphemeris` display options. */
+export function layerDisplay(layer) {
+  return {
+    label: layer.label,
+    visible: layer.visible,
+    trails: layer.trails,
+    leadingOrbits: layer.trail.leadingOrbits,
+    trailingOrbits: layer.trail.trailingOrbits,
+    trailSamples: layer.trail.samples,
+    trailPath: layer.trail.path,
+    ...styleOf(layer.style),
+  };
 }
 
 function sourceOf(layer, recorded) {

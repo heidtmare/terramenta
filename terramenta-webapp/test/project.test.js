@@ -8,6 +8,7 @@ import {
   PROJECT_VERSION,
   ProjectError,
   applyProject,
+  applySpacecraft,
   captureProject,
   migrateProject,
   parseProject,
@@ -76,7 +77,7 @@ test("schema lists exactly the registered directors, each with a $def", () => {
 test("schema uses only keywords src/schema.js implements", () => {
   const supported = new Set([
     "$schema", "$ref", "$defs", "title", "description",
-    "type", "const", "enum", "properties", "required", "additionalProperties", "items",
+    "type", "const", "enum", "properties", "required", "additionalProperties", "items", "minItems", "maxItems",
     "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "pattern", "format",
     "anyOf", "allOf", "if", "then", "else",
   ]);
@@ -153,7 +154,7 @@ test("reference errors once the structure holds", () => {
     ],
   );
   assert.deepEqual(errorsOf(v({ gnc: { focus: { layer: "z", noradId: 1 } } })), [
-    'gnc.focus.layer: no ephemeris layer "z"',
+    'gnc.focus.layer: no ephemeris layer or spacecraft "z"',
   ]);
 });
 
@@ -340,4 +341,106 @@ test("a director whose mission is gone is not saved", () => {
   const captured = captureProject(state, { director: { type: "missionFlight", mission: "mars" } });
   assert.equal(captured.director, undefined);
   assert.deepEqual(parse(JSON.parse(JSON.stringify(captured))).warnings, []);
+});
+
+// --- Spacecraft and environment ------------------------------------------------------
+
+const STATE_INITIAL = { epoch: "2026-01-01T00:00:00Z", positionKm: [6878, 0, 0], velocityKmS: [0, 4.7, 6] };
+const spacecraft = (id, propagation = {}, display = {}) => ({
+  id,
+  ...display,
+  propagation: { initial: STATE_INITIAL, durationS: 3600, ...propagation },
+});
+
+test("spacecraft are typed and cross-checked", () => {
+  assert.deepEqual(
+    errorsOf(
+      v({
+        spacecraft: [
+          spacecraft("a", {
+            initial: { tle: ["1 only"] },
+            forces: { gravity: [8, 30], drag: "jacchia" },
+            maneuvers: [{ epoch: "soon", deltaVKmS: [0.1, 0] }],
+          }),
+          spacecraft("b", { initial: { epoch: "2026-01-01T00:00:00Z", positionKm: [1, 2, 3] } }),
+        ],
+      }),
+    ),
+    [
+      "spacecraft[0].propagation.initial: expected a TLE ({tle}), an OMM ({omm}) or a GCRF state ({epoch, positionKm, velocityKmS}), got {\"tle\":[\"1 only\"]}",
+      "spacecraft[0].propagation.forces.gravity[1]: expected a number ≤ 20, got 30",
+      'spacecraft[0].propagation.forces.drag: expected one of none, exponential, harrisPriester, nrlmsise00, got "jacchia"',
+      'spacecraft[0].propagation.maneuvers[0].epoch: expected an ISO 8601 date-time, got "soon"',
+      "spacecraft[0].propagation.maneuvers[0].deltaVKmS: expected 3 items, got [0.1,0]",
+      'spacecraft[1].propagation.initial: expected a TLE ({tle}), an OMM ({omm}) or a GCRF state ({epoch, positionKm, velocityKmS}), got {"epoch":"2026-01-01T00:00:00Z","positionKm":[1,2,3]}',
+    ],
+  );
+  assert.deepEqual(
+    errorsOf(
+      v({
+        ephemerides: { layers: [{ id: "s", url: "s.json" }] },
+        spacecraft: [spacecraft("s"), spacecraft("t", { stop: "2026-01-01T01:00:00Z" }), spacecraft("t")],
+      }),
+    ),
+    [
+      'spacecraft[2].id: duplicate "t"',
+      'spacecraft[0].id: "s" is also an ephemeris layer',
+      "spacecraft[1].propagation: exactly one of stop and durationS",
+    ],
+  );
+  assert.deepEqual(parse(v({ spacecraft: [spacecraft("a")], gnc: { focus: { layer: "a", noradId: 1 } } })).warnings, []);
+});
+
+test("applying spacecraft: environment first, failures kept, focus after", async () => {
+  const fetched = [];
+  globalThis.fetch = async (url) => {
+    fetched.push(url);
+    return { ok: true, text: async () => "eop text" };
+  };
+  const project = parse(
+    v({
+      environment: { eop: "data/eop.csv" },
+      spacecraft: [spacecraft("good", {}, { label: "Good" }), spacecraft("broken", { initial: { tle: ["bad", "2"] } })],
+      gnc: { focus: { layer: "good", noradId: 7 } },
+    }),
+  ).project;
+
+  applyProject(project);
+  assert.ok(!commands(calls).includes("setGncFocus"), "focus waits for the spacecraft layer");
+  await applySpacecraft(project);
+
+  assert.deepEqual(fetched, ["http://localhost:8080/app/data/eop.csv"]);
+  const applied = calls.filter(([name]) => ["loadEop", "propagate", "addPropagated", "removeEphemeris", "setGncFocus"].includes(name));
+  assert.deepEqual(
+    applied.map(([name, ...args]) => [name, ...args.slice(0, 1)]),
+    [["loadEop", "eop text"], ["propagate", applied[1][1]], ["addPropagated", "good"], ["propagate", applied[3][1]], ["removeEphemeris", "broken"], ["setGncFocus", "good"]],
+  );
+  assert.equal(applied[1][1].kvn, false);
+  const recorded = globe.recordedSources().spacecraft;
+  assert.equal(recorded.get("good").info.samples, 10);
+  assert.equal(recorded.get("broken").error, "bad TLE");
+
+  // Saved: environment by URL; the propagated one from its layer, the failed one as recorded.
+  const state = snapshot();
+  state.ephemerides.layers.push({
+    ...state.ephemerides.layers[0],
+    id: "good",
+    label: "Good, renamed",
+    url: null,
+  });
+  const captured = captureProject(state);
+  assert.deepEqual(captured.environment, { eop: "data/eop.csv" });
+  assert.deepEqual(captured.ephemerides.layers.map((layer) => layer.id), ["stations"]);
+  assert.deepEqual(captured.spacecraft.map((entry) => [entry.id, entry.label]), [["good", "Good, renamed"], ["broken", undefined]]);
+  assert.deepEqual(captured.spacecraft[1].propagation.initial, { tle: ["bad", "2"] });
+  assert.deepEqual(parse(JSON.parse(JSON.stringify(captured))).warnings, []);
+
+  // Already loaded from the same URL: not refetched.
+  await applySpacecraft(project);
+  assert.equal(fetched.length, 1);
+});
+
+test("a stale open skips its spacecraft", async () => {
+  await applySpacecraft(parse(v({ spacecraft: [spacecraft("late")] })).project, () => false);
+  assert.ok(!commands(calls).includes("propagate"));
 });
