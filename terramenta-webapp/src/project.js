@@ -3,7 +3,7 @@
  *
  * A project is the full initial scene — layers, spacecraft, missions, clock,
  * camera, UI layout — plus its timeline, an optional director, and saved
- * analysis (plots, porkchop studies). Every
+ * analysis (plots, porkchop studies), ground stations and event searches. Every
  * project, bundled or user-supplied, loads the same way: parsed here, then
  * applied onto a reset globe by `workspace.js`. `?project=<url>` (or
  * `?project=session` for a local file stashed in `sessionStorage`) names the
@@ -18,6 +18,7 @@ import * as globe from "./globe.js";
 import { analysisErrors, analysisSection } from "./analysis.js";
 import { DIRECTORS } from "./director.js";
 import { applyEnvironment, recordedEnvironment } from "./environment.js";
+import { STATION_LAYER, eventsErrors, eventsSection } from "./events.js";
 import { validate } from "./schema.js";
 import { timelineErrors, timelineSection } from "./timeline.js";
 import SCHEMA from "../schema/project.schema.json" with { type: "json" };
@@ -260,6 +261,8 @@ function referenceErrors(project) {
   const layerIds = new Set([...ephemerisIds, ...spacecraftIds]);
   errors.push(...timelineErrors(project, { missionIds, layerIds }).map((error) => `timeline.${error}`));
   errors.push(...analysisErrors(project, { spacecraftIds }).map((error) => `analysis.${error}`));
+  errors.push(...eventsErrors(project));
+  if (overlayIds.has(STATION_LAYER)) errors.push(`overlays.layers: id "${STATION_LAYER}" is reserved for ground stations`);
   return errors;
 }
 
@@ -426,7 +429,7 @@ export function captureProject(state, base = {}) {
   project.overlays = {
     enabled: state.overlays.enabled,
     picking: state.overlays.picking,
-    layers: state.overlays.layers.map((layer) => {
+    layers: state.overlays.layers.filter((layer) => layer.id !== STATION_LAYER).map((layer) => {
       const recorded = sources.overlays.get(layer.id) ?? {};
       return {
         id: layer.id,
@@ -508,8 +511,10 @@ export function captureProject(state, base = {}) {
   if (base.director && (!base.director.mission || missionIds.has(base.director.mission))) {
     project.director = base.director;
   }
+  Object.assign(project, eventsSection());
   const timeline = timelineSection({
     spacecraft: new Map(spacecraft.map(({ id, propagation }) => [id, propagation])),
+    stationIds: new Set((project.groundStations ?? []).map((station) => station.id)),
     missionIds,
     layerIds: new Set([...project.ephemerides.layers.map((layer) => layer.id), ...sources.spacecraft.keys()]),
   });

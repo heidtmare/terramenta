@@ -12,14 +12,15 @@ use terramenta_solare::bodies::{GM_MOON_KM3_S2, GM_SUN_KM3_S2};
 use terramenta_solare::ccsds::{Oem, OemMetadata, OemSegment, TimeSystem};
 use terramenta_solare::earth::EarthModel;
 use terramenta_solare::eop::{EopTable, FinalsKind};
+use terramenta_solare::events::{self, GroundStation, OrbitEventKind, Shadow};
 use terramenta_solare::force::{
     Drag, EGM2008_GM_KM3_S2, ExponentialAtmosphere, HarrisPriester, Nrlmsise00, PointMass,
     Relativity, SolarRadiationPressure, SphericalHarmonics, ThirdBody, Vehicle,
 };
 use terramenta_solare::frame::Relative;
-use terramenta_solare::interpolate::Interpolation;
+use terramenta_solare::interpolate::{Interpolation, SampledEphemeris};
 use terramenta_solare::maneuver::{FiniteBurn, ImpulsiveManeuver, LocalFrame};
-use terramenta_solare::propagate::{EarthOrientation, Integrator, Method};
+use terramenta_solare::propagate::{BodyOrientation, EarthOrientation, Integrator, Method};
 use terramenta_solare::space_weather::SpaceWeather;
 use terramenta_solare::spacecraft::{Propagation, Spacecraft};
 use terramenta_solare::spice::{self, KernelEphemeris, anise::prelude::Almanac, naif};
@@ -616,6 +617,192 @@ impl Propagated {
     }
 }
 
+// --- Events ---------------------------------------------------------------------------
+
+/// `findEvents` options.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventRequest {
+    #[serde(default)]
+    pub stations: Vec<StationOptions>,
+    #[serde(default)]
+    pub eclipses: bool,
+    #[serde(default)]
+    pub apsides: bool,
+    #[serde(default)]
+    pub nodes: bool,
+    /// Bracketing grid; shorter intervals may be missed.
+    #[serde(default = "default_event_step")]
+    pub step_s: f64,
+}
+
+fn default_event_step() -> f64 {
+    30.0
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StationOptions {
+    pub id: String,
+    pub lat_deg: f64,
+    pub lon_deg: f64,
+    #[serde(default)]
+    pub alt_km: f64,
+    #[serde(default)]
+    pub min_elevation_deg: f64,
+}
+
+/// Event times are Unix seconds (UTC).
+#[derive(Serialize, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Events {
+    pub contacts: Vec<ContactInfo>,
+    pub eclipses: Vec<EclipseInfo>,
+    pub orbit: Vec<OrbitEventInfo>,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ContactInfo {
+    pub station: String,
+    pub aos: f64,
+    pub los: f64,
+    pub max_elevation_at: f64,
+    pub max_elevation_deg: f64,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct EclipseInfo {
+    /// `"penumbra"` (umbra included) or `"umbra"`.
+    pub kind: &'static str,
+    pub start: f64,
+    pub stop: f64,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct OrbitEventInfo {
+    /// `periapsis`, `apoapsis`, `ascendingNode`, `descendingNode`.
+    pub kind: &'static str,
+    pub at: f64,
+}
+
+/// Root refinement tolerance, s.
+const EVENT_TOLERANCE_S: f64 = 1e-3;
+/// Full Earth orientation recomputed on this grid; Earth rotation exact in between.
+const ORIENTATION_GRID_S: f64 = 600.0;
+/// Bracketing samples cap per search.
+const MAX_EVENT_SAMPLES: f64 = 1e6;
+
+/// Contacts, eclipses (Earth, conical), apsides and nodes (GCRF equator) over the
+/// propagated span. Interpolates the propagated states (Hermite 7), so the propagation
+/// step bounds accuracy.
+pub fn find_events(propagated: &Propagated, req: &EventRequest) -> Result<Events, String> {
+    let step = req.step_s.abs();
+    let states = propagated.ordered_states();
+    if states.len() < 2 {
+        return Ok(Events::default());
+    }
+    let (start, stop) = (states[0].0, states[states.len() - 1].0);
+    if step.is_nan() || step <= 0.0 || stop.seconds_since(start) / step > MAX_EVENT_SAMPLES {
+        return Err(format!(
+            "stepS must be positive and yield ≤ {MAX_EVENT_SAMPLES} samples"
+        ));
+    }
+    let ephemeris = SampledEphemeris::new(states, Interpolation::default());
+    let env = environment();
+    let mut out = Events::default();
+
+    if !req.stations.is_empty() {
+        let orientation = EarthOrientation::new(env.eop.clone(), EarthModel::Iau2006Cio);
+        let mut anchors = std::collections::HashMap::new();
+        let mut itrf = |e: Epoch| {
+            let t = e.seconds_since(start);
+            let k = (t / ORIENTATION_GRID_S).floor() as i64;
+            let anchor = *anchors.entry(k).or_insert_with(|| {
+                orientation.transform(start.advanced_by_seconds(k as f64 * ORIENTATION_GRID_S))
+            });
+            anchor
+                .advanced_by(t - k as f64 * ORIENTATION_GRID_S)
+                .rotation()
+                * ephemeris.position_at(e)
+        };
+        for s in &req.stations {
+            if !(-90.0..=90.0).contains(&s.lat_deg) || !s.lon_deg.is_finite() {
+                return Err(format!("station {:?}: bad latitude/longitude", s.id));
+            }
+            let station = GroundStation {
+                name: s.id.clone(),
+                latitude_rad: s.lat_deg.to_radians(),
+                longitude_rad: s.lon_deg.to_radians(),
+                altitude_km: s.alt_km,
+                min_elevation_rad: s.min_elevation_deg.to_radians(),
+            };
+            out.contacts.extend(
+                events::contacts(&station, &mut itrf, start, stop, step, EVENT_TOLERANCE_S)
+                    .into_iter()
+                    .map(|c| ContactInfo {
+                        station: s.id.clone(),
+                        aos: c.aos.to_unix_seconds(),
+                        los: c.los.to_unix_seconds(),
+                        max_elevation_at: c.max_elevation_epoch.to_unix_seconds(),
+                        max_elevation_deg: c.max_elevation_rad.to_degrees(),
+                    }),
+            );
+        }
+        out.contacts.sort_by(|a, b| a.aos.total_cmp(&b.aos));
+    }
+
+    if req.eclipses {
+        let (sun, _) = sun_and_moon(&env);
+        out.eclipses = events::eclipses(
+            &mut |e| ephemeris.position_at(e),
+            &mut |e| sun.position_at(e),
+            EARTH_RADIUS_KM,
+            start,
+            stop,
+            step,
+            EVENT_TOLERANCE_S,
+        )
+        .into_iter()
+        .map(|e| EclipseInfo {
+            kind: match e.shadow {
+                Shadow::Penumbra => "penumbra",
+                Shadow::Umbra => "umbra",
+            },
+            start: e.start.to_unix_seconds(),
+            stop: e.stop.to_unix_seconds(),
+        })
+        .collect();
+        out.eclipses.sort_by(|a, b| a.start.total_cmp(&b.start));
+    }
+
+    if req.apsides || req.nodes {
+        out.orbit = events::orbit_events(
+            &mut |e| ephemeris.state_at(e),
+            req.apsides,
+            req.nodes,
+            start,
+            stop,
+            step,
+            EVENT_TOLERANCE_S,
+        )
+        .into_iter()
+        .map(|e| OrbitEventInfo {
+            kind: match e.kind {
+                OrbitEventKind::Periapsis => "periapsis",
+                OrbitEventKind::Apoapsis => "apoapsis",
+                OrbitEventKind::AscendingNode => "ascendingNode",
+                OrbitEventKind::DescendingNode => "descendingNode",
+            },
+            at: e.epoch.to_unix_seconds(),
+        })
+        .collect();
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -726,5 +913,57 @@ mod tests {
             let req = request(&format!("{{{base}, {extra}}}"));
             assert!(propagate(&req).is_err(), "{extra}");
         }
+    }
+
+    /// Circular 51.6° LEO for a day: one umbra per orbit inside its penumbra, two apsides
+    /// and nodes per orbit, passes over a mid-latitude station within its mask.
+    #[test]
+    fn events_over_a_day_of_leo() {
+        let v = (398_600.441_8_f64 / 6778.137).sqrt();
+        let (s, c) = 51.6_f64.to_radians().sin_cos();
+        let req = request(&format!(
+            r#"{{ "initial": {{ "epoch": "2024-03-01T00:00:00Z",
+                   "positionKm": [6778.137, 0, 0], "velocityKmS": [0, {}, {}] }},
+                 "durationS": 86400, "stepS": 60, "forces": {{ "gravity": [2, 0] }} }}"#,
+            v * c,
+            v * s
+        ));
+        let out = propagate(&req).unwrap();
+        let events: EventRequest = serde_json::from_str(
+            r#"{ "stations": [{ "id": "wallops", "latDeg": 37.94, "lonDeg": -75.46, "minElevationDeg": 5 }],
+                 "eclipses": true, "apsides": true, "nodes": true }"#,
+        )
+        .unwrap();
+        let found = find_events(&out, &events).unwrap();
+        let umbra: Vec<_> = found
+            .eclipses
+            .iter()
+            .filter(|e| e.kind == "umbra")
+            .collect();
+        let penumbra = found.eclipses.len() - umbra.len();
+        // ~92.2 min period: 15–16 orbits.
+        assert!((15..=16).contains(&umbra.len()), "{}", umbra.len());
+        assert_eq!(penumbra, umbra.len());
+        for u in &umbra {
+            let span = u.stop - u.start;
+            assert!((1500.0..2400.0).contains(&span), "umbra {span} s");
+        }
+        let nodes = found
+            .orbit
+            .iter()
+            .filter(|e| e.kind.ends_with("Node"))
+            .count();
+        assert!((30..=32).contains(&nodes), "{nodes} nodes");
+        assert!(found.orbit.iter().any(|e| e.kind == "periapsis"));
+        assert!(!found.contacts.is_empty());
+        for pass in &found.contacts {
+            assert!(pass.los > pass.aos && pass.los - pass.aos < 900.0);
+            assert!((5.0..=90.0).contains(&pass.max_elevation_deg));
+            assert!(pass.aos <= pass.max_elevation_at && pass.max_elevation_at <= pass.los);
+        }
+        let bad: EventRequest =
+            serde_json::from_str(r#"{ "stations": [{ "id": "x", "latDeg": 95, "lonDeg": 0 }] }"#)
+                .unwrap();
+        assert!(find_events(&out, &bad).is_err());
     }
 }

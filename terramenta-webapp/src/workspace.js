@@ -2,10 +2,10 @@
  * Workspace: the open project and everything around it.
  *
  * - Switching: `open` resets the globe, applies the new project, loads its
- *   timeline and analysis and rebuilds the UI in place — no reload, the module and renderer
+ *   timeline, analysis and events and rebuilds the UI in place — no reload, the module and renderer
  *   stay up. Each snapshot runs the timeline (`timeline.js`).
  * - Unsaved changes: any scene-changing command outside `globe.quietly`, or a
- *   timeline or analysis edit, marks the project dirty (`globe.onSceneChange`). Opening another project asks
+ *   timeline, analysis or events edit, marks the project dirty (`globe.onSceneChange`). Opening another project asks
  *   first; leaving the page prompts.
  * - Autosave: a dirty scene is captured to IndexedDB `AUTOSAVE_KEY` after
  *   `AUTOSAVE_DELAY_MS` of quiet; cleared on save or discard. One left over
@@ -34,6 +34,7 @@ import {
 } from "./project.js";
 import { openTimeline, runTimeline, subscribe as onTimelineEdit } from "./timeline.js";
 import { openAnalysis, subscribe as onAnalysisEdit } from "./analysis.js";
+import { openEvents, subscribe as onEventsEdit } from "./events.js";
 
 const AUTOSAVE_KEY = "autosave";
 const AUTOSAVE_DELAY_MS = 3_000;
@@ -81,6 +82,7 @@ export async function initWorkspace({ mount }) {
   globe.onSceneChange(markDirty);
   onTimelineEdit(markDirty);
   onAnalysisEdit(markDirty);
+  onEventsEdit(markDirty);
 
   addEventListener("beforeunload", (event) => {
     if (dirty) event.preventDefault();
@@ -135,6 +137,7 @@ export async function open(loaded, { force = false, recent: listed = true } = {}
   current = { project: loaded.project, source: loaded.source };
   openTimeline(loaded.project);
   openAnalysis(loaded.project);
+  openEvents(loaded.project);
   const controller = new AbortController();
   view = { ...mountView(loaded.project, loaded.source, controller.signal), abort: () => controller.abort() };
   // The last snapshot is the old scene.

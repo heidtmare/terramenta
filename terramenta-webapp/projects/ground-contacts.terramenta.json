@@ -1,0 +1,55 @@
+{
+  "$schema": "../schema/project.schema.json",
+  "terramenta": 3,
+  "name": "Ground contacts",
+  "description": "700 km sun-synchronous orbit (noon–midnight) over one day against five ground stations: contacts above each station's mask, Earth umbra/penumbra and equator crossings. The timeline slows the clock for the first Svalbard pass (`polar.aos.svalbard.1`). Results and CSV in Analysis → Events; stations in the Spacecraft tab; searched events on the Timeline with \"Searched events\".",
+  "ui": { "tab": "analysis" },
+  "frame": "ecef",
+  "clock": { "epoch": "2026-03-20T00:00:00Z", "timeScale": 300, "paused": false },
+  "camera": { "lat": 60, "lon": 10, "altitudeKm": 25000 },
+  "environment": {
+    "eop": "https://celestrak.org/SpaceData/EOP-All.csv"
+  },
+  "spacecraft": [
+    {
+      "id": "polar",
+      "label": "SSO · 700 km",
+      "pointColor": "#ffb86b",
+      "lineColor": "#ffb86ba6",
+      "leadingOrbits": 0,
+      "trailingOrbits": 1,
+      "propagation": {
+        "name": "POLAR",
+        "initial": {
+          "epoch": "2026-03-20T00:00:00Z",
+          "positionKm": [7078.137, 0, 0],
+          "velocityKmS": [0, -1.069032, 7.427751]
+        },
+        "durationS": 86400,
+        "stepS": 60,
+        "vehicle": { "massKg": 500, "dragAreaM2": 4, "srpAreaM2": 4 },
+        "forces": { "gravity": [8, 8], "drag": "harrisPriester" }
+      }
+    }
+  ],
+  "groundStations": [
+    { "id": "svalbard", "label": "Svalbard", "latDeg": 78.2297, "lonDeg": 15.4078, "altKm": 0.5, "minElevationDeg": 5 },
+    { "id": "fairbanks", "label": "Fairbanks", "latDeg": 64.8594, "lonDeg": -147.8489, "altKm": 0.3, "minElevationDeg": 5 },
+    { "id": "wallops", "label": "Wallops", "latDeg": 37.9402, "lonDeg": -75.4664, "minElevationDeg": 5 },
+    { "id": "hartebeesthoek", "label": "Hartebeesthoek", "latDeg": -25.8872, "lonDeg": 27.7075, "altKm": 1.5, "minElevationDeg": 10 },
+    { "id": "mcmurdo", "label": "McMurdo", "latDeg": -77.8391, "lonDeg": 166.6671, "minElevationDeg": 10 }
+  ],
+  "events": { "nodes": true },
+  "timeline": {
+    "events": [
+      { "id": "svalbard-approach", "label": "Slow for first Svalbard pass", "at": { "event": "polar.aos.svalbard.1", "offsetS": -120 }, "actions": { "timeScale": 20 } },
+      { "id": "svalbard-done", "label": "Resume", "at": { "event": "polar.los.svalbard.1", "offsetS": 60 }, "actions": { "timeScale": 300 } },
+      { "id": "hold", "label": "Hold at end", "at": { "event": "polar.end" }, "actions": { "paused": true } }
+    ]
+  },
+  "analysis": {
+    "plots": [
+      { "id": "altitude", "quantity": "altitudeKm", "spacecraft": ["polar"] }
+    ]
+  }
+}

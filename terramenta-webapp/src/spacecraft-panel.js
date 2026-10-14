@@ -1,6 +1,6 @@
 /**
- * Spacecraft tab: propagation environment, numerically propagated spacecraft,
- * and the editor that defines them.
+ * Spacecraft tab: numerically propagated spacecraft and their editor, ground
+ * stations (`events-panel.js`), propagation environment.
  *
  * A spacecraft is a `propagate` request plus ephemeris display options
  * (`globe.addSpacecraft`), saved under the project's `spacecraft`. The editor
@@ -11,6 +11,7 @@
  */
 
 import * as environment from "./environment.js";
+import { mountStations } from "./events-panel.js";
 import * as globe from "./globe.js";
 import { download, el, row, section } from "./dom.js";
 import { clock, utcSeconds } from "./format.js";
@@ -49,7 +50,7 @@ const INITIAL = [
 
 /** `bind(node, sync)`: the panel's registration. `signal` aborts on close. */
 export function mountSpacecraft(bind, signal) {
-  return [mountSpacecraftList(bind), mountEnvironment(signal)];
+  return [mountSpacecraftList(bind), mountStations(signal), mountEnvironment(signal)];
 }
 
 // --- Environment -----------------------------------------------------------------

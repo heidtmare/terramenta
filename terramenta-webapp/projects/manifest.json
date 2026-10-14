@@ -18,5 +18,10 @@
     "file": "leo-transfer.terramenta.json",
     "name": "LEO Hohmann transfer",
     "description": "Cowell-propagated 500 → 800 km Hohmann transfer with a coasting reference; plots, Δv budget, CSV/CZML/OEM/SPK export."
+  },
+  {
+    "file": "ground-contacts.terramenta.json",
+    "name": "Ground contacts",
+    "description": "Sun-synchronous LEO over five ground stations: contacts, eclipses and nodes; timeline keyed to the first Svalbard pass."
   }
 ]

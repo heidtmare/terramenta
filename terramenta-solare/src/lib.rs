@@ -28,6 +28,7 @@ pub mod departure;
 pub mod earth;
 pub mod ecliptic;
 pub mod eop;
+pub mod events;
 pub mod force;
 pub mod frame;
 pub mod interpolate;

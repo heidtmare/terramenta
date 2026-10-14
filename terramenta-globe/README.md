@@ -107,6 +107,7 @@ from a real failure.
 | `ephemerisObjects(id)` `ephemerisGeometry(id)` | Object list; current positions and arcs |
 | `addMission(id, options)` `removeMission(id)` | Flown interplanetary missions |
 | `propagate(options)` `propagateSpk(options)` | Numerical propagation → OEM text / SPK bytes |
+| `findEvents(propagation, options)` | Ground-station contacts, Earth eclipses, apsides, nodes over a propagation |
 | `loadKernel(bytes)` `loadEop(text)` `loadSpaceWeather(text)` `propagationEnvironment()` | Propagation data |
 | `setPickingEnabled(bool)` `pinFeature(layer, index)` `clearPinnedFeature()` | Overlay feature picking |
 | `pinSatellite(layer, noradId)` `clearPinnedSatellite()` | Satellite picking |
@@ -491,6 +492,20 @@ globe.addPropagated("demo", { leadingOrbits: 1 });
 const spk = globe.propagateSpk({ ...sameOptions, naifId: -100900 }); // Uint8Array
 ```
 
+```js
+const { contacts, eclipses, orbit } = globe.findEvents(sameOptions, {
+  stations: [{ id: "wallops", latDeg: 37.94, lonDeg: -75.46, minElevationDeg: 5 }],
+  eclipses: true, apsides: false, nodes: false, stepS: 30,
+});
+// contacts: [{ station, aos, los, maxElevationAt, maxElevationDeg }], Unix seconds
+// eclipses: [{ kind: "penumbra" | "umbra", start, stop }]; orbit: [{ kind, at }]
+```
+
+- `findEvents` re-runs the propagation, then brackets each event function on a
+  `stepS` grid and refines by Brent's method (1 ms); shorter spans can be
+  missed. Contacts use the geodetic horizon and loaded EOP; eclipses are Earth
+  conical shadow. No light time or refraction.
+
 - Without a kernel, Sun/Moon come from analytic series (Moon ≤ 0.1°).
 - Without EOP, Earth orientation uses zero polar motion and UT1 = UTC.
 - Synchronous; ≤ 200 000 samples per call. Errors throw.
@@ -712,7 +727,7 @@ src/
   geojson.rs       GeoJSON parsing and flattening
   simplestyle.rs   simplestyle-spec 1.1.0
   omm.rs           OMM → SGP4 propagators; OEM → tabulated motion
-  numerical.rs     propagate/propagateSpk requests; kernel, EOP, space weather
+  numerical.rs     propagate/propagateSpk/findEvents requests; kernel, EOP, space weather
   tessellate.rs    Ear clipping, holes, antimeridian
   picking.rs       Overlay hit-testing
   overlays.rs      Overlay layers, geojson:// source, refresh, meshes

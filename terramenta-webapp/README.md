@@ -48,7 +48,7 @@ Validation ([`schema.js`](src/schema.js), [`project.js`](src/project.js)
 `parseProject`): structure against the schema, then ids and references
 (duplicate ids, `url` xor `text`, `camera.follow`, `gnc.focus.layer`, director
 mission, timeline event references and cycles, plot spacecraft, porkchop
-bodies and date ranges). Errors list every failing path. Unknown keys warn and are ignored, so
+bodies and date ranges, ground station ids). Errors list every failing path. Unknown keys warn and are ignored, so
 files with keys from newer builds still open.
 
 Versions: older files are upgraded on load (`migrateProject`) and saved at the
@@ -86,12 +86,14 @@ Relative URLs resolve against the app root (the directory holding
 | `director` | `{type, ...}` | Timeline preset; see [Directors](#directors) |
 | `timeline` | `{directed, skipTo, events: [{id, label, at, actions}]}` | See [Timeline](#timeline) |
 | `analysis` | `{plots: [{id, label, quantity, spacecraft}], porkchops: [{id, label, origin, destination, departure, arrival, retrograde, steps}]}` | See [Reports](#reports) |
+| `groundStations` | `[{id, label, latDeg, lonDeg, altKm, minElevationDeg, color}]` | See [Events](#events). Overlay id `ground-stations` is reserved |
+| `events` | `{eclipses, apsides, nodes, stepS}` | See [Events](#events) |
 
 **Save** (Project tab) writes the current scene: state-stream values plus
 what [`globe.js`](src/globe.js) recorded from `add*` calls (inline text,
 mission search options, explicit satellite selections, camera lock). `ui`,
-`description` and `director` carry over from the loaded project; the timeline
-and analysis are saved as edited, minus events whose references no longer hold
+`description` and `director` carry over from the loaded project; the timeline,
+analysis, ground stations and event options are saved as edited, minus events whose references no longer hold
 and plot spacecraft no longer in the scene. Not saved: per-satellite trail
 toggles, local-file overlay refresh timers, unsaved porkchop inputs.
 
@@ -102,7 +104,7 @@ toggles, local-file overlay refresh timers, unsaved porkchop inputs.
 | | |
 | --- | --- |
 | Open | Project tab (file, URL, recent, examples) or drop a file on the page. Switches in place: abort old panel → `globe.reset()` → apply → mount. |
-| Unsaved changes | Any scene-changing `globe.js` command outside `globe.quietly`, or a timeline or analysis edit, marks the project dirty (`•` in title and Project tab). Camera moves, view switches, pins, refreshes, project application and the timeline runner do not. Opening another project asks; leaving the page prompts. |
+| Unsaved changes | Any scene-changing `globe.js` command outside `globe.quietly`, or a timeline, analysis, station or event-option edit, marks the project dirty (`•` in title and Project tab). Camera moves, view switches, pins, refreshes, project application and the timeline runner do not. Opening another project asks; leaving the page prompts. |
 | Autosave | Dirty scene captured to IndexedDB 3 s after the last change; cleared on save or discard. One left at boot is offered under the Project tab (Recover / Dismiss). |
 | Recent | Last 8 opened projects (IndexedDB). Local files keep their text up to 4 MB. |
 
@@ -116,13 +118,15 @@ Listed in [`projects/manifest.json`](projects/manifest.json).
 | [`mars-mission`](projects/mars-mission.terramenta.json) | Earth → Mars, flight panel, `missionFlight` director, Earth layers off |
 | [`mars-windows`](projects/mars-windows.terramenta.json) | Earth → Mars porkchop studies, 2026 and 2028 windows; opens on Analysis |
 | [`leo-transfer`](projects/leo-transfer.terramenta.json) | 500 → 800 km Hohmann transfer vs. coasting reference; CelesTrak EOP and space weather; timeline slows the clock around each burn; altitude, SMA and eccentricity plots |
+| [`ground-contacts`](projects/ground-contacts.terramenta.json) | 700 km SSO for a day over five ground stations; contacts, eclipses, nodes; timeline slows the clock for `polar.aos.svalbard.1` |
 
 ## Full panel
 
 Six tabs on one row. Hidden panes stay mounted and bound. Sections collapse;
 a non-default open/closed state is remembered per title (`localStorage`).
 Sections marked *closed* start collapsed; Plots and Spacecraft reports hide
-while the project has neither spacecraft nor plots.
+while the project has neither spacecraft nor plots, Events while it has no
+spacecraft.
 
 | Tab | Section | Controls |
 | --- | --- | --- |
@@ -132,10 +136,12 @@ while the project has neither spacecraft nor plots.
 | | GeoJSON overlays | Add from URL or local file; bundled samples and USGS feeds; refresh period; picking on/off. Per layer: visibility, colour, clamp to surface, extrude, simplestyle on/off, refresh, remove, feature counts and age |
 | | Satellites | Add OMM from URL or local file; five Celestrak groups. Per layer: visibility, colour, trails and trail window, refresh, remove, and a filterable object list with per-object draw and trail toggles |
 | **Spacecraft** | Spacecraft | Per spacecraft: visibility, colour, trails, span/samples/final mass, edit, go to start, OEM/SPK export, remove. Editor: initial state (GCRF state with circular-orbit fill, TLE, OMM), start/duration/step, vehicle, forces, integrator, impulsive and finite burns |
+| | Ground stations | Per station: name, position, altitude, mask, edit, remove. Add/edit: name, lat/lon, altitude, mask, colour. Drawn as a point overlay |
 | | Propagation environment (*closed*) | EOP, space weather, kernel: URL or local file, coverage |
-| **Timeline** | Timeline | Directed on/off; previous/next event; strip (click to set the clock) and list of every event with time, source, actions, Go, Remove (project events). Add event: label, at clock or an event plus offset, actions from the current scene (rate, paused, view, frame, camera, focus) |
+| **Timeline** | Timeline | Directed on/off; searched events shown/hidden (remembered, default hidden); previous/next event; strip (click to set the clock) and list of every event with time, source, actions, Go, Remove (project events). Add event: label, at clock or an event plus offset, actions from the current scene (rate, paused, view, frame, camera, focus) |
 | **Analysis** | Plots | Saved plots: one quantity against time per spacecraft, burn markers, clock cursor (click to set the clock), CSV, remove. Add plot: quantity, spacecraft, label |
 | | Spacecraft reports | Per spacecraft: span, samples, start/end/min/max of altitude, SMA, eccentricity, inclination, period, perigee/apogee; Δv budget per burn; CSV. CZML of all spacecraft |
+| | Events | Search options (eclipses, apsides, nodes, step). Per spacecraft: contact and umbra totals; contacts (station, AOS, duration, max elevation) and eclipses (entry, umbra, total) — click a row to set the clock; CSV |
 | | Porkchop plot | Origin/destination bodies, departure/arrival date ranges, grid steps; contoured total-Δv SVG from `terramenta-charta`, minimum marked and listed, grid CSV |
 | | Porkchop studies | Save the inputs under a label (same label replaces); Open fills and computes; remove. The first study opens with the project |
 | | Launch | Calls `addMission` for the selected pair. Per mission: status, dates, Δv, remove |
@@ -234,6 +240,26 @@ Satellites.
   `QUANTITIES` key) and `porkchops` (dates `YYYY-MM-DD`, UTC; `steps` 2–101,
   default 33).
 
+## Events
+
+[`events.js`](src/events.js), [`events-panel.js`](src/events-panel.js);
+search in `terramenta-solare` `events` via `globe.findEvents(propagation,
+options)`, which re-runs the propagation.
+
+- **Method**: event function sampled every `stepS` (default 30 s), sign
+  changes refined by Brent's method to 1 ms; spans shorter than one step can
+  be missed. States are Hermite-interpolated from the propagation's samples.
+- **Contacts**: elevation above the station's geodetic horizon (WGS 84) above
+  `minElevationDeg`; GCRF → ITRF with IAU 2006/2000A (CIO) and loaded EOP,
+  recomputed every 600 s with Earth rotation exact in between. Max elevation by
+  golden-section search. No light time, refraction or terrain mask.
+- **Eclipses**: Earth (6378.137 km sphere) conical shadow, Sun from the loaded
+  kernel or the analytic series; penumbra spans include the umbra.
+- **Apsides** (`r·v = 0`) and **nodes** (GCRF `z = 0`): off by default.
+- Spans open at either end are clipped to the propagation span. Results are
+  cached per spacecraft entry and invalidated by any station or option edit.
+- **CSV**: `utc, end_utc, event, station, max_elevation_deg`, time-ordered.
+
 ## Timeline
 
 [`timeline.js`](src/timeline.js), [`timeline-panel.js`](src/timeline-panel.js).
@@ -243,12 +269,14 @@ snapshot.
 | Source | Ids | Actions |
 | --- | --- | --- |
 | Spacecraft | `<id>.start`, `.end`, `.burnN`, `.finiteN`, `.finiteN.end` | none |
+| Searched | `<id>.aos.<station>.N`, `.los.<station>.N`, `.umbraN`, `.umbraN.end`, `.penumbraN`, `.penumbraN.end`, `.periapsisN`, `.apoapsisN`, `.ascendingNodeN`, `.descendingNodeN` ([Events](#events); N per kind from 1) | none |
 | Missions | `<id>.departure`, `.escape`, `.arrival`, `.capture` (once known) | none |
 | Director | `director-*` | generated, not saved |
 | Project | `timeline.events[].id` (no dots) | `actions` |
 
 `at`: a date-time, or `{event, offsetS}` naming any event above (chains
-allowed, cycles rejected). `skipTo` (same form): once it resolves, a clock
+allowed, cycles rejected). Searched-event references are checked for the
+spacecraft and station only; one past the last found resolves to unknown. `skipTo` (same form): once it resolves, a clock
 before it jumps forward to it, once per open.
 
 Actions: `timeScale` (number or `"max"`; keeps the clock's direction),
@@ -363,6 +391,7 @@ projects/
   mars-mission.terramenta.json  Directed Earth → Mars flight
   mars-windows.terramenta.json  Porkchop studies
   leo-transfer.terramenta.json  Propagated Hohmann transfer
+  ground-contacts.terramenta.json  Ground station contacts and eclipses
 data/
   geometry-tour.geojson         One feature per geometry type
   extruded-cube.geojson         Extruded ring
@@ -379,6 +408,7 @@ src/
   director.js            Timeline presets (missionFlight)
   timeline.js            Timeline: scene/project/director events, resolution, runner
   analysis.js            Project analysis: saved plots and porkchop studies
+  events.js              Ground stations, event options, findEvents cache, searched timeline events
   reports.js             OEM parsing, osculating elements, Δv budget, CSV, CZML
   flight-panel.js        Flight panel
   globe.js               Sole wrapper around the globe WASM module; records add* sources, reports scene changes
@@ -387,7 +417,8 @@ src/
   overlays.js            GeoJSON layer controls, local-file refresh
   ephemeris.js           Satellite layer controls, object list
   mission.js             Analysis tab: porkchop plot, studies, grid CSV, launch
-  spacecraft-panel.js    Spacecraft tab: environment, spacecraft list, editor, OEM/SPK export
+  spacecraft-panel.js    Spacecraft tab: spacecraft list, editor, OEM/SPK export, environment
+  events-panel.js        Ground stations section; Analysis tab events section, CSV
   timeline-panel.js      Timeline tab: strip, event list, add event
   reports-panel.js       Analysis tab: plots, spacecraft reports, CSV/CZML export
   chart.js               SVG builder and time-series line chart

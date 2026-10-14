@@ -5,6 +5,9 @@
  * Events:
  * - Scene, no actions: `<spacecraft>.start`, `.end`, `.burnN` (impulsive),
  *   `.finiteN`, `.finiteN.end` (from `globe.recordedSources().spacecraft`);
+ *   searched events (`events.js` `eventTimeline`): `.aos.<station>.N`,
+ *   `.los.<station>.N`, `.umbraN[.end]`, `.penumbraN[.end]`, `.periapsisN`,
+ *   `.apoapsisN`, `.ascendingNodeN`, `.descendingNodeN`;
  *   `<mission>.departure`, `.escape`, `.arrival`, `.capture` (`state.missions`,
  *   `null` until known).
  * - Project `timeline.events`: `{id, label, at, actions}`; `at` is a date-time
@@ -26,11 +29,14 @@
  */
 
 import { DIRECTORS } from "./director.js";
+import { eventTimeline } from "./events.js";
 import { utcSeconds } from "./format.js";
 import * as globe from "./globe.js";
 
 export const MISSION_PHASES = ["departure", "escape", "arrival", "capture"];
 const REFERENCE = /^([^.]+)\.(start|end|burn([1-9]\d*)|finite([1-9]\d*)(\.end)?|departure|escape|arrival|capture)$/;
+/** Searched events; counts are known only after propagation, so unchecked. */
+const SEARCHED = /^([^.]+)\.(?:(?:aos|los)\.([^.]+)\.[1-9]\d*|(?:umbra|penumbra)[1-9]\d*(?:\.end)?|(?:periapsis|apoapsis|ascendingNode|descendingNode)[1-9]\d*)$/;
 
 let events = [];
 let directed = true;
@@ -112,7 +118,7 @@ export function uniqueEventId(base) {
 
 /**
  * `project.timeline` for saving, events whose references no longer hold
- * dropped; `undefined` if empty. `scene`: `{spacecraft, missionIds, layerIds}`.
+ * dropped; `undefined` if empty. `scene`: `{spacecraft, stationIds, missionIds, layerIds}`.
  */
 export function timelineSection(scene) {
   let timeline = { events: structuredClone(events) };
@@ -138,13 +144,14 @@ export function timelineSection(scene) {
 export function timelineErrors(project, { missionIds, layerIds }) {
   if (!project.timeline) return [];
   const spacecraft = new Map((project.spacecraft ?? []).map(({ id, propagation }) => [id, propagation]));
-  return problems(project.timeline, { spacecraft, missionIds, layerIds }).map(
+  const stationIds = new Set((project.groundStations ?? []).map((station) => station.id));
+  return problems(project.timeline, { spacecraft, stationIds, missionIds, layerIds }).map(
     ({ path, message }) => `${path}: ${message}`,
   );
 }
 
 /** `[{index, path, message}]`; `index` is the event's, or `"skipTo"`. */
-function problems(timeline, { spacecraft, missionIds, layerIds }) {
+function problems(timeline, { spacecraft, stationIds = new Set(), missionIds, layerIds }) {
   const found = [];
   const list = timeline.events ?? [];
   const byId = new Map();
@@ -155,7 +162,7 @@ function problems(timeline, { spacecraft, missionIds, layerIds }) {
 
   const reference = (at, index, path) => {
     if (typeof at === "string") return;
-    const message = referenceProblem(at.event, { spacecraft, missionIds, eventIds: byId });
+    const message = referenceProblem(at.event, { spacecraft, stationIds, missionIds, eventIds: byId });
     if (message) found.push({ index, path: `${path}.event`, message });
   };
   if (timeline.skipTo !== undefined) reference(timeline.skipTo, "skipTo", "skipTo");
@@ -182,7 +189,14 @@ function problems(timeline, { spacecraft, missionIds, layerIds }) {
   return found;
 }
 
-function referenceProblem(name, { spacecraft, missionIds, eventIds }) {
+function referenceProblem(name, { spacecraft, stationIds, missionIds, eventIds }) {
+  const searched = SEARCHED.exec(name);
+  if (searched && !eventIds.has(name)) {
+    const [, id, station] = searched;
+    if (!spacecraft.has(id)) return `no spacecraft "${id}"`;
+    if (station !== undefined && !stationIds.has(station)) return `no ground station "${station}"`;
+    return null;
+  }
   const match = REFERENCE.exec(name);
   if (!match) return eventIds.has(name) ? null : `no event "${name}"`;
   const [, id, kind, burn, finite] = match;
@@ -209,7 +223,8 @@ export function sceneEvents(state, spacecraft = globe.recordedSources().spacecra
   const add = (id, label, source, unixSeconds) =>
     found.push({ id, label, source, unixSeconds: Number.isFinite(unixSeconds) ? unixSeconds : null });
 
-  for (const [id, { propagation, display, info }] of spacecraft) {
+  for (const [id, entry] of spacecraft) {
+    const { propagation, display, info } = entry;
     const name = display.label ?? propagation.name ?? id;
     const start = info ? utcSeconds(info.start) : seconds(propagation.start ?? propagation.initial.epoch);
     const end = info
@@ -228,6 +243,7 @@ export function sceneEvents(state, spacecraft = globe.recordedSources().spacecra
       add(`${id}.finite${index + 1}`, `${name}: finite burn ${index + 1} · ${burn.thrustN} N`, "spacecraft", from);
       add(`${id}.finite${index + 1}.end`, `${name}: finite burn ${index + 1} end`, "spacecraft", after(from, burn.durationS));
     });
+    for (const event of eventTimeline(id, name, entry)) add(event.id, event.label, "event", event.unixSeconds);
   }
 
   for (const mission of state?.missions ?? []) {
@@ -241,7 +257,7 @@ export function sceneEvents(state, spacecraft = globe.recordedSources().spacecra
 /**
  * Every event, resolved and sorted by time (unknown last):
  * `[{id, label, source, unixSeconds, at?, actions?}]`, `source` one of
- * `spacecraft`, `mission`, `director`, `project`.
+ * `spacecraft`, `event`, `mission`, `director`, `project`.
  */
 export function timelineEvents(state, spacecraft) {
   return resolver(state, spacecraft).all;
