@@ -29,10 +29,11 @@ import { button } from "./widgets.js";
 import * as porkchop from "./porkchop.js";
 import { isoUtc, toCsv } from "./reports.js";
 
-const CHART_WIDTH = 520;
-const CHART_HEIGHT = 380;
-const MARGIN = { top: 12, right: 12, bottom: 40, left: 60 };
-const TICK_COUNT = 5;
+// Close to the panel's pixel width, so 10-unit labels render near 10 px.
+const CHART_WIDTH = 320;
+const CHART_HEIGHT = 270;
+const MARGIN = { top: 8, right: 8, bottom: 50, left: 66 };
+const TICK_COUNT = 4;
 const CONTOUR_COUNT = 8;
 // A cell right along the "arrival before departure" edge is asking for an
 // almost-instantaneous transfer, which Lambert answers with a genuine but
@@ -96,14 +97,10 @@ export function mountMission(bind, signal) {
     "label",
     { class: "toggle" },
     retrogradeInput,
-    el("span", {}, "Retrograde (the long way round)"),
+    el("span", {}, "Retrograde (long way)"),
   );
 
-  const status = el(
-    "p",
-    { class: "detail" },
-    "Pick a departure window and an arrival window, then compute.",
-  );
+  const status = el("p", { class: "detail" }, "Set the windows, then compute.");
   const chart = svg("svg", {
     class: "porkchop-chart",
     viewBox: `0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`,
@@ -236,11 +233,8 @@ export function mountMission(bind, signal) {
       }
       status.textContent =
         displayMax < max
-          ? `Δv from ${min.toFixed(2)} km/s, chart capped at ${displayMax.toFixed(0)}+ — the far ` +
-            `corner needs far more (up to ${max.toFixed(0)} km/s) for a near-instantaneous transfer. ` +
-            "Blue is cheapest, red is priciest."
-          : `Total Δv from ${min.toFixed(2)} to ${max.toFixed(2)} km/s across the grid — ` +
-            "blue is cheapest, red is priciest.";
+          ? `Δv ${min.toFixed(2)}–${displayMax.toFixed(0)}+ km/s (max ${max.toFixed(0)}); blue → red.`
+          : `Δv ${min.toFixed(2)}–${max.toFixed(2)} km/s; blue → red.`;
     } catch (error) {
       console.error(error);
       status.textContent = `Failed: ${error}`;
@@ -302,8 +296,9 @@ export function mountMission(bind, signal) {
           {
             class: "porkchop-axis-label",
             x,
-            y: CHART_HEIGHT - MARGIN.bottom + 14,
-            transform: `rotate(-30 ${x} ${CHART_HEIGHT - MARGIN.bottom + 14})`,
+            y: CHART_HEIGHT - MARGIN.bottom + 12,
+            "text-anchor": "end",
+            transform: `rotate(-35 ${x} ${CHART_HEIGHT - MARGIN.bottom + 12})`,
           },
           isoDate(xs[index]),
         ),
@@ -352,17 +347,12 @@ export function mountMission(bind, signal) {
     status,
     best,
     el("div", { class: "porkchop-chart-wrap" }, chart),
-    el(
-      "p",
-      { class: "detail" },
-      "Solved with terramenta-charta's own Lambert-transfer grid — a real scan " +
-        "of the two-body problem at every date pair, not a canned figure.",
-    ),
+    el("p", { class: "detail" }, "Lambert grid, two-body (terramenta-charta)."),
   );
 
   const launch = mountLaunch(bind, originSelect, destinationSelect);
 
-  return el("div", {}, controls, studies.node, launch);
+  return [controls, studies.node, launch];
 }
 
 /**
@@ -413,13 +403,7 @@ function mountLaunch(bind, originSelect, destinationSelect) {
 
   return section(
     "Launch",
-    el(
-      "p",
-      { class: "detail" },
-      "Searches for a real launch window from wherever the simulated clock is " +
-        "now, then departs the moment it gets there — watch it happen in the " +
-        "heliocentric view.",
-    ),
+    el("p", { class: "detail" }, "Finds the next window from the clock, then flies it (heliocentric view)."),
     el("div", { class: "buttons" }, launchButton),
     list,
   );

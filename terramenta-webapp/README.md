@@ -58,16 +58,17 @@ current version; newer ones are refused.
 | --- | --- |
 | 1 | Initial |
 | 2 | `picking` → `overlays.picking` |
+| 3 | `ui.tab` regrouped: `imagery`/`data` → `layers`, `reports`/`mission` → `analysis`, `other` → `view` |
 
 Relative URLs resolve against the app root (the directory holding
 `index.html`), not the project file.
 
 | Key | Type | Applies |
 | --- | --- | --- |
-| `terramenta` | `2` | Format version. Required. |
+| `terramenta` | `3` | Format version. Required. |
 | `name`, `description` | string | Masthead, Project tab, page title |
 | `ui.panel` | `"full"` \| `"flight"` | Full tabbed panel (default) or [flight panel](#flight-panel) |
-| `ui.tab` | `"project"` \| `"imagery"` \| `"data"` \| `"spacecraft"` \| `"timeline"` \| `"reports"` \| `"other"` \| `"mission"` | Initial tab (full panel) |
+| `ui.tab` | `"project"` \| `"layers"` \| `"spacecraft"` \| `"timeline"` \| `"analysis"` \| `"view"` | Initial tab (full panel) |
 | `ui.readout`, `ui.collapsed` | bool | Telemetry + picked-item panels (default on); panel collapsed |
 | `view` | `"globe"` \| `"heliocentric"` | Initial view, no transition |
 | `frame` | `"ecef"` \| `"eci"` | `setFrame` |
@@ -113,34 +114,36 @@ Listed in [`projects/manifest.json`](projects/manifest.json).
 | --- | --- |
 | [`overview`](projects/overview.terramenta.json) | Geometry tour, extruded cube, USGS past hour (60 s refresh), Celestrak `stations` |
 | [`mars-mission`](projects/mars-mission.terramenta.json) | Earth → Mars, flight panel, `missionFlight` director, Earth layers off |
-| [`mars-windows`](projects/mars-windows.terramenta.json) | Earth → Mars porkchop studies, 2026 and 2028 windows; opens on Mission |
+| [`mars-windows`](projects/mars-windows.terramenta.json) | Earth → Mars porkchop studies, 2026 and 2028 windows; opens on Analysis |
 | [`leo-transfer`](projects/leo-transfer.terramenta.json) | 500 → 800 km Hohmann transfer vs. coasting reference; CelesTrak EOP and space weather; timeline slows the clock around each burn; altitude, SMA and eccentricity plots |
 
 ## Full panel
 
-The panel has eight tabs. All controls stay bound while hidden, so switching
-tabs does not resync anything.
+Six tabs on one row. Hidden panes stay mounted and bound. Sections collapse;
+a non-default open/closed state is remembered per title (`localStorage`).
+Sections marked *closed* start collapsed; Plots and Spacecraft reports hide
+while the project has neither spacecraft nor plots.
 
 | Tab | Section | Controls |
 | --- | --- | --- |
 | **Project** | Project | Name, description, source, unsaved marker; open file/URL; save; new; recover; recent; bundled projects |
-| **Imagery** | Imagery | The eight presets grouped by protocol (WMS/WMTS) with tile size, format and depth; previous/next; streaming on/off |
-| **Data** | Vector tiles | Source (MapLibre boundaries, OSM Shortbread), its source layers and depth, colour, ring fill, streaming on/off |
+| **Layers** | Imagery | The eight presets grouped by protocol (WMS/WMTS) with tile size, format and depth; previous/next; streaming on/off |
+| | Vector tiles | Source (MapLibre boundaries, OSM Shortbread), its source layers and depth, colour, ring fill, streaming on/off |
 | | GeoJSON overlays | Add from URL or local file; bundled samples and USGS feeds; refresh period; picking on/off. Per layer: visibility, colour, clamp to surface, extrude, simplestyle on/off, refresh, remove, feature counts and age |
 | | Satellites | Add OMM from URL or local file; five Celestrak groups. Per layer: visibility, colour, trails and trail window, refresh, remove, and a filterable object list with per-object draw and trail toggles |
-| **Spacecraft** | Propagation environment | EOP, space weather, kernel: URL or local file, coverage |
-| | Spacecraft | Per spacecraft: visibility, colour, trails, span/samples/final mass, edit, go to start, OEM/SPK export, remove. Editor: initial state (GCRF state with circular-orbit fill, TLE, OMM), start/duration/step, vehicle, forces, integrator, impulsive and finite burns |
+| **Spacecraft** | Spacecraft | Per spacecraft: visibility, colour, trails, span/samples/final mass, edit, go to start, OEM/SPK export, remove. Editor: initial state (GCRF state with circular-orbit fill, TLE, OMM), start/duration/step, vehicle, forces, integrator, impulsive and finite burns |
+| | Propagation environment (*closed*) | EOP, space weather, kernel: URL or local file, coverage |
 | **Timeline** | Timeline | Directed on/off; previous/next event; strip (click to set the clock) and list of every event with time, source, actions, Go, Remove (project events). Add event: label, at clock or an event plus offset, actions from the current scene (rate, paused, view, frame, camera, focus) |
-| **Reports** | Plots | Saved plots: one quantity against time per spacecraft, burn markers, clock cursor (click to set the clock), CSV, remove. Add plot: quantity, spacecraft, label |
+| **Analysis** | Plots | Saved plots: one quantity against time per spacecraft, burn markers, clock cursor (click to set the clock), CSV, remove. Add plot: quantity, spacecraft, label |
 | | Spacecraft reports | Per spacecraft: span, samples, start/end/min/max of altitude, SMA, eccentricity, inclination, period, perigee/apogee; Δv budget per burn; CSV. CZML of all spacecraft |
-| **Other** | Sun & clock | Run/pause, rate (1× to 86,400×), jump to now or by hours/days, terminator shading |
-| | Reference frame | ECEF / ECI |
-| | Both frames at once | ECI and ECEF triads, graticule and spacing, sidereal arc, focused satellite's orbit and ground track over a set number of orbits; quaternion readout and per-frame speeds |
-| | Camera | Fly to lat/lon/altitude, nine preset places, read back current view, reset |
-| | Globe chrome | Built-in HUD, key legend, key bindings |
-| **Mission** | Porkchop plot | Origin/destination bodies, departure/arrival date ranges, grid steps; contoured total-Δv SVG from `terramenta-charta`, minimum marked and listed, grid CSV |
+| | Porkchop plot | Origin/destination bodies, departure/arrival date ranges, grid steps; contoured total-Δv SVG from `terramenta-charta`, minimum marked and listed, grid CSV |
 | | Porkchop studies | Save the inputs under a label (same label replaces); Open fills and computes; remove. The first study opens with the project |
 | | Launch | Calls `addMission` for the selected pair. Per mission: status, dates, Δv, remove |
+| **View** | Clock | Run/pause, rate (1× to 86,400×), jump to now or by hours/days, terminator shading |
+| | Reference frame | ECEF / ECI |
+| | Frame overlay (*closed*) | ECI and ECEF triads, graticule and spacing, sidereal arc, followed satellite's orbit and ground track over a set number of orbits; GMST, quaternion and per-frame speeds |
+| | Camera | Fly to lat/lon/altitude, nine preset places, read back current view, reset |
+| | Globe chrome (*closed*) | Built-in HUD, key legend, key bindings |
 
 Launched spacecraft are visible in the heliocentric view (`U`; `5` follows the
 first mission).
@@ -383,16 +386,16 @@ src/
   panel.js               Control panel tabs and the one-way bind rule
   overlays.js            GeoJSON layer controls, local-file refresh
   ephemeris.js           Satellite layer controls, object list
-  mission.js             Mission tab: porkchop plot, studies, grid CSV, launch
+  mission.js             Analysis tab: porkchop plot, studies, grid CSV, launch
   spacecraft-panel.js    Spacecraft tab: environment, spacecraft list, editor, OEM/SPK export
   timeline-panel.js      Timeline tab: strip, event list, add event
-  reports-panel.js       Reports tab: plots, spacecraft reports, CSV/CZML export
+  reports-panel.js       Analysis tab: plots, spacecraft reports, CSV/CZML export
   chart.js               SVG builder and time-series line chart
   feature.js             Picking, click handling, placemark calculations
   readout.js             Telemetry panel
   widgets.js             Buttons, toggles, choices, sliders
   format.js              Coordinate, altitude, rate, duration and UTC time formatting
-  dom.js                 Element helpers, tab strip, download
+  dom.js                 Element helpers, collapsible sections, tab strip, download
   places.js              Camera presets
   feeds.js               Overlay catalogue
   orbits.js              Satellite catalogue

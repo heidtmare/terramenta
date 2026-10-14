@@ -1,6 +1,6 @@
 {
   "$schema": "../schema/project.schema.json",
-  "terramenta": 2,
+  "terramenta": 3,
   "name": "Earth → Mars",
   "description": "Patched-conic Earth → Mars transfer from the next launch window: parking-orbit departure, heliocentric cruise, Mars capture. Clock and view are directed.",
   "ui": { "panel": "flight", "readout": false },

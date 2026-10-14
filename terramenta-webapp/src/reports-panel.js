@@ -1,5 +1,7 @@
 /**
- * Reports tab: saved plots, per-spacecraft reports, CSV and CZML export.
+ * Analysis tab, reports half: saved plots, per-spacecraft reports, CSV and
+ * CZML export. Both sections hide while the project has neither spacecraft
+ * nor plots.
  *
  * Samples are the spacecraft's OEM (`globe.propagate` with `kvn`), parsed
  * and derived by `reports.js`, cached per `globe.recordedSources().spacecraft`
@@ -107,12 +109,14 @@ function mountPlots(bind, signal) {
       cards = analysis.savedPlots().map((plot) => plotCard(plot, state));
       list.replaceChildren(...cards.map((card) => card.node));
       empty.hidden = cards.length > 0;
+      node.hidden = !cards.length && !globe.recordedSources().spacecraft.size;
       editor.refresh(state);
     }
     for (const card of cards) card.chart.setCursor(state.sun.unixSeconds);
   });
 
-  return section("Plots", empty, list, editor.node);
+  const node = section("Plots", empty, list, editor.node);
+  return node;
 }
 
 function plotCard(plot, state) {
@@ -234,7 +238,7 @@ function mountPlotEditor() {
 function mountSpacecraftReports(bind) {
   const list = el("div", { class: "layers" });
   const empty = el("p", { class: "detail" }, "No spacecraft. Add one in the Spacecraft tab.");
-  let signature = "";
+  let signature = null;
 
   const czml = button("CZML (all spacecraft)", () => exportCzml(lastState));
   let lastState = null;
@@ -247,16 +251,18 @@ function mountSpacecraftReports(bind) {
     const ids = [...globe.recordedSources().spacecraft.keys()];
     list.replaceChildren(...ids.map((id) => spacecraftReport(id, state)));
     empty.hidden = ids.length > 0;
+    node.hidden = !ids.length;
     czml.disabled = !ids.some((id) => spacecraftData(id)?.oem);
   });
 
-  return section(
+  const node = section(
     "Spacecraft reports",
     empty,
     list,
     el("div", { class: "buttons" }, czml),
-    el("p", { class: "detail" }, "GCRF/UTC. Elements osculating two-body; altitudes over the equatorial radius."),
+    el("p", { class: "detail" }, "GCRF/UTC. Osculating two-body elements; altitude over equatorial radius."),
   );
+  return node;
 }
 
 function spacecraftReport(id, state) {

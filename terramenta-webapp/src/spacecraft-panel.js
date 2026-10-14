@@ -49,7 +49,7 @@ const INITIAL = [
 
 /** `bind(node, sync)`: the panel's registration. `signal` aborts on close. */
 export function mountSpacecraft(bind, signal) {
-  return [mountEnvironment(signal), mountSpacecraftList(bind)];
+  return [mountSpacecraftList(bind), mountEnvironment(signal)];
 }
 
 // --- Environment -----------------------------------------------------------------
@@ -109,12 +109,12 @@ function mountEnvironment(signal) {
   signal?.addEventListener("abort", unsubscribe);
 
   return section(
-    "Propagation environment",
+    { title: "Propagation environment", open: false },
     ...rows.map((entry) => entry.node),
     el(
       "p",
       { class: "detail" },
-      "Loaded once per session and kept across projects. URL sources are saved with the project; local files are not.",
+      "Kept across projects. URL sources save with the project; local files do not.",
     ),
   );
 }
@@ -544,9 +544,7 @@ function mountEditor(getState) {
     el(
       "p",
       { class: "detail" },
-      "Cowell propagation in GCRF: EGM2008 to degree 20, Sun/Moon, drag, SRP. TLE/OMM are carried " +
-        "by SGP4 to the start, then numerically. Output is drawn as an ephemeris layer and saved " +
-        "with the project.",
+      "Cowell in GCRF: EGM2008 20×20, Sun/Moon, drag, SRP. TLE/OMM via SGP4 to the start epoch.",
     ),
   );
 

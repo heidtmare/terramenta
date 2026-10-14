@@ -14,7 +14,7 @@
   --line: rgba(207, 224, 255, 0.16);
   --accent: #7fb2ff;
   --gutter: 16px;
-  --panel-width: 21rem;
+  --panel-width: 23rem;
 }
 
 * {
@@ -273,18 +273,17 @@ body.panel-collapsed #panel {
   display: flex;
   /* Wraps rather than clipping when the labels outgrow the column. */
   flex-wrap: wrap;
-  gap: 0 0.35rem;
-  padding: 0 var(--gutter);
+  padding: 0 calc(var(--gutter) / 2);
   border-bottom: 1px solid var(--line);
 }
 
 .panel-tab {
   /* Content-sized then stretched across the column. */
   flex: 1 1 auto;
-  padding: 0.45rem 0.2rem;
+  padding: 0.45rem 0.15rem;
   font: inherit;
   font-size: 0.72rem;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
   white-space: nowrap;
   color: var(--ink-faint);
@@ -333,8 +332,57 @@ body.panel-collapsed #panel {
   margin-bottom: 0;
 }
 
+.section:not([open]) {
+  padding-bottom: 0.6rem;
+  margin-bottom: 0.6rem;
+}
+
+.section > summary {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-bottom: 0.7rem;
+  list-style: none;
+  cursor: pointer;
+}
+
+.section:not([open]) > summary {
+  margin-bottom: 0;
+}
+
+.section > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* Disclosure chevron: right when closed, down when open. */
+.section > summary::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 0.35rem;
+  height: 0.35rem;
+  border-right: 1px solid var(--ink-faint);
+  border-bottom: 1px solid var(--ink-faint);
+  transform: rotate(-45deg);
+  transition: transform 0.15s ease;
+}
+
+.section[open] > summary::before {
+  transform: rotate(45deg);
+}
+
+.section > summary:hover h2,
+.section > summary:hover::before {
+  color: var(--ink);
+  border-color: var(--ink);
+}
+
+.section > summary:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .section h2 {
-  margin: 0 0 0.7rem;
+  margin: 0;
   font-size: 0.72rem;
   font-weight: 400;
   letter-spacing: 0.22em;
@@ -491,6 +539,8 @@ body.panel-collapsed #panel {
 }
 
 .layer {
+  /* Grid items default to min-width: auto; a nowrap title would widen the pane. */
+  min-width: 0;
   padding: 0.5rem 0.6rem;
   background: var(--surface-raised);
   border: 1px solid var(--line);
@@ -793,8 +843,8 @@ body.panel-collapsed #panel {
 }
 
 .porkchop-axis-label {
-  fill: var(--ink-faint);
-  font-size: 8px;
+  fill: var(--ink-dim);
+  font-size: 10px;
   font-family: inherit;
 }
 
@@ -816,15 +866,13 @@ body.panel-collapsed #panel {
   }
 
   #overlay-left {
-    max-width: calc(100vw - var(--gutter) * 2);
+    /* Clear of the Controls button. */
+    max-width: calc(100vw - var(--gutter) * 3 - 8rem);
     /* The panel takes the bottom of a narrow screen, so the overlay gets what
        is left rather than running underneath it. */
     max-height: calc(38vh - var(--gutter) * 2);
   }
 
-  .readout-row {
-    grid-template-columns: 4.5rem 1fr;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1000,14 +1048,6 @@ textarea.coordinate {
   color: var(--ink-faint);
 }
 
-/* Grid items default to min-width: auto; the nowrap title would widen the pane. */
-.timeline-event,
-.layer.plot,
-.layer.report,
-.layer.study {
-  min-width: 0;
-}
-
 .timeline-event .mission-title,
 .layer.plot .mission-title,
 .layer.report .mission-title,
@@ -1015,10 +1055,7 @@ textarea.coordinate {
   white-space: normal;
 }
 
-.timeline-event .layer-head .button,
-.layer.plot .layer-head .button,
-.layer.report .layer-head .button,
-.layer.study .layer-head .button {
+.layer-head .button {
   flex: 0 0 auto;
 }
 

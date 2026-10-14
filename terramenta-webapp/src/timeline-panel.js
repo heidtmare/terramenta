@@ -120,7 +120,7 @@ export function mountTimeline(bind) {
       ? `Next: ${upcoming.event.label}, ${relative(upcoming.event.unixSeconds - now)}`
       : resolved.length
         ? "No events ahead."
-        : "No events. Spacecraft burns and mission phases appear here; add your own below.";
+        : "No events. Burns, mission phases and added events appear here.";
   }
 
   return section(
