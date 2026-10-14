@@ -1065,6 +1065,7 @@ fn apply_commands(
             GlobeCommand::Reset => {
                 overlays.reset();
                 ephemerides.reset();
+                crate::attitude::clear();
                 missions.reset();
                 *placemarks = PlacemarkSettings::default();
                 *gnc = GncSettings::default();

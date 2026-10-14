@@ -56,6 +56,20 @@ export function attachFake({ objects = {} } = {}) {
         finiteBurns: structuredClone(propagation.finiteBurns ?? []),
       };
     },
+    /** One sample per `stepS` over an hour; sensors 10°…; LVLH Euler zero. Throws on `to: "bad"`. */
+    attitude: (propagation, options) => {
+      if ([options.primary, ...(options.sensors ?? [])].some((p) => p?.to === "bad")) throw new Error("unknown direction");
+      const t0 = Date.parse("2026-01-01T00:00:00Z") / 1000;
+      const times = Array.from({ length: Math.floor(3600 / (options.stepS ?? 60)) + 1 }, (_, i) => t0 + i * (options.stepS ?? 60));
+      return {
+        times,
+        quaternions: times.map(() => [0, 0, 0, 1]),
+        eulerDeg: times.map(() => [0, 0, 0]),
+        sensorAnglesDeg: (options.sensors ?? []).map(() => times.map((_, i) => 10 + i)),
+        undefined: 0,
+        ...(options.aem ? { aem: "CCSDS_AEM_VERS = 1.0\n" } : {}),
+      };
+    },
   };
   const module = new Proxy(
     {},
@@ -79,5 +93,5 @@ export const commands = (calls) =>
   calls
     .map(([name]) => name)
     .filter(
-      (name) => !(name in { layers: 0, vectorLayers: 0, limits: 0, ephemerisObjects: 0, propagationEnvironment: 0, findEvents: 0, target: 0 }),
+      (name) => !(name in { layers: 0, vectorLayers: 0, limits: 0, ephemerisObjects: 0, propagationEnvironment: 0, findEvents: 0, target: 0, attitude: 0 }),
     );

@@ -36,6 +36,7 @@ import { openTimeline, runTimeline, subscribe as onTimelineEdit } from "./timeli
 import { openAnalysis, subscribe as onAnalysisEdit } from "./analysis.js";
 import { openEvents, subscribe as onEventsEdit } from "./events.js";
 import { openTargets, subscribe as onTargetsEdit } from "./targeting.js";
+import { openAttitudes, subscribe as onAttitudesEdit } from "./attitude.js";
 
 const AUTOSAVE_KEY = "autosave";
 const AUTOSAVE_DELAY_MS = 3_000;
@@ -85,6 +86,7 @@ export async function initWorkspace({ mount }) {
   onAnalysisEdit(markDirty);
   onEventsEdit(markDirty);
   onTargetsEdit(markDirty);
+  onAttitudesEdit(markDirty);
 
   addEventListener("beforeunload", (event) => {
     if (dirty) event.preventDefault();
@@ -141,6 +143,7 @@ export async function open(loaded, { force = false, recent: listed = true } = {}
   openAnalysis(loaded.project);
   openEvents(loaded.project);
   openTargets(loaded.project);
+  openAttitudes(loaded.project);
   const controller = new AbortController();
   view = { ...mountView(loaded.project, loaded.source, controller.signal), abort: () => controller.abort() };
   // The last snapshot is the old scene.

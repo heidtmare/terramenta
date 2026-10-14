@@ -89,6 +89,7 @@ Relative URLs resolve against the app root (the directory holding
 | `groundStations` | `[{id, label, latDeg, lonDeg, altKm, minElevationDeg, color}]` | See [Events](#events). Overlay id `ground-stations` is reserved |
 | `events` | `{eclipses, apsides, nodes, stepS}` | See [Events](#events) |
 | `targets` | `[{id, label, spacecraft, variables, goals, maxIterations}]` | See [Targeting](#targeting) |
+| `attitudes` | `[{spacecraft, label, quaternion \| primary + secondary, spin, station \| target, sensors, stepS, axes}]` | See [Attitude](#attitude) |
 
 **Save** (Project tab) writes the current scene: state-stream values plus
 what [`globe.js`](src/globe.js) recorded from `add*` calls (inline text,
@@ -121,6 +122,7 @@ Listed in [`projects/manifest.json`](projects/manifest.json).
 | [`leo-transfer`](projects/leo-transfer.terramenta.json) | 500 → 800 km Hohmann transfer vs. coasting reference; CelesTrak EOP and space weather; timeline slows the clock around each burn; altitude, SMA and eccentricity plots |
 | [`ground-contacts`](projects/ground-contacts.terramenta.json) | 700 km SSO for a day over five ground stations; contacts, eclipses, nodes; timeline slows the clock for `polar.aos.svalbard.1` |
 | [`targeted-transfer`](projects/targeted-transfer.terramenta.json) | Rough first-guess burns, solved on the Spacecraft tab: Hohmann Δv and second-burn epoch for a circular 800 km orbit; 20 N finite-burn duration for a 150 km SMA raise |
+| [`attitude-modes`](projects/attitude-modes.terramenta.json) | Three pointing laws over six hours: LVLH observer with a star-tracker sun angle, SSO tracking Svalbard with its array sun-constrained, 6°/s inertial spinner; body axes and boresights on the globe |
 
 ## Full panel
 
@@ -139,6 +141,7 @@ spacecraft.
 | | Satellites | Add OMM from URL or local file; five Celestrak groups. Per layer: visibility, colour, trails and trail window, refresh, remove, and a filterable object list with per-object draw and trail toggles |
 | **Spacecraft** | Spacecraft | Per spacecraft: visibility, colour, trails, span/samples/final mass, edit, go to start, OEM/SPK export, remove. Editor: initial state (GCRF state with circular-orbit fill, TLE, OMM), start/duration/step, vehicle, forces, integrator, impulsive and finite burns |
 | | Targeting | Per target: spacecraft, solve, apply, edit, remove; last solution's variables (initial, solved) and goals (desired, achieved, error; misses in red). Editor: name, spacecraft, iterations, variables (burn, parameter, perturbation, max step), goals (quantity, at, value, tolerance) |
+| | Attitude | Per profile: law, AEM export, edit, remove; sensor angles (or LVLH Euler angles) chart with clock cursor (click to set the clock), min/time/max table. Editor: spacecraft, name, law (align/constrain axes and directions, or inertial quaternion), spin, target (station or site), step, body axes on/off, sensors (name, axis, direction, colour, boresight on/off) |
 | | Ground stations | Per station: name, position, altitude, mask, edit, remove. Add/edit: name, lat/lon, altitude, mask, colour. Drawn as a point overlay |
 | | Propagation environment (*closed*) | EOP, space weather, kernel: URL or local file, coverage |
 | **Timeline** | Timeline | Directed on/off; searched events shown/hidden (remembered, default hidden); previous/next event; strip (click to set the clock) and list of every event with time, source, actions, Go, Remove (project events). Add event: label, at clock or an event plus offset, actions from the current scene (rate, paused, view, frame, camera, focus) |
@@ -290,6 +293,34 @@ options)`.
   to 1 ms) and marks the project unsaved. Results are not saved; editing a
   target drops its result, re-propagating the spacecraft marks it stale.
 
+## Attitude
+
+[`attitude.js`](src/attitude.js), [`attitude-panel.js`](src/attitude-panel.js);
+laws in `terramenta-solare` `attitude` via `globe.attitude(propagation,
+options)`, drawn with `globe.showAttitude`.
+
+- **Laws**: `primary` body axis exactly on its direction, `secondary` as close
+  to its own as that allows (TRIAD); or `quaternion` (body → GCRF, `[x, y, z,
+  w]`) held. `spin` (`axis`, `rateDegS`, optional zero-angle `epoch`) turns
+  the body about its own axis on top of either.
+- **Directions**: `nadir`, `zenith`, `velocity`, `antiVelocity`,
+  `orbitNormal`, `antiOrbitNormal`, `sun`, `antiSun`, `target` (a ground
+  `station` by id, or a `target` site), or a GCRF vector `[x, y, z]`. Sun as
+  for eclipses; sites through full Earth orientation.
+- **Sensors**: a body axis and a direction; the angle between them is sampled.
+  Drawn as a boresight to the surface (or four axis lengths into space) unless
+  `draw: false`.
+- Sampled every `stepS` (default 60) over the propagation span. Euler angles
+  are 3-2-1 roll/pitch/yaw of the body from CCSDS LVLH (z nadir, y −orbit
+  normal). Samples where the law is undefined (parallel directions) are
+  dropped and counted.
+- Body axes X red, Y green, Z blue, at every drawn object of the spacecraft's
+  layer; slerped between samples; nothing outside the span.
+- **AEM**: CCSDS 504.0-B-1 KVN, `ICRF` → `SC_BODY_1`, `A2B`, scalar last,
+  linear interpolation, sign-continuous.
+- Re-sampled when the profile, its spacecraft or its station changes. Samples
+  are not saved; profiles of removed spacecraft are dropped on save.
+
 ## Timeline
 
 [`timeline.js`](src/timeline.js), [`timeline-panel.js`](src/timeline-panel.js).
@@ -423,6 +454,7 @@ projects/
   leo-transfer.terramenta.json  Propagated Hohmann transfer
   ground-contacts.terramenta.json  Ground station contacts and eclipses
   targeted-transfer.terramenta.json  Differential correction of burns
+  attitude-modes.terramenta.json  Pointing laws, body axes, sensor angles
 data/
   geometry-tour.geojson         One feature per geometry type
   extruded-cube.geojson         Extruded ring
@@ -441,6 +473,7 @@ src/
   analysis.js            Project analysis: saved plots and porkchop studies
   events.js              Ground stations, event options, findEvents cache, searched timeline events
   targeting.js           Project targets, solve/apply via globe.target
+  attitude.js            Project attitude profiles, sampling and drawing via globe.attitude
   reports.js             OEM parsing, osculating elements, Δv budget, CSV, CZML
   flight-panel.js        Flight panel
   globe.js               Sole wrapper around the globe WASM module; records add* sources, reports scene changes
@@ -452,6 +485,7 @@ src/
   spacecraft-panel.js    Spacecraft tab: spacecraft list, editor, OEM/SPK export, environment
   events-panel.js        Ground stations section; Analysis tab events section, CSV
   targeting-panel.js     Spacecraft tab targeting section and editor
+  attitude-panel.js      Spacecraft tab attitude section: charts, AEM, editor
   timeline-panel.js      Timeline tab: strip, event list, add event
   reports-panel.js       Analysis tab: plots, spacecraft reports, CSV/CZML export
   chart.js               SVG builder and time-series line chart

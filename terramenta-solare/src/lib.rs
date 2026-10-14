@@ -22,6 +22,7 @@
 //! are plain Rust underneath the systems that read them. Wiring a solar
 //! system scene up to this tree is future work for whatever embeds it.
 
+pub mod attitude;
 pub mod bodies;
 pub mod ccsds;
 pub mod departure;

@@ -156,6 +156,11 @@
       "description": "Differential-correction problems on spacecraft burns (Spacecraft tab); see src/targeting.js.",
       "type": "array",
       "items": { "$ref": "#/$defs/target" }
+    },
+    "attitudes": {
+      "description": "Attitude profile per spacecraft (Spacecraft tab); see src/attitude.js.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/attitude" }
     }
   },
   "$defs": {
@@ -314,6 +319,87 @@
         },
         "value": { "type": "number" },
         "tolerance": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "vec3": {
+      "title": "three numbers",
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "direction": {
+      "anyOf": [
+        { "type": "string", "enum": ["nadir", "zenith", "velocity", "antiVelocity", "orbitNormal", "antiOrbitNormal", "sun", "antiSun", "target"] },
+        { "$ref": "#/$defs/vec3", "description": "GCRF vector." }
+      ]
+    },
+    "pointing": {
+      "type": "object",
+      "required": ["body", "to"],
+      "additionalProperties": false,
+      "properties": {
+        "body": { "$ref": "#/$defs/vec3", "description": "Body axis." },
+        "to": { "$ref": "#/$defs/direction" }
+      }
+    },
+    "attitude": {
+      "type": "object",
+      "required": ["spacecraft"],
+      "additionalProperties": false,
+      "properties": {
+        "spacecraft": { "type": "string", "description": "Spacecraft id; one profile each." },
+        "label": { "type": "string" },
+        "quaternion": {
+          "title": "four numbers",
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 4,
+          "maxItems": 4,
+          "description": "Body → GCRF [x, y, z, w], held. Instead of primary/secondary."
+        },
+        "primary": { "$ref": "#/$defs/pointing", "description": "Body axis held exactly on its direction." },
+        "secondary": { "$ref": "#/$defs/pointing", "description": "Body axis brought as close to its direction as the primary allows." },
+        "spin": {
+          "type": "object",
+          "required": ["axis", "rateDegS"],
+          "additionalProperties": false,
+          "properties": {
+            "axis": { "$ref": "#/$defs/vec3", "description": "Body axis." },
+            "rateDegS": { "type": "number" },
+            "epoch": { "type": "string", "format": "date-time", "description": "Zero angle; default the propagation start." }
+          }
+        },
+        "station": { "type": "string", "description": "Ground station id for direction \"target\"." },
+        "target": {
+          "type": "object",
+          "required": ["latDeg", "lonDeg"],
+          "additionalProperties": false,
+          "description": "Site for direction \"target\", instead of station.",
+          "properties": {
+            "latDeg": { "type": "number", "minimum": -90, "maximum": 90 },
+            "lonDeg": { "type": "number", "minimum": -180, "maximum": 360 },
+            "altKm": { "type": "number" }
+          }
+        },
+        "sensors": { "type": "array", "items": { "$ref": "#/$defs/sensor" } },
+        "stepS": { "type": "number", "exclusiveMinimum": 0, "description": "Sample step, s; default 60." },
+        "axes": { "type": "boolean", "description": "Draw body axes; default true." }
+      },
+      "if": { "required": ["quaternion"] },
+      "else": { "required": ["primary", "secondary"] }
+    },
+    "sensor": {
+      "description": "Body axis whose angle to a direction is reported; drawn as a boresight.",
+      "type": "object",
+      "required": ["body", "to"],
+      "additionalProperties": false,
+      "properties": {
+        "label": { "type": "string" },
+        "body": { "$ref": "#/$defs/vec3" },
+        "to": { "$ref": "#/$defs/direction" },
+        "color": { "$ref": "#/$defs/color" },
+        "draw": { "type": "boolean", "description": "Draw the boresight; default true." }
       }
     },
     "analysis": {

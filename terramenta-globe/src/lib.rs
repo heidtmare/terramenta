@@ -15,6 +15,9 @@
 //!   to add its own plugins first.
 
 pub mod api;
+// Tracks set from `wasm`.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+mod attitude;
 mod camera;
 mod ephemeris;
 mod features;
@@ -224,6 +227,7 @@ pub fn app(config: GlobeConfig) -> App {
             OverlayPlugin,
             EphemerisPlugin,
             PlacemarkPlugin,
+            attitude::AttitudePlugin,
             HudPlugin,
         ));
 

@@ -1,9 +1,10 @@
-//! CCSDS Orbit Data Messages (502.0-B-3), KVN: OEM and OPM read/write.
+//! CCSDS Orbit Data Messages (502.0-B-3), KVN: OEM and OPM read/write; Attitude Data
+//! Messages (504.0-B-1), KVN: quaternion AEM read/write.
 //!
 //! Frames and centres are carried as strings; no frame conversion is applied.
 //! Covariance blocks are skipped on read.
 
-use glam::DVec3;
+use glam::{DQuat, DVec3};
 use hifitime::TimeScale;
 
 use crate::frame::StateVector;
@@ -603,6 +604,202 @@ impl Opm {
     }
 }
 
+// --- AEM ------------------------------------------------------------------------------
+
+/// Quaternion AEM segment metadata. Quaternions are held A → B (body → inertial in
+/// [`crate::attitude`] terms when A is inertial).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AemMetadata {
+    pub object_name: String,
+    pub object_id: String,
+    pub center_name: Option<String>,
+    pub ref_frame_a: String,
+    pub ref_frame_b: String,
+    pub time_system: TimeSystem,
+}
+
+impl Default for AemMetadata {
+    fn default() -> Self {
+        Self {
+            object_name: "UNKNOWN".into(),
+            object_id: "UNKNOWN".into(),
+            center_name: Some("EARTH".into()),
+            // GCRF axes are ICRF axes; AEM 1.0 has no GCRF.
+            ref_frame_a: "ICRF".into(),
+            ref_frame_b: "SC_BODY_1".into(),
+            time_system: TimeSystem::Utc,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AemSegment {
+    pub metadata: AemMetadata,
+    pub quaternions: Vec<(Epoch, DQuat)>,
+}
+
+/// Written as `ATTITUDE_DIR = A2B`, `QUATERNION_TYPE = LAST`, linear interpolation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Aem {
+    pub header: Header,
+    pub segments: Vec<AemSegment>,
+}
+
+impl Default for Aem {
+    fn default() -> Self {
+        Self {
+            header: Header {
+                version: "1.0".into(),
+                ..Header::default()
+            },
+            segments: Vec::new(),
+        }
+    }
+}
+
+impl Aem {
+    pub fn to_kvn(&self) -> String {
+        use std::fmt::Write;
+        let mut out = String::new();
+        write_header(&mut out, "AEM", &self.header);
+        for seg in &self.segments {
+            let m = &seg.metadata;
+            let ts = m.time_system;
+            let (Some(first), Some(last)) = (seg.quaternions.first(), seg.quaternions.last())
+            else {
+                continue;
+            };
+            let _ = writeln!(out, "\nMETA_START");
+            let _ = writeln!(out, "OBJECT_NAME = {}", m.object_name);
+            let _ = writeln!(out, "OBJECT_ID = {}", m.object_id);
+            if let Some(center) = &m.center_name {
+                let _ = writeln!(out, "CENTER_NAME = {center}");
+            }
+            let _ = writeln!(out, "REF_FRAME_A = {}", m.ref_frame_a);
+            let _ = writeln!(out, "REF_FRAME_B = {}", m.ref_frame_b);
+            let _ = writeln!(out, "ATTITUDE_DIR = A2B");
+            let _ = writeln!(out, "TIME_SYSTEM = {}", ts.as_str());
+            let _ = writeln!(out, "START_TIME = {}", ts.format(first.0));
+            let _ = writeln!(out, "STOP_TIME = {}", ts.format(last.0));
+            let _ = writeln!(out, "ATTITUDE_TYPE = QUATERNION");
+            let _ = writeln!(out, "QUATERNION_TYPE = LAST");
+            let _ = writeln!(out, "INTERPOLATION_METHOD = LINEAR");
+            let _ = writeln!(out, "INTERPOLATION_DEGREE = 1");
+            let _ = writeln!(out, "META_STOP\n\nDATA_START");
+            for (e, q) in &seg.quaternions {
+                let _ = writeln!(
+                    out,
+                    "{} {:.12} {:.12} {:.12} {:.12}",
+                    ts.format(*e),
+                    q.x,
+                    q.y,
+                    q.z,
+                    q.w
+                );
+            }
+            let _ = writeln!(out, "DATA_STOP");
+        }
+        out
+    }
+
+    /// Quaternion segments only; `B2A` is conjugated to A → B. Other attitude types are
+    /// an error.
+    pub fn from_kvn(text: &str) -> Result<Self, CcsdsError> {
+        let mut aem = Aem::default();
+        let mut meta: Option<(AemMetadata, bool, bool)> = None; // (metadata, b2a, scalar first)
+        let mut current: Option<(bool, bool)> = None;
+        for (i, raw) in text.lines().enumerate() {
+            let line = raw.trim();
+            let n = i + 1;
+            if line.is_empty() || line.starts_with("COMMENT") || line == "DATA_START" {
+                continue;
+            }
+            match line {
+                "META_START" => {
+                    let m = AemMetadata {
+                        center_name: None,
+                        ..AemMetadata::default()
+                    };
+                    meta = Some((m, false, false));
+                    continue;
+                }
+                "META_STOP" => {
+                    let (m, b2a, first) = meta
+                        .take()
+                        .ok_or_else(|| err(n, "META_STOP without META_START"))?;
+                    aem.segments.push(AemSegment {
+                        metadata: m,
+                        quaternions: Vec::new(),
+                    });
+                    current = Some((b2a, first));
+                    continue;
+                }
+                "DATA_STOP" => {
+                    current = None;
+                    continue;
+                }
+                _ => {}
+            }
+            if let Some((m, b2a, first)) = meta.as_mut() {
+                let Some((k, v)) = kv(line) else {
+                    continue;
+                };
+                match k {
+                    "OBJECT_NAME" => m.object_name = v.into(),
+                    "OBJECT_ID" => m.object_id = v.into(),
+                    "CENTER_NAME" => m.center_name = Some(v.into()),
+                    "REF_FRAME_A" => m.ref_frame_a = v.into(),
+                    "REF_FRAME_B" => m.ref_frame_b = v.into(),
+                    "ATTITUDE_DIR" => *b2a = v.eq_ignore_ascii_case("B2A"),
+                    "QUATERNION_TYPE" => *first = v.eq_ignore_ascii_case("FIRST"),
+                    "TIME_SYSTEM" => {
+                        m.time_system = TimeSystem::parse(v)
+                            .ok_or_else(|| err(n, format!("unsupported TIME_SYSTEM {v}")))?
+                    }
+                    "ATTITUDE_TYPE" if !v.eq_ignore_ascii_case("QUATERNION") => {
+                        return Err(err(n, format!("unsupported ATTITUDE_TYPE {v}")));
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+            if let Some((k, v)) = kv(line) {
+                if k == "CCSDS_AEM_VERS" {
+                    aem.header.version = v.into();
+                } else if k == "CREATION_DATE" {
+                    aem.header.creation_date = v.into();
+                } else if k == "ORIGINATOR" {
+                    aem.header.originator = v.into();
+                }
+                continue;
+            }
+            let (Some((b2a, first)), Some(seg)) = (current, aem.segments.last_mut()) else {
+                return Err(err(n, "data outside a segment"));
+            };
+            let mut fields = line.split_whitespace();
+            let epoch = fields
+                .next()
+                .and_then(|e| seg.metadata.time_system.parse_epoch(e))
+                .ok_or_else(|| err(n, "bad epoch"))?;
+            let c: Vec<f64> = fields
+                .take(4)
+                .map(|f| f.parse::<f64>().map_err(|_| err(n, "bad quaternion")))
+                .collect::<Result<_, _>>()?;
+            if c.len() < 4 {
+                return Err(err(n, "expected four quaternion components"));
+            }
+            let q = if first {
+                DQuat::from_xyzw(c[1], c[2], c[3], c[0])
+            } else {
+                DQuat::from_xyzw(c[0], c[1], c[2], c[3])
+            };
+            seg.quaternions
+                .push((epoch, if b2a { q.conjugate() } else { q }));
+        }
+        Ok(aem)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -734,5 +931,52 @@ COVARIANCE_STOP
         let a = TimeSystem::Utc.parse_epoch("2024-060T00:00:00").unwrap();
         let b = TimeSystem::Utc.parse_epoch("2024-02-29T00:00:00Z").unwrap();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn aem_round_trips_and_honours_direction_and_order() {
+        let e = TimeSystem::Utc.parse_epoch("2026-01-01T00:00:00").unwrap();
+        let q = DQuat::from_rotation_z(0.3) * DQuat::from_rotation_x(-0.2);
+        let aem = Aem {
+            segments: vec![AemSegment {
+                metadata: AemMetadata {
+                    object_name: "SAT".into(),
+                    object_id: "2026-001A".into(),
+                    ..AemMetadata::default()
+                },
+                quaternions: vec![(e, q), (e.advanced_by_seconds(60.0), q)],
+            }],
+            ..Aem::default()
+        };
+        let text = aem.to_kvn();
+        assert!(text.starts_with("CCSDS_AEM_VERS = 1.0"));
+        assert!(text.contains("ATTITUDE_DIR = A2B"));
+        let back = Aem::from_kvn(&text).unwrap();
+        assert_eq!(back.segments[0].metadata, aem.segments[0].metadata);
+        let (e1, q1) = back.segments[0].quaternions[1];
+        assert!((e1.seconds_since(e) - 60.0).abs() < 1e-6);
+        assert!((q1 - q).length() < 1e-11);
+
+        let flipped = text
+            .replace("ATTITUDE_DIR = A2B", "ATTITUDE_DIR = B2A")
+            .replace("QUATERNION_TYPE = LAST", "QUATERNION_TYPE = FIRST");
+        let data = format!(
+            "{} {} {} {} {}",
+            "2026-01-01T00:00:00.000", q.w, -q.x, -q.y, -q.z
+        );
+        let flipped = flipped
+            .lines()
+            .map(|l| {
+                if l.starts_with("2026-01-01T00:00:00") {
+                    data.as_str()
+                } else {
+                    l
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let back = Aem::from_kvn(&flipped).unwrap();
+        assert!((back.segments[0].quaternions[0].1 - q).length() < 1e-11);
+        assert!(Aem::from_kvn(&text.replace("= QUATERNION\n", "= EULER_ANGLE\n")).is_err());
     }
 }

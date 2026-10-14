@@ -7,9 +7,13 @@
 
 use std::sync::{Arc, LazyLock, RwLock};
 
+use bevy::math::{DQuat, DVec3};
 use serde::{Deserialize, Serialize};
+use terramenta_solare::attitude::{self, AlignConstrain, Direction, Geometry, Law, Profile, Spin};
 use terramenta_solare::bodies::{GM_MOON_KM3_S2, GM_SUN_KM3_S2};
-use terramenta_solare::ccsds::{Oem, OemMetadata, OemSegment, TimeSystem};
+use terramenta_solare::ccsds::{
+    Aem, AemMetadata, AemSegment, Header, Oem, OemMetadata, OemSegment, TimeSystem,
+};
 use terramenta_solare::earth::EarthModel;
 use terramenta_solare::eop::{EopTable, FinalsKind};
 use terramenta_solare::events::{self, GroundStation, OrbitEventKind, Shadow};
@@ -303,6 +307,20 @@ pub struct PropagatedInfo {
     pub stop: String,
 }
 
+/// Now, UTC, `YYYY-MM-DDThh:mm:ss.sss` (CCSDS `CREATION_DATE`).
+fn creation_date() -> String {
+    #[cfg(target_arch = "wasm32")]
+    let iso = String::from(js_sys::Date::new_0().to_iso_string());
+    #[cfg(not(target_arch = "wasm32"))]
+    let iso = {
+        let unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0.0, |d| d.as_secs_f64());
+        TimeSystem::Utc.format(Epoch::from_unix_seconds(unix))
+    };
+    iso.trim_end_matches('Z').chars().take(23).collect()
+}
+
 fn epoch(s: &str) -> Result<Epoch, String> {
     TimeSystem::Utc
         .parse_epoch(s)
@@ -562,13 +580,16 @@ impl Propagated {
             interpolation: Some(Interpolation::default()),
         };
         Oem {
+            header: Header {
+                creation_date: creation_date(),
+                ..Header::default()
+            },
             segments: arcs(&self.ordered_states())
                 .map(|states| OemSegment {
                     metadata: metadata.clone(),
                     states: states.to_vec(),
                 })
                 .collect(),
-            ..Default::default()
         }
     }
 
@@ -1194,6 +1215,311 @@ pub fn target(req: &PropagationRequest, target: &TargetRequest) -> Result<Target
     })
 }
 
+// --- Attitude -------------------------------------------------------------------------
+
+/// `attitude` options: `quaternion`, or `primary` + `secondary` (align/constrain); `spin`
+/// on top of either.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttitudeRequest {
+    /// Body → GCRF, `[x, y, z, w]`.
+    pub quaternion: Option<[f64; 4]>,
+    pub primary: Option<PointingOptions>,
+    pub secondary: Option<PointingOptions>,
+    pub spin: Option<SpinOptions>,
+    /// Site for `"target"`.
+    pub target: Option<SiteOptions>,
+    /// Body axes whose angle to a direction is reported per sample.
+    #[serde(default)]
+    pub sensors: Vec<PointingOptions>,
+    #[serde(default = "default_attitude_step")]
+    pub step_s: f64,
+    /// Return CCSDS AEM KVN.
+    #[serde(default)]
+    pub aem: bool,
+}
+
+fn default_attitude_step() -> f64 {
+    60.0
+}
+
+/// Body axis `body` toward `to`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PointingOptions {
+    pub body: [f64; 3],
+    pub to: DirectionOptions,
+}
+
+/// A [`Direction`] name, or a fixed GCRF vector.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum DirectionOptions {
+    Named(String),
+    Inertial([f64; 3]),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpinOptions {
+    pub axis: [f64; 3],
+    pub rate_deg_s: f64,
+    /// Zero-angle epoch; default the first sample.
+    pub epoch: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SiteOptions {
+    pub lat_deg: f64,
+    pub lon_deg: f64,
+    #[serde(default)]
+    pub alt_km: f64,
+}
+
+/// Direction names `attitude` accepts.
+pub const DIRECTION_NAMES: [&str; 9] = [
+    "nadir",
+    "zenith",
+    "velocity",
+    "antiVelocity",
+    "orbitNormal",
+    "antiOrbitNormal",
+    "sun",
+    "antiSun",
+    "target",
+];
+
+fn direction(d: &DirectionOptions) -> Result<Direction, String> {
+    Ok(match d {
+        DirectionOptions::Inertial(v) => {
+            let v = DVec3::from_array(*v);
+            if !(v.length() > 0.0 && v.is_finite()) {
+                return Err("inertial direction must be non-zero".into());
+            }
+            Direction::Inertial(v)
+        }
+        DirectionOptions::Named(name) => match name.as_str() {
+            "nadir" => Direction::Nadir,
+            "zenith" => Direction::Zenith,
+            "velocity" => Direction::Velocity,
+            "antiVelocity" => Direction::AntiVelocity,
+            "orbitNormal" => Direction::OrbitNormal,
+            "antiOrbitNormal" => Direction::AntiOrbitNormal,
+            "sun" => Direction::Sun,
+            "antiSun" => Direction::AntiSun,
+            "target" => Direction::Target,
+            other => {
+                return Err(format!(
+                    "unknown direction {other:?} (one of {})",
+                    DIRECTION_NAMES.join(", ")
+                ));
+            }
+        },
+    })
+}
+
+fn body_axis(v: [f64; 3], what: &str) -> Result<DVec3, String> {
+    DVec3::from_array(v)
+        .try_normalize()
+        .ok_or_else(|| format!("{what}: body axis must be non-zero"))
+}
+
+/// Attitude samples. Times Unix seconds (UTC); samples where the law is undefined
+/// (parallel directions) are dropped and counted.
+#[derive(Serialize, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AttitudeSamples {
+    pub times: Vec<f64>,
+    /// Body → GCRF, `[x, y, z, w]`.
+    pub quaternions: Vec<[f64; 4]>,
+    /// Body relative to LVLH, 3-2-1 `[roll, pitch, yaw]`, degrees.
+    pub euler_deg: Vec<[f64; 3]>,
+    /// Per sensor, per sample: angle between its body axis and its direction, degrees.
+    pub sensor_angles_deg: Vec<Vec<f64>>,
+    pub undefined: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aem: Option<String>,
+    /// Body → TEME per sample, for drawing.
+    #[serde(skip)]
+    pub teme: Vec<(f64, DQuat)>,
+}
+
+fn profile(att: &AttitudeRequest, start: Epoch) -> Result<Profile, String> {
+    let law = match (&att.quaternion, &att.primary, &att.secondary) {
+        (Some(q), None, None) => {
+            let q = DQuat::from_array(*q);
+            if !(q.length() > 0.0 && q.is_finite()) {
+                return Err("quaternion must be non-zero".into());
+            }
+            Law::Inertial(q.normalize())
+        }
+        (None, Some(p), Some(s)) => Law::AlignConstrain(AlignConstrain {
+            primary: body_axis(p.body, "primary")?,
+            primary_to: direction(&p.to)?,
+            secondary: body_axis(s.body, "secondary")?,
+            secondary_to: direction(&s.to)?,
+        }),
+        _ => return Err("give quaternion, or primary and secondary".into()),
+    };
+    let spin = match &att.spin {
+        None => None,
+        Some(s) => {
+            if !s.rate_deg_s.is_finite() {
+                return Err("spin rateDegS must be finite".into());
+            }
+            Some(Spin {
+                axis: body_axis(s.axis, "spin")?,
+                rate_rad_s: s.rate_deg_s.to_radians(),
+                epoch: s.epoch.as_deref().map(epoch).transpose()?.unwrap_or(start),
+            })
+        }
+    };
+    Ok(Profile { law, spin })
+}
+
+/// Samples `att` over the propagated span every `stepS` (and at its end). Sun from
+/// [`sun_and_moon`]; the target site through full Earth orientation.
+pub fn attitude(propagated: &Propagated, att: &AttitudeRequest) -> Result<AttitudeSamples, String> {
+    let states = propagated.ordered_states();
+    let (Some(&(start, _)), Some(&(stop, _))) = (states.first(), states.last()) else {
+        return Ok(AttitudeSamples::default());
+    };
+    let span = stop.seconds_since(start);
+    let step = att.step_s;
+    if step.is_nan() || step <= 0.0 || span / step > MAX_SAMPLES as f64 {
+        return Err(format!(
+            "stepS must be positive and yield ≤ {MAX_SAMPLES} samples"
+        ));
+    }
+    let profile = profile(att, start)?;
+    let uses_target = |d: Direction| d == Direction::Target;
+    let wants_target = match profile.law {
+        Law::AlignConstrain(a) => uses_target(a.primary_to) || uses_target(a.secondary_to),
+        Law::Inertial(_) => false,
+    };
+    let sensors = att
+        .sensors
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            Ok((
+                body_axis(s.body, &format!("sensors[{i}]"))?,
+                direction(&s.to)?,
+            ))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let site = match &att.target {
+        Some(t) if (-90.0..=90.0).contains(&t.lat_deg) && t.lon_deg.is_finite() => Some(
+            GroundStation {
+                name: String::new(),
+                latitude_rad: t.lat_deg.to_radians(),
+                longitude_rad: t.lon_deg.to_radians(),
+                altitude_km: t.alt_km,
+                min_elevation_rad: 0.0,
+            }
+            .position_itrf_km(),
+        ),
+        Some(_) => return Err("target: bad latitude/longitude".into()),
+        None if wants_target || sensors.iter().any(|&(_, d)| uses_target(d)) => {
+            return Err("direction \"target\" needs a target site".into());
+        }
+        None => None,
+    };
+
+    let ephemeris = SampledEphemeris::new(states, Interpolation::default());
+    let env = environment();
+    let (sun, _) = sun_and_moon(&env);
+    let orientation = EarthOrientation::new(env.eop.clone(), EarthModel::Iau2006Cio);
+    let mut anchors = std::collections::HashMap::new();
+    let mut teme_grid = terramenta_solare::earth::TemeGrid::new(|e| {
+        env.eop.as_ref().map(|t| t.at(e)).unwrap_or_default()
+    });
+
+    let count = (span / step).ceil() as usize;
+    let mut out = AttitudeSamples {
+        sensor_angles_deg: vec![Vec::new(); sensors.len()],
+        ..AttitudeSamples::default()
+    };
+    let mut aem = Vec::new();
+    for i in 0..=count {
+        let t = (i as f64 * step).min(span);
+        let e = start.advanced_by_seconds(t);
+        let s = ephemeris.state_at(e);
+        let target_km = site.map(|itrf| {
+            let k = (t / ORIENTATION_GRID_S).floor() as i64;
+            let anchor = *anchors.entry(k).or_insert_with(|| {
+                orientation.transform(start.advanced_by_seconds(k as f64 * ORIENTATION_GRID_S))
+            });
+            anchor
+                .advanced_by(t - k as f64 * ORIENTATION_GRID_S)
+                .rotation()
+                .transpose()
+                * itrf
+        });
+        let g = Geometry {
+            position_km: s.position_km,
+            velocity_km_s: s.velocity_km_s,
+            sun_km: sun.position_at(e),
+            target_km,
+        };
+        let Some(q) = profile.attitude(e, &g) else {
+            out.undefined += 1;
+            continue;
+        };
+        // Sign continuous, first sample w ≥ 0, so linear interpolation of the AEM holds.
+        let previous = out.quaternions.last().map(|q| DQuat::from_array(*q));
+        let q = match previous {
+            Some(p) if p.dot(q) < 0.0 => -q,
+            None if q.w < 0.0 => -q,
+            _ => q,
+        };
+        let unix = e.to_unix_seconds();
+        out.times.push(unix);
+        out.quaternions.push(q.to_array());
+        let euler = attitude::lvlh_euler_321(q, g.position_km, g.velocity_km_s);
+        out.euler_deg.push([
+            euler.x.to_degrees(),
+            euler.y.to_degrees(),
+            euler.z.to_degrees(),
+        ]);
+        for (angles, &(body, to)) in out.sensor_angles_deg.iter_mut().zip(&sensors) {
+            angles.push(to.resolve(&g).map_or(f64::NAN, |d| {
+                attitude::off_axis_angle(q, body, d).to_degrees()
+            }));
+        }
+        let gcrf_to_teme = DQuat::from_mat3(&teme_grid.at(e).transpose());
+        out.teme.push((unix, (gcrf_to_teme * q).normalize()));
+        if att.aem {
+            aem.push((e, q));
+        }
+        if t >= span {
+            break;
+        }
+    }
+    if att.aem {
+        out.aem = Some(
+            Aem {
+                header: Header {
+                    version: "1.0".into(),
+                    creation_date: creation_date(),
+                    ..Header::default()
+                },
+                segments: vec![AemSegment {
+                    metadata: AemMetadata {
+                        object_name: propagated.name.clone(),
+                        object_id: propagated.object_id.clone(),
+                        ..AemMetadata::default()
+                    },
+                    quaternions: aem,
+                }],
+            }
+            .to_kvn(),
+        );
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1447,5 +1773,102 @@ mod tests {
             .unwrap();
             assert!(target(&req, &bad).is_err(), "{variables} {goals}");
         }
+    }
+
+    /// Nadir/velocity-pointed circular orbit: zero LVLH angles, the +Z sensor always at
+    /// nadir, a fixed-inertial hold sweeping pitch at orbital rate.
+    #[test]
+    fn attitude_laws_over_an_orbit() {
+        let v = (398_600.441_8_f64 / 6878.137).sqrt();
+        let req = request(&format!(
+            r#"{{ "initial": {{ "epoch": "2026-03-20T00:00:00Z",
+                   "positionKm": [6878.137, 0, 0], "velocityKmS": [0, {v}, 0] }},
+                 "durationS": 5700, "stepS": 60,
+                 "forces": {{ "gravity": [0, 0], "thirdBody": false, "srp": false, "drag": "none" }} }}"#
+        ));
+        let out = propagate(&req).unwrap();
+        let att: AttitudeRequest = serde_json::from_str(
+            r#"{ "primary": { "body": [0, 0, 1], "to": "nadir" },
+                 "secondary": { "body": [1, 0, 0], "to": "velocity" },
+                 "sensors": [{ "body": [0, 0, 1], "to": "nadir" }, { "body": [0, 0, 1], "to": "sun" }],
+                 "stepS": 100, "aem": true }"#,
+        )
+        .unwrap();
+        let s = attitude(&out, &att).unwrap();
+        assert_eq!(s.times.len(), 58, "57 steps and the end");
+        assert_eq!(s.undefined, 0);
+        assert!((s.times[57] - s.times[0] - 5700.0).abs() < 1e-6);
+        assert!(s.euler_deg.iter().flatten().all(|a| a.abs() < 1e-6));
+        assert!(s.sensor_angles_deg[0].iter().all(|a| a.abs() < 1e-6));
+        // Equinox, equatorial orbit: the sun angle sweeps 0–180°.
+        let sun = &s.sensor_angles_deg[1];
+        let (lo, hi) = sun
+            .iter()
+            .fold((180.0f64, 0.0f64), |(l, h), &a| (l.min(a), h.max(a)));
+        assert!(lo < 5.0 && hi > 175.0, "{lo} {hi}");
+        let aem = s.aem.as_deref().unwrap();
+        let back = Aem::from_kvn(aem).unwrap();
+        assert_eq!(back.segments[0].quaternions.len(), 58);
+        assert!(back.segments[0].metadata.ref_frame_a == "ICRF");
+        assert_eq!(back.header.creation_date.len(), 23);
+        let q: Vec<DQuat> = s
+            .quaternions
+            .iter()
+            .map(|q| DQuat::from_array(*q))
+            .collect();
+        assert!(q[0].w >= 0.0 && q.windows(2).all(|p| p[0].dot(p[1]) > 0.0));
+
+        let hold: AttitudeRequest =
+            serde_json::from_str(r#"{ "quaternion": [0, 0, 0, 1], "stepS": 60 }"#).unwrap();
+        let s = attitude(&out, &hold).unwrap();
+        let pitch: Vec<f64> = s.euler_deg.iter().map(|e| e[1]).collect();
+        assert!(pitch.iter().any(|p| p.abs() > 80.0));
+
+        let spin: AttitudeRequest = serde_json::from_str(
+            r#"{ "quaternion": [0, 0, 0, 1], "spin": { "axis": [0, 0, 1], "rateDegS": 1.5 }, "stepS": 60 }"#,
+        )
+        .unwrap();
+        let s = attitude(&out, &spin).unwrap();
+        let q1 = DQuat::from_array(s.quaternions[1]);
+        assert!((q1.angle_between(DQuat::IDENTITY).to_degrees() - 90.0).abs() < 1e-6);
+
+        for bad in [
+            r#"{ "primary": { "body": [0, 0, 1], "to": "nadir" } }"#,
+            r#"{ "primary": { "body": [0, 0, 1], "to": "moon" }, "secondary": { "body": [1, 0, 0], "to": "sun" } }"#,
+            r#"{ "primary": { "body": [0, 0, 0], "to": "nadir" }, "secondary": { "body": [1, 0, 0], "to": "sun" } }"#,
+            r#"{ "primary": { "body": [0, 0, 1], "to": "target" }, "secondary": { "body": [1, 0, 0], "to": "sun" } }"#,
+            r#"{ "quaternion": [0, 0, 0, 1], "stepS": 0 }"#,
+        ] {
+            let att: AttitudeRequest = serde_json::from_str(bad).unwrap();
+            assert!(attitude(&out, &att).is_err(), "{bad}");
+        }
+    }
+
+    /// Target tracking: +Z stays on a site starting under the spacecraft.
+    #[test]
+    fn attitude_tracks_a_ground_site() {
+        let v = (398_600.441_8_f64 / 6878.137).sqrt();
+        let req = request(&format!(
+            r#"{{ "initial": {{ "epoch": "2026-03-20T00:00:00Z",
+                   "positionKm": [6878.137, 0, 0], "velocityKmS": [0, {v}, 0] }},
+                 "durationS": 600, "stepS": 60, "forces": {{ "gravity": [0, 0] }} }}"#
+        ));
+        let out = propagate(&req).unwrap();
+        let start = epoch("2026-03-20T00:00:00Z").unwrap().to_unix_seconds();
+        let lon = -crate::frame::sidereal_radians(start).to_degrees();
+        let att: AttitudeRequest = serde_json::from_str(&format!(
+            r#"{{ "primary": {{ "body": [0, 0, 1], "to": "target" }},
+                 "secondary": {{ "body": [1, 0, 0], "to": "velocity" }},
+                 "target": {{ "latDeg": 0, "lonDeg": {lon} }},
+                 "sensors": [{{ "body": [0, 0, 1], "to": "target" }}, {{ "body": [0, 0, 1], "to": "nadir" }}] }}"#
+        ))
+        .unwrap();
+        let s = attitude(&out, &att).unwrap();
+        assert!(s.sensor_angles_deg[0].iter().all(|a| a.abs() < 1e-6));
+        // Off-nadir grows as the site falls behind.
+        let off = &s.sensor_angles_deg[1];
+        // ~0.36° precession since J2000 (GMST is of date) is ~5° off-nadir at 500 km.
+        assert!(off[0] < 8.0 && off.last().unwrap() > &30.0, "{off:?}");
+        assert_eq!(s.teme.len(), s.times.len());
     }
 }

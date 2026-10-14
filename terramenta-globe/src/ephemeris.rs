@@ -742,6 +742,19 @@ impl EphemerisSettings {
         Some((catalogue.clone(), index))
     }
 
+    /// A visible layer's catalogue and the objects drawn this frame; `None` when the
+    /// layer or the master switch is off.
+    pub(crate) fn drawn_objects(&self, id: &str) -> Option<(Arc<Catalogue>, Vec<usize>)> {
+        if !self.enabled {
+            return None;
+        }
+        let layer = self
+            .layers
+            .iter()
+            .find(|held| held.id == id && held.visible)?;
+        Some((layer.catalogue.clone()?, layer.drawn.clone()))
+    }
+
     /// Forgets any pick that named this layer — after a removal, because there
     /// is no layer left to have picked anything in. A refresh deliberately does
     /// not: a pin names a catalogue number, and that is the same satellite in
@@ -1277,7 +1290,7 @@ fn adopt_catalogues(mut settings: ResMut<EphemerisSettings>) {
 }
 
 /// Propagates everything that is drawn, and turns it into meshes.
-fn draw_ephemerides(
+pub(crate) fn draw_ephemerides(
     mut commands: Commands,
     settings: ResMut<EphemerisSettings>,
     clock: Res<SimClock>,

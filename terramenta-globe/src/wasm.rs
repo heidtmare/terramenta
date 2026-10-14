@@ -1196,6 +1196,107 @@ pub fn target(propagation: JsValue, options: JsValue) -> Result<JsValue, JsError
     Ok(to_js(&out))
 }
 
+/// Attitude of `propagation` (as [`propagate`]) under a pointing law, sampled every `stepS`.
+///
+/// ```js
+/// const { times, quaternions, eulerDeg, sensorAnglesDeg, undefined, aem } = attitude(propagation, {
+///   primary:   { body: [0, 0, 1], to: "nadir" },     // exact
+///   secondary: { body: [1, 0, 0], to: "velocity" },  // as close as the primary allows
+///   // or quaternion: [x, y, z, w]                   // body → GCRF, held
+///   spin: { axis: [0, 0, 1], rateDegS: 2, epoch: "…" },  // optional, on top of either
+///   target: { latDeg: 78.23, lonDeg: 15.39, altKm: 0.5 }, // for "target"
+///   sensors: [{ body: [0, -1, 0], to: "sun" }],      // angle per sample, degrees
+///   stepS: 60, aem: true,                             // AEM KVN (ICRF → SC_BODY_1, A2B)
+/// });
+/// // to: nadir zenith velocity antiVelocity orbitNormal antiOrbitNormal sun antiSun target
+/// //     or a GCRF vector [x, y, z]
+/// showAttitude("sat", { axes: true, sensors: [{ body: [0, 0, 1], color: "#ffcc00" }] });
+/// ```
+///
+/// Quaternions body → GCRF `[x, y, z, w]`; `eulerDeg` 3-2-1 `[roll, pitch, yaw]` from LVLH;
+/// times Unix seconds. Samples where the law is undefined are dropped (`undefined`).
+#[wasm_bindgen]
+pub fn attitude(propagation: JsValue, options: JsValue) -> Result<JsValue, JsError> {
+    ATTITUDE.with_borrow_mut(|a| *a = None);
+    let request = propagation_request(&propagation)?;
+    let json = js_sys::JSON::stringify(&options)
+        .map_err(|_| JsError::new("options are not JSON-serialisable"))?;
+    let law: crate::numerical::AttitudeRequest =
+        serde_json::from_str(&String::from(json)).map_err(|e| JsError::new(&e.to_string()))?;
+    let out = crate::numerical::propagate(&request).map_err(|e| JsError::new(&e))?;
+    let mut samples = crate::numerical::attitude(&out, &law).map_err(|e| JsError::new(&e))?;
+    let teme = std::mem::take(&mut samples.teme);
+    ATTITUDE.with_borrow_mut(|a| *a = Some(teme));
+    Ok(to_js(&samples))
+}
+
+thread_local! {
+    /// Last [`attitude`] samples (body → TEME), for [`show_attitude`]. Cleared on entry.
+    static ATTITUDE: RefCell<Option<Vec<(f64, bevy::math::DQuat)>>> = const { RefCell::new(None) };
+}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct AttitudeDrawOptions {
+    #[serde(default = "yes")]
+    axes: bool,
+    #[serde(default)]
+    sensors: Vec<SensorDrawOptions>,
+}
+
+fn yes() -> bool {
+    true
+}
+
+#[derive(serde::Deserialize)]
+struct SensorDrawOptions {
+    body: [f64; 3],
+    color: Option<String>,
+}
+
+/// Draws the last [`attitude`] result on ephemeris layer `id`: body axes (X red, Y green,
+/// Z blue) unless `axes: false`, and `sensors` as boresights to the surface. Replaces any
+/// earlier drawing for `id`. `false` if `attitude` failed or never ran, or the options
+/// are bad.
+#[wasm_bindgen(js_name = showAttitude)]
+pub fn show_attitude(id: String, options: JsValue) -> bool {
+    let Some(samples) = ATTITUDE.with_borrow(Clone::clone) else {
+        return false;
+    };
+    let Some(options) = from_js::<AttitudeDrawOptions>(&options) else {
+        return false;
+    };
+    let sensors = options
+        .sensors
+        .iter()
+        .filter_map(|s| {
+            Some(crate::attitude::Sensor {
+                body: bevy::math::DVec3::from_array(s.body).try_normalize()?,
+                color: s
+                    .color
+                    .as_deref()
+                    .and_then(|hex| bevy::color::Srgba::hex(hex).ok())
+                    .unwrap_or(bevy::color::Srgba::rgb(1.0, 0.8, 0.2)),
+            })
+        })
+        .collect();
+    crate::attitude::set(
+        id,
+        crate::attitude::Track {
+            samples,
+            axes: options.axes,
+            sensors,
+        },
+    );
+    true
+}
+
+/// Stops drawing attitude on `id`; `false` if none was drawn.
+#[wasm_bindgen(js_name = hideAttitude)]
+pub fn hide_attitude(id: &str) -> bool {
+    crate::attitude::remove(id)
+}
+
 fn propagation_request(options: &JsValue) -> Result<crate::numerical::PropagationRequest, JsError> {
     let json = js_sys::JSON::stringify(options)
         .map_err(|_| JsError::new("options are not JSON-serialisable"))?;

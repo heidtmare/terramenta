@@ -3,8 +3,8 @@
  *
  * A project is the full initial scene — layers, spacecraft, missions, clock,
  * camera, UI layout — plus its timeline, an optional director, and saved
- * analysis (plots, porkchop studies), ground stations, event searches and
- * targeting problems. Every
+ * analysis (plots, porkchop studies), ground stations, event searches,
+ * targeting problems and attitude profiles. Every
  * project, bundled or user-supplied, loads the same way: parsed here, then
  * applied onto a reset globe by `workspace.js`. `?project=<url>` (or
  * `?project=session` for a local file stashed in `sessionStorage`) names the
@@ -17,6 +17,7 @@
 
 import * as globe from "./globe.js";
 import { analysisErrors, analysisSection } from "./analysis.js";
+import { attitudesErrors, attitudesSection } from "./attitude.js";
 import { DIRECTORS } from "./director.js";
 import { applyEnvironment, recordedEnvironment } from "./environment.js";
 import { STATION_LAYER, eventsErrors, eventsSection } from "./events.js";
@@ -265,6 +266,7 @@ function referenceErrors(project) {
   errors.push(...analysisErrors(project, { spacecraftIds }).map((error) => `analysis.${error}`));
   errors.push(...eventsErrors(project));
   errors.push(...targetsErrors(project));
+  errors.push(...attitudesErrors(project));
   if (overlayIds.has(STATION_LAYER)) errors.push(`overlays.layers: id "${STATION_LAYER}" is reserved for ground stations`);
   return errors;
 }
@@ -525,6 +527,7 @@ export function captureProject(state, base = {}) {
   const analysis = analysisSection({ spacecraftIds: new Set(sources.spacecraft.keys()) });
   if (analysis) project.analysis = analysis;
   Object.assign(project, targetsSection({ spacecraftIds: new Set(sources.spacecraft.keys()) }));
+  Object.assign(project, attitudesSection({ spacecraftIds: new Set(sources.spacecraft.keys()) }));
   return project;
 }
 

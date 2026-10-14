@@ -28,5 +28,10 @@
     "file": "targeted-transfer.terramenta.json",
     "name": "Targeted transfer",
     "description": "Differential correction of rough first-guess burns: Hohmann Δv and timing, low-thrust burn duration."
+  },
+  {
+    "file": "attitude-modes.terramenta.json",
+    "name": "Attitude modes",
+    "description": "LVLH, sun-constrained ground-site tracking and an inertial spinner: body axes and boresights on the globe, sensor angles, AEM export."
   }
 ]

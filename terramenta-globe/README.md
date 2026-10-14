@@ -109,6 +109,8 @@ from a real failure.
 | `propagate(options)` `propagateSpk(options)` | Numerical propagation → OEM text / SPK bytes |
 | `findEvents(propagation, options)` | Ground-station contacts, Earth eclipses, apsides, nodes over a propagation |
 | `target(propagation, options)` | Differential correction of a propagation's burns to meet orbit goals |
+| `attitude(propagation, options)` | Attitude under a pointing law over a propagation: quaternions, LVLH Euler angles, sensor angles, AEM |
+| `showAttitude(id, options)` / `hideAttitude(id)` | Draw the last `attitude` result on ephemeris layer `id`: body axes, sensor boresights |
 | `loadKernel(bytes)` `loadEop(text)` `loadSpaceWeather(text)` `propagationEnvironment()` | Propagation data |
 | `setPickingEnabled(bool)` `pinFeature(layer, index)` `clearPinnedFeature()` | Overlay feature picking |
 | `pinSatellite(layer, noradId)` `clearPinnedSatellite()` | Satellite picking |
@@ -529,6 +531,29 @@ const { converged, values, goals, maneuvers, finiteBurns } = globe.target(sameOp
   `flightPathAngleDeg`, `massKg`, at `end`, `burnN`, `burnN.before`,
   `finiteN`, `finiteN.end` or a UTC epoch. Not converging is not an error.
 
+```js
+const { times, quaternions, eulerDeg, sensorAnglesDeg, aem } = globe.attitude(sameOptions, {
+  primary: { body: [0, 0, 1], to: "target" },
+  secondary: { body: [0, -1, 0], to: "sun" },
+  target: { latDeg: 78.23, lonDeg: 15.41, altKm: 0.5 },
+  sensors: [{ body: [0, 0, 1], to: "nadir" }],
+  stepS: 30, aem: true,
+});
+globe.showAttitude("demo", { axes: true, sensors: [{ body: [0, 0, 1], color: "#ffcc33" }] });
+```
+
+- `attitude` samples `terramenta_solare::attitude` every `stepS` over the
+  propagated span: `primary` body axis exact, `secondary` constrained, or a
+  held `quaternion`; optional `spin`. Directions `nadir`, `zenith`,
+  `velocity`, `antiVelocity`, `orbitNormal`, `antiOrbitNormal`, `sun`,
+  `antiSun`, `target` (site through full Earth orientation) or a GCRF vector.
+  Quaternions body → GCRF `[x, y, z, w]`, sign-continuous; `eulerDeg` 3-2-1
+  from CCSDS LVLH. Undefined samples (parallel directions) are dropped and
+  counted. AEM: `ICRF` → `SC_BODY_1`, `A2B`, scalar last.
+- [`attitude.rs`](src/attitude.rs) draws tracks (body → TEME, slerped at the
+  sim clock) at every drawn object of the layer: X red, Y green, Z blue, sized
+  to the camera distance; sensors as rays to the surface. Cleared by `Reset`.
+
 - Without a kernel, Sun/Moon come from analytic series (Moon ≤ 0.1°).
 - Without EOP, Earth orientation uses zero polar motion and UT1 = UTC.
 - Synchronous; ≤ 200 000 samples per call. Errors throw.
@@ -750,11 +775,12 @@ src/
   geojson.rs       GeoJSON parsing and flattening
   simplestyle.rs   simplestyle-spec 1.1.0
   omm.rs           OMM → SGP4 propagators; OEM → tabulated motion
-  numerical.rs     propagate/propagateSpk/findEvents/target requests; kernel, EOP, space weather
+  numerical.rs     propagate/propagateSpk/findEvents/target/attitude requests; kernel, EOP, space weather
   tessellate.rs    Ear clipping, holes, antimeridian
   picking.rs       Overlay hit-testing
   overlays.rs      Overlay layers, geojson:// source, refresh, meshes
   ephemeris.rs     Satellite layers, omm:// source, propagation, arcs
+  attitude.rs      Body axes and sensor boresights on ephemeris layers
   placemark.rs     Subsolar/sublunar icons
   view.rs          Globe/heliocentric view state and transition
   heliocentric.rs  Heliocentric bodies, spacecraft meshes, camera
