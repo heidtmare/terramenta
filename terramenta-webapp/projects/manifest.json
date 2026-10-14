@@ -38,5 +38,10 @@
     "file": "coverage-study.terramenta.json",
     "name": "Coverage study",
     "description": "Six-imager sun-synchronous constellation from Keplerian elements: sensor footprints, H3 revisit over Europe, global access, a terrain-masked station."
+  },
+  {
+    "file": "conjunction-screening.terramenta.json",
+    "name": "Conjunction screening",
+    "description": "Satellite vs a crossing debris object and the Celestrak visual catalogue: TCA, miss distance, Pc, CDM export."
   }
 ]

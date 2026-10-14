@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 use terramenta_solare::attitude::{self, AlignConstrain, Direction, Geometry, Law, Profile, Spin};
 use terramenta_solare::bodies::{GM_MOON_KM3_S2, GM_SUN_KM3_S2};
 use terramenta_solare::ccsds::{
-    Aem, AemMetadata, AemSegment, Header, Oem, OemCovariance, OemMetadata, OemSegment, TimeSystem,
+    Aem, AemMetadata, AemSegment, Cdm, CdmObject, Header, Oem, OemCovariance, OemMetadata,
+    OemSegment, TimeSystem,
 };
 use terramenta_solare::covariance::{self, CovariancePropagation, Matrix6, ProcessNoise};
 use terramenta_solare::coverage::{self, Coverage, FieldOfView, Grid, Observer, Region};
@@ -2145,6 +2146,474 @@ pub fn coverage(req: &CoverageRequest) -> Result<CoverageResult, String> {
     })
 }
 
+// --- Conjunctions ---------------------------------------------------------------------
+
+/// `conjunctions` options.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConjunctionRequest {
+    /// As `propagate`; its `covariance`, if any, feeds Pc.
+    pub primary: PropagationRequest,
+    pub secondaries: Vec<SecondaryOptions>,
+    /// UTC; default the primary's span.
+    #[serde(default)]
+    pub start: Option<String>,
+    #[serde(default)]
+    pub stop: Option<String>,
+    #[serde(default = "default_screening_step")]
+    pub step_s: f64,
+    #[serde(default = "default_threshold")]
+    pub threshold_km: f64,
+    /// Combined hard-body radius.
+    #[serde(default = "default_hard_body")]
+    pub hard_body_radius_m: f64,
+    /// RSW position 1σ for secondaries without a covariance (SGP4, or no `covariance`).
+    #[serde(default)]
+    pub secondary_sigma_km: Option<[f64; 3]>,
+    /// Catalogue numbers not screened (e.g. the primary itself).
+    #[serde(default)]
+    pub exclude: Vec<u64>,
+    /// CDM KVN per conjunction.
+    #[serde(default)]
+    pub cdm: bool,
+}
+
+fn default_screening_step() -> f64 {
+    60.0
+}
+
+fn default_threshold() -> f64 {
+    5.0
+}
+
+fn default_hard_body() -> f64 {
+    20.0
+}
+
+/// One of `propagation`, `tle`, `omm`, `layer`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SecondaryOptions {
+    /// Reported as `secondary`; default the object name.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// Cowell, as `propagate`.
+    #[serde(default)]
+    pub propagation: Option<Box<PropagationRequest>>,
+    /// SGP4.
+    #[serde(default)]
+    pub tle: Option<[String; 2]>,
+    #[serde(default)]
+    pub omm: Option<serde_json::Value>,
+    /// Every object of a loaded ephemeris layer (SGP4 or OEM).
+    #[serde(default)]
+    pub layer: Option<String>,
+}
+
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConjunctionResult {
+    pub start: f64,
+    pub stop: f64,
+    /// Objects searched.
+    pub screened: usize,
+    /// Objects skipped by the perigee/apogee filter.
+    pub filtered: usize,
+    pub conjunctions: Vec<ConjunctionInfo>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConjunctionInfo {
+    pub secondary: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub norad_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layer: Option<String>,
+    /// Unix s.
+    pub tca: f64,
+    pub miss_km: f64,
+    pub relative_speed_km_s: f64,
+    /// Secondary − primary, primary RSW.
+    pub relative_position_rsw_km: [f64; 3],
+    pub relative_velocity_rsw_km_s: [f64; 3],
+    /// Combined 1σ in the encounter plane, principal axes.
+    pub sigma_km: Option<[f64; 2]>,
+    pub pc: Option<f64>,
+    /// Maximum over covariance scale (isotropic without one).
+    pub pc_max: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cdm: Option<String>,
+}
+
+/// Perigee/apogee pad for SGP4 mean elements vs osculating radius, km.
+const BAND_PAD_KM: f64 = 50.0;
+/// TCA tolerance, s.
+const TCA_TOLERANCE_S: f64 = 1e-4;
+
+/// A numerically propagated secondary.
+struct Sampled {
+    id: String,
+    name: String,
+    object_id: String,
+    ephemeris: SampledEphemeris,
+    covariance: Vec<(Epoch, Matrix6)>,
+}
+
+enum Target<'a> {
+    Sampled(&'a Sampled),
+    Sgp4 {
+        id: Option<&'a str>,
+        layer: Option<&'a str>,
+        satellite: &'a crate::omm::Satellite,
+    },
+}
+
+/// Linear interpolation of time-ordered covariance samples; `None` outside or empty.
+fn covariance_at(samples: &[(Epoch, Matrix6)], e: Epoch) -> Option<Matrix6> {
+    let (first, last) = (samples.first()?, samples.last()?);
+    if e < first.0 || e > last.0 {
+        return None;
+    }
+    let i = samples.partition_point(|s| s.0 <= e);
+    if i >= samples.len() {
+        return Some(last.1);
+    }
+    let (a, b) = (&samples[i - 1], &samples[i]);
+    let span = b.0.seconds_since(a.0);
+    let f = if span > 0.0 {
+        e.seconds_since(a.0) / span
+    } else {
+        0.0
+    };
+    Some(std::array::from_fn(|r| {
+        std::array::from_fn(|c| a.1[r][c] + f * (b.1[r][c] - a.1[r][c]))
+    }))
+}
+
+fn time_ordered_covariance(p: &Propagated) -> Vec<(Epoch, Matrix6)> {
+    p.ordered()
+        .into_iter()
+        .filter_map(|(e, (_, c))| c.map(|c| (e, c)))
+        .collect()
+}
+
+/// Screens `req.primary` against every secondary.
+pub fn conjunctions(req: &ConjunctionRequest) -> Result<ConjunctionResult, String> {
+    let layers = req
+        .secondaries
+        .iter()
+        .filter_map(|s| s.layer.as_deref())
+        .map(|id| {
+            crate::ephemeris::catalogue_of(id)
+                .map(|l| (id.to_string(), l.catalogue.clone()))
+                .ok_or_else(|| format!("no loaded ephemeris layer {id:?}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    screen(req, &layers)
+}
+
+/// [`conjunctions`] with layer catalogues resolved.
+fn screen(
+    req: &ConjunctionRequest,
+    layers: &[(String, Arc<crate::omm::Catalogue>)],
+) -> Result<ConjunctionResult, String> {
+    let step = req.step_s.abs();
+    if req.threshold_km.is_nan() || req.threshold_km <= 0.0 {
+        return Err("thresholdKm must be positive".into());
+    }
+    if req.hard_body_radius_m.is_nan() || req.hard_body_radius_m < 0.0 {
+        return Err("hardBodyRadiusM must not be negative".into());
+    }
+    if req
+        .secondary_sigma_km
+        .is_some_and(|s| !s.iter().all(|x| *x >= 0.0))
+    {
+        return Err("secondarySigmaKm must not be negative".into());
+    }
+    let primary = propagate(&PropagationRequest {
+        kvn: false,
+        ..req.primary.clone()
+    })?;
+    let states = primary.ordered_states();
+    let (first, last) = (states[0].0, states[states.len() - 1].0);
+    let start = req
+        .start
+        .as_deref()
+        .map(epoch)
+        .transpose()?
+        .unwrap_or(first);
+    let stop = req.stop.as_deref().map(epoch).transpose()?.unwrap_or(last);
+    if start < first || stop > last || stop <= start {
+        return Err("start/stop must lie inside the primary's span, start first".into());
+    }
+    let span = stop.seconds_since(start);
+    if step.is_nan() || step < 1e-3 || span / step > MAX_EVENT_SAMPLES {
+        return Err(format!(
+            "stepS must be positive and yield ≤ {MAX_EVENT_SAMPLES} samples"
+        ));
+    }
+    let primary_covariance = time_ordered_covariance(&primary);
+    let primary_ephemeris = SampledEphemeris::new(states, Interpolation::default());
+
+    let mut owned = Vec::new();
+    let mut sampled = Vec::new();
+    for s in &req.secondaries {
+        let given = [
+            s.propagation.is_some(),
+            s.tle.is_some(),
+            s.omm.is_some(),
+            s.layer.is_some(),
+        ];
+        if given.iter().filter(|g| **g).count() != 1 {
+            return Err("each secondary needs one of propagation, tle, omm, layer".into());
+        }
+        if let Some(p) = &s.propagation {
+            let out = propagate(&PropagationRequest {
+                kvn: false,
+                ..(**p).clone()
+            })?;
+            sampled.push(Sampled {
+                id: s.id.clone().unwrap_or_else(|| out.name.clone()),
+                name: out.name.clone(),
+                object_id: out.object_id.clone(),
+                covariance: time_ordered_covariance(&out),
+                ephemeris: SampledEphemeris::new(out.ordered_states(), Interpolation::default()),
+            });
+        } else if s.tle.is_some() || s.omm.is_some() {
+            let elements = match (&s.tle, &s.omm) {
+                (Some(t), _) => sgp4::Elements::from_tle(None, t[0].as_bytes(), t[1].as_bytes())
+                    .map_err(|e| format!("bad TLE: {e}"))?,
+                (_, Some(o)) => {
+                    serde_json::from_value(o.clone()).map_err(|e| format!("bad OMM: {e}"))?
+                }
+                _ => unreachable!(),
+            };
+            let satellite = crate::omm::satellite(&elements)
+                .ok_or_else(|| "SGP4 rejected the elements".to_string())?;
+            owned.push((s.id.as_deref(), satellite));
+        }
+    }
+    let mut targets: Vec<Target> = sampled.iter().map(Target::Sampled).collect();
+    targets.extend(owned.iter().map(|(id, satellite)| Target::Sgp4 {
+        id: *id,
+        layer: None,
+        satellite,
+    }));
+    for (layer, catalogue) in layers {
+        targets.extend(catalogue.satellites.iter().map(|satellite| Target::Sgp4 {
+            id: None,
+            layer: Some(layer.as_str()),
+            satellite,
+        }));
+    }
+
+    // Primary and TEME → GCRF on the search grid, shared by every secondary.
+    let env = environment();
+    let mut teme = terramenta_solare::earth::TemeGrid::new(|e| {
+        env.eop.as_ref().map(|t| t.at(e)).unwrap_or_default()
+    });
+    let n = (span / step).ceil().max(1.0) as usize;
+    let grid: Vec<(f64, StateVector, DMat3)> = (0..=n)
+        .map(|k| {
+            let t = (k as f64 * step).min(span);
+            let e = start.advanced_by_seconds(t);
+            (t, primary_ephemeris.state_at(e), teme.at(e))
+        })
+        .collect();
+    let (r_min, r_max) = grid.iter().fold((f64::INFINITY, 0.0f64), |(lo, hi), g| {
+        let r = g.1.position_km.length();
+        (lo.min(r), hi.max(r))
+    });
+    let hard_body_km = req.hard_body_radius_m * 1e-3;
+
+    let mut out = ConjunctionResult {
+        start: start.to_unix_seconds(),
+        stop: stop.to_unix_seconds(),
+        ..Default::default()
+    };
+    for target in &targets {
+        if let Target::Sgp4 { satellite, .. } = target {
+            if req.exclude.contains(&satellite.norad_id) {
+                continue;
+            }
+            if !satellite.is_tabulated() {
+                let a = (EGM2008_GM_KM3_S2
+                    * (satellite.period_minutes * 60.0 / std::f64::consts::TAU).powi(2))
+                .cbrt();
+                let (perigee, apogee) = (
+                    a * (1.0 - satellite.eccentricity),
+                    a * (1.0 + satellite.eccentricity),
+                );
+                let pad = req.threshold_km + BAND_PAD_KM;
+                if perigee > r_max + pad || apogee < r_min - pad {
+                    out.filtered += 1;
+                    continue;
+                }
+            }
+        }
+        out.screened += 1;
+        // GCRF state at `e`, with TEME → GCRF `m`.
+        let state = |e: Epoch, m: DMat3| match target {
+            Target::Sampled(s) => s.ephemeris.try_state_at(e),
+            Target::Sgp4 { satellite, .. } => satellite
+                .state_teme(e.to_unix_seconds())
+                .map(|(r, v)| StateVector::new(m * DVec3::from(r), m * DVec3::from(v))),
+        };
+        let mut relative = |t: f64| {
+            let k = (t / step).round() as usize;
+            let (p, m) = match grid.get(k) {
+                Some(g) if g.0 == t => (g.1, g.2),
+                _ => {
+                    let e = start.advanced_by_seconds(t);
+                    (primary_ephemeris.state_at(e), teme.at(e))
+                }
+            };
+            let s = state(start.advanced_by_seconds(t), m)?;
+            Some((
+                s.position_km - p.position_km,
+                s.velocity_km_s - p.velocity_km_s,
+            ))
+        };
+        let found = terramenta_solare::conjunction::closest_approaches(
+            &mut relative,
+            span,
+            step,
+            req.threshold_km,
+            TCA_TOLERANCE_S,
+        );
+        for approach in found {
+            let e = start.advanced_by_seconds(approach.t_s);
+            let p = primary_ephemeris.state_at(e);
+            let Some(s) = state(e, teme.at(e)) else {
+                continue;
+            };
+            let (pr, pv) = (p.position_km, p.velocity_km_s);
+            let (sr, sv) = (s.position_km, s.velocity_km_s);
+            let p_cov = covariance_at(&primary_covariance, e);
+            let (s_cov, s_default) = match target {
+                Target::Sampled(s) if !s.covariance.is_empty() => {
+                    (covariance_at(&s.covariance, e), false)
+                }
+                _ => (
+                    req.secondary_sigma_km.map(|[a, b, c]| {
+                        covariance::from_local(
+                            &covariance::diagonal([a * a, b * b, c * c, 0.0, 0.0, 0.0]),
+                            LocalFrame::Rsw,
+                            sr,
+                            sv,
+                        )
+                    }),
+                    true,
+                ),
+            };
+            let Some(a) = terramenta_solare::conjunction::assess(
+                (pr, pv),
+                (sr, sv),
+                p_cov.as_ref(),
+                s_cov.as_ref(),
+                hard_body_km,
+            ) else {
+                continue;
+            };
+            let (id, name, norad_id, layer, object_id) = match target {
+                Target::Sampled(s) => (
+                    s.id.clone(),
+                    s.name.clone(),
+                    None,
+                    None,
+                    s.object_id.clone(),
+                ),
+                Target::Sgp4 {
+                    id,
+                    layer,
+                    satellite,
+                } => (
+                    id.map_or_else(|| satellite.name.clone(), str::to_string),
+                    satellite.name.clone(),
+                    Some(satellite.norad_id),
+                    layer.map(str::to_string),
+                    satellite.norad_id.to_string(),
+                ),
+            };
+            let cdm = req.cdm.then(|| {
+                let rtn = |c: Option<Matrix6>, r, v| {
+                    c.map(|c| covariance::to_local(&c, LocalFrame::Rsw, r, v))
+                        .unwrap_or([[0.0; 6]; 6])
+                };
+                let mut cdm = Cdm::new(e, a.miss_km);
+                cdm.header.creation_date = creation_date();
+                cdm.message_id = format!(
+                    "{}_{}_{}",
+                    primary.object_id,
+                    object_id,
+                    e.to_unix_seconds().round()
+                );
+                cdm.relative_speed_km_s = Some(a.relative_speed_km_s);
+                cdm.relative_position_rtn_km = Some(a.position_rsw_km);
+                cdm.relative_velocity_rtn_km_s = Some(a.velocity_rsw_km_s);
+                cdm.collision_probability = a.probability;
+                cdm.collision_probability_method = a.probability.map(|_| "FOSTER-1992".to_string());
+                cdm.objects = [
+                    CdmObject {
+                        designator: primary.object_id.clone(),
+                        object_name: primary.name.clone(),
+                        ephemeris_name: primary.name.clone(),
+                        covariance_method: if p_cov.is_some() {
+                            "CALCULATED"
+                        } else {
+                            "DEFAULT"
+                        }
+                        .into(),
+                        state: p,
+                        covariance_rtn: rtn(p_cov, pr, pv),
+                        ..Default::default()
+                    },
+                    CdmObject {
+                        designator: object_id,
+                        object_name: name.clone(),
+                        international_designator: match target {
+                            Target::Sgp4 { satellite, .. } => satellite
+                                .international_designator
+                                .clone()
+                                .unwrap_or_else(|| "UNKNOWN".into()),
+                            Target::Sampled(_) => "UNKNOWN".into(),
+                        },
+                        covariance_method: if s_cov.is_some() && !s_default {
+                            "CALCULATED"
+                        } else {
+                            "DEFAULT"
+                        }
+                        .into(),
+                        state: s,
+                        covariance_rtn: rtn(s_cov, sr, sv),
+                        ..Default::default()
+                    },
+                ];
+                cdm.to_kvn()
+            });
+            out.conjunctions.push(ConjunctionInfo {
+                secondary: id,
+                name,
+                norad_id,
+                layer,
+                tca: e.to_unix_seconds(),
+                miss_km: a.miss_km,
+                relative_speed_km_s: a.relative_speed_km_s,
+                relative_position_rsw_km: a.position_rsw_km.to_array(),
+                relative_velocity_rsw_km_s: a.velocity_rsw_km_s.to_array(),
+                sigma_km: a.sigma_km,
+                pc: a.probability,
+                pc_max: a.max_probability,
+                cdm,
+            });
+        }
+    }
+    out.conjunctions.sort_by(|a, b| a.tca.total_cmp(&b.tca));
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2755,5 +3224,78 @@ mod tests {
             let err = run(json).unwrap_err();
             assert!(err.contains(message), "{err}");
         }
+    }
+
+    #[test]
+    fn screens_a_crossing_secondary_and_filters_a_distant_tle() {
+        let forces =
+            r#""forces": { "gravity": [2, 0], "thirdBody": false, "srp": false, "drag": "none" }"#;
+        let primary = request(&format!(
+            r#"{{
+                "name": "PRIMARY", "objectId": "PRI",
+                "initial": {{ "epoch": "2024-03-01T00:00:00Z",
+                              "positionKm": [6778.137, 0, 0], "velocityKmS": [0, 4.7, 6.0] }},
+                "durationS": 7200, "stepS": 60, {forces},
+                "covariance": {{ "positionSigmaKm": [0.05, 0.2, 0.05], "velocitySigmaKmS": [1e-4, 5e-5, 5e-5] }}
+            }}"#
+        ));
+        // Secondary at the primary's 1 h position + 200 m radial, velocity turned 30° about r̂.
+        let at = trajectory(&primary).unwrap().states[60];
+        let (r, v) = (at.position_km, at.velocity_km_s);
+        let v2 = DQuat::from_axis_angle(r.normalize(), 30f64.to_radians()) * v;
+        let r2 = r + r.normalize() * 0.2;
+        let mut req: ConjunctionRequest = serde_json::from_value(serde_json::json!({
+            "primary": serde_json::from_str::<serde_json::Value>(&format!(
+                r#"{{ "name": "PRIMARY", "objectId": "PRI",
+                     "initial": {{ "epoch": "2024-03-01T00:00:00Z",
+                                   "positionKm": [6778.137, 0, 0], "velocityKmS": [0, 4.7, 6.0] }},
+                     "durationS": 7200, "stepS": 60, {forces},
+                     "covariance": {{ "positionSigmaKm": [0.05, 0.2, 0.05],
+                                      "velocitySigmaKmS": [1e-4, 5e-5, 5e-5] }} }}"#
+            )).unwrap(),
+            "secondaries": [
+                { "id": "crossing", "propagation": serde_json::from_str::<serde_json::Value>(&format!(
+                    r#"{{ "name": "CROSSER",
+                         "initial": {{ "epoch": "2024-03-01T01:00:00Z",
+                                       "positionKm": [{}, {}, {}], "velocityKmS": [{}, {}, {}] }},
+                         "start": "2024-03-01T00:00:00Z", "durationS": 7200, "stepS": 60, {forces} }}"#,
+                    r2.x, r2.y, r2.z, v2.x, v2.y, v2.z
+                )).unwrap() },
+                { "tle": [
+                    "1 00005U 58002B   00179.78495062  .00000023  00000-0  28098-4 0  4753",
+                    "2 00005  34.2682 348.7242 1859667 331.7664  19.3264 10.82419157413667"] }
+            ],
+            "thresholdKm": 1.0,
+            "secondarySigmaKm": [0.1, 0.5, 0.1],
+            "cdm": true
+        }))
+        .unwrap();
+        let out = screen(&req, &[]).unwrap();
+        assert_eq!((out.screened, out.filtered), (1, 1));
+        let [c] = &out.conjunctions[..] else {
+            panic!("{:?}", out.conjunctions)
+        };
+        assert_eq!(c.secondary, "crossing");
+        assert!(
+            (c.tca - at.epoch.to_unix_seconds()).abs() < 1e-2,
+            "{}",
+            c.tca
+        );
+        assert!((c.miss_km - 0.2).abs() < 1e-4, "{}", c.miss_km);
+        assert!((c.relative_position_rsw_km[0] - 0.2).abs() < 1e-4);
+        assert!((c.relative_speed_km_s - 2.0 * v.length() * 15f64.to_radians().sin()).abs() < 1e-3);
+        let pc = c.pc.unwrap();
+        assert!(pc > 1e-6 && pc < 1.0 && c.pc_max >= pc, "{pc} {}", c.pc_max);
+        let cdm = Cdm::from_kvn(c.cdm.as_deref().unwrap()).unwrap();
+        assert_eq!(cdm.objects[0].designator, "PRI");
+        assert_eq!(cdm.objects[0].covariance_method, "CALCULATED");
+        assert_eq!(cdm.objects[1].covariance_method, "DEFAULT");
+        assert_eq!(cdm.collision_probability, Some(pc));
+
+        // Below the miss: nothing. Bad secondaries refused.
+        req.threshold_km = 0.1;
+        assert!(screen(&req, &[]).unwrap().conjunctions.is_empty());
+        req.secondaries[1].omm = Some(serde_json::json!({}));
+        assert!(screen(&req, &[]).unwrap_err().contains("one of"));
     }
 }

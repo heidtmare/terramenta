@@ -1,0 +1,99 @@
+{
+  "$schema": "../schema/project.schema.json",
+  "terramenta": 3,
+  "name": "Conjunction screening",
+  "description": "A 550 km sun-synchronous satellite and a tracked debris object crossing it at 70° with a 120 m radial miss at 05:00 UTC, both Cowell-propagated with linear covariance (3σ ellipsoids drawn). Analysis → Conjunctions screens the satellite against the debris and the Celestrak visual catalogue (SGP4, 0.2/1/0.2 km 1σ assumed): TCA, miss, Pc (Foster), Pc max, CDM per conjunction. A table row sets the clock to TCA. The timeline slows the clock through the encounter.",
+  "ui": { "tab": "analysis" },
+  "frame": "eci",
+  "clock": { "epoch": "2026-01-01T04:40:00Z", "timeScale": 30, "paused": false },
+  "camera": { "lat": 24, "lon": 78, "altitudeKm": 6000 },
+  "spacecraft": [
+    {
+      "id": "sentinel",
+      "label": "Sentinel · 550 km SSO",
+      "pointColor": "#8ce0ff",
+      "lineColor": "#8ce0ffa6",
+      "leadingOrbits": 0,
+      "trailingOrbits": 0.5,
+      "propagation": {
+        "name": "SENTINEL",
+        "objectId": "2026-001A",
+        "initial": {
+          "epoch": "2026-01-01T00:00:00Z",
+          "elements": { "smaKm": 6928.137, "eccentricity": 0.001, "inclinationDeg": 97.6, "raanDeg": 30, "argPerigeeDeg": 0, "trueAnomalyDeg": 0 }
+        },
+        "durationS": 86400,
+        "stepS": 60,
+        "vehicle": { "massKg": 300, "dragAreaM2": 2, "srpAreaM2": 2 },
+        "forces": { "gravity": [8, 8], "drag": "harrisPriester" },
+        "covariance": {
+          "positionSigmaKm": [0.03, 0.1, 0.02],
+          "velocitySigmaKmS": [0.0001, 0.00003, 0.00002],
+          "processNoiseKm2S3": [1e-14, 1e-14, 1e-14]
+        }
+      }
+    },
+    {
+      "id": "debris",
+      "label": "Debris fragment",
+      "pointColor": "#ff8fa3",
+      "lineColor": "#ff8fa3a6",
+      "leadingOrbits": 0,
+      "trailingOrbits": 0.5,
+      "propagation": {
+        "name": "DEBRIS",
+        "objectId": "1999-025AA",
+        "initial": {
+          "epoch": "2026-01-01T00:00:00Z",
+          "positionKm": [1333.959411226, 6201.583174895, 2770.076897429],
+          "velocityKmS": [4.754957298, -3.237092441, 4.952371711]
+        },
+        "durationS": 86400,
+        "stepS": 60,
+        "vehicle": { "massKg": 20, "dragAreaM2": 0.3, "srpAreaM2": 0.3 },
+        "forces": { "gravity": [8, 8], "drag": "harrisPriester" },
+        "covariance": {
+          "positionSigmaKm": [0.1, 0.4, 0.05],
+          "velocitySigmaKmS": [0.0003, 0.0001, 0.00005],
+          "processNoiseKm2S3": [1e-13, 1e-13, 1e-13]
+        }
+      }
+    }
+  ],
+  "ephemerides": {
+    "layers": [
+      {
+        "id": "visual",
+        "label": "Celestrak visual",
+        "url": "https://celestrak.org/NORAD/elements/gp.php?GROUP=visual&FORMAT=json",
+        "refreshSeconds": null,
+        "pointColor": "#c8c8c8",
+        "lineColor": "#c8c8c840",
+        "trails": false
+      }
+    ]
+  },
+  "timeline": {
+    "events": [
+      { "id": "approach", "label": "Slow for TCA", "at": "2026-01-01T04:58:00Z", "actions": { "timeScale": 2 } },
+      { "id": "after", "label": "Past TCA", "at": "2026-01-01T05:02:00Z", "actions": { "timeScale": 30 } }
+    ]
+  },
+  "analysis": {
+    "plots": [
+      { "id": "in-track", "quantity": "sigmaInTrackM", "spacecraft": ["sentinel", "debris"] }
+    ],
+    "conjunctions": [
+      {
+        "id": "screen",
+        "label": "Sentinel screening",
+        "primary": "sentinel",
+        "secondaries": ["debris"],
+        "layers": ["visual"],
+        "thresholdKm": 5,
+        "hardBodyRadiusM": 10,
+        "secondarySigmaKm": [0.2, 1, 0.2]
+      }
+    ]
+  }
+}

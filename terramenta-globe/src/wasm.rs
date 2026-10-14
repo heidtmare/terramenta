@@ -1426,6 +1426,42 @@ pub fn coverage(options: JsValue) -> Result<JsValue, JsError> {
     Ok(to_js(&out))
 }
 
+/// Screens `primary` (as [`propagate`]) against secondaries for close approaches.
+///
+/// ```js
+/// const { start, stop, screened, filtered, conjunctions: found } = conjunctions({
+///   primary: propagation,                 // its covariance, if any, feeds Pc
+///   secondaries: [
+///     { id: "chaser", propagation },       // Cowell, as propagate; covariance used
+///     { tle: [line1, line2] },             // or { omm: {...} }: SGP4
+///     { layer: "active" },                 // every object of a loaded ephemeris layer
+///   ],
+///   start, stop,                           // UTC, inside the primary's span
+///   stepS: 60, thresholdKm: 5,
+///   hardBodyRadiusM: 20,                   // combined
+///   secondarySigmaKm: [0.2, 1, 0.2],       // RSW 1σ for secondaries without covariance
+///   exclude: [25544],                      // catalogue numbers skipped
+///   cdm: true,                             // CCSDS CDM KVN per conjunction
+/// });
+/// // found: [{ secondary, name, noradId?, layer?, tca, missKm, relativeSpeedKmS,
+/// //           relativePositionRswKm, relativeVelocityRswKmS, sigmaKm: [major, minor] | null,
+/// //           pc | null, pcMax, cdm? }]
+/// ```
+///
+/// TCA: local range minima on the `stepS` grid refined to 0.1 ms. Pc: Foster 2D
+/// (short encounter); `pcMax`: largest Pc over the combined covariance's scale
+/// (isotropic without one). SGP4 objects outside the primary's radius band are
+/// `filtered`. Synchronous: a day against a few thousand objects takes seconds.
+#[wasm_bindgen]
+pub fn conjunctions(options: JsValue) -> Result<JsValue, JsError> {
+    let json = js_sys::JSON::stringify(&options)
+        .map_err(|_| JsError::new("options are not JSON-serialisable"))?;
+    let request: crate::numerical::ConjunctionRequest =
+        serde_json::from_str(&String::from(json)).map_err(|e| JsError::new(&e.to_string()))?;
+    let out = crate::numerical::conjunctions(&request).map_err(|e| JsError::new(&e))?;
+    Ok(to_js(&out))
+}
+
 /// Stops drawing attitude on `id`; `false` if none was drawn.
 #[wasm_bindgen(js_name = hideAttitude)]
 pub fn hide_attitude(id: &str) -> bool {

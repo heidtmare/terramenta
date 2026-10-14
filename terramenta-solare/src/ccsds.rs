@@ -1,5 +1,6 @@
 //! CCSDS Orbit Data Messages (502.0-B-3), KVN: OEM and OPM read/write; Attitude Data
-//! Messages (504.0-B-1), KVN: quaternion AEM read/write.
+//! Messages (504.0-B-1), KVN: quaternion AEM read/write; Conjunction Data Messages
+//! (508.0-B-1), KVN: CDM read/write.
 //!
 //! Frames and centres are carried as strings; no frame conversion is applied.
 //! OEM covariance: lower-triangle `[r, v]` blocks, `EPOCH` and optional `COV_REF_FRAME`.
@@ -876,6 +877,275 @@ impl Aem {
     }
 }
 
+// --- CDM ------------------------------------------------------------------------------
+
+/// CDM covariance keys, lower triangle in [`crate::covariance::lower_triangle`] order.
+const CDM_COVARIANCE: [&str; 21] = [
+    "CR_R",
+    "CT_R",
+    "CT_T",
+    "CN_R",
+    "CN_T",
+    "CN_N",
+    "CRDOT_R",
+    "CRDOT_T",
+    "CRDOT_N",
+    "CRDOT_RDOT",
+    "CTDOT_R",
+    "CTDOT_T",
+    "CTDOT_N",
+    "CTDOT_RDOT",
+    "CTDOT_TDOT",
+    "CNDOT_R",
+    "CNDOT_T",
+    "CNDOT_N",
+    "CNDOT_RDOT",
+    "CNDOT_TDOT",
+    "CNDOT_NDOT",
+];
+
+/// One object of a [`Cdm`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct CdmObject {
+    /// `OBJECT_DESIGNATOR` (catalogue number).
+    pub designator: String,
+    pub catalog_name: String,
+    pub object_name: String,
+    pub international_designator: String,
+    pub ephemeris_name: String,
+    /// `CALCULATED` | `DEFAULT`.
+    pub covariance_method: String,
+    /// `YES` | `NO` | `N/A`.
+    pub maneuverable: String,
+    pub ref_frame: String,
+    /// At TCA, km and km/s.
+    pub state: StateVector,
+    /// `[r, v]` in the object's RTN axes, km², km²/s, km²/s² (the KVN carries m²).
+    pub covariance_rtn: Matrix6,
+}
+
+impl Default for CdmObject {
+    fn default() -> Self {
+        Self {
+            designator: "UNKNOWN".into(),
+            catalog_name: "SATCAT".into(),
+            object_name: "UNKNOWN".into(),
+            international_designator: "UNKNOWN".into(),
+            ephemeris_name: "NONE".into(),
+            covariance_method: "CALCULATED".into(),
+            maneuverable: "N/A".into(),
+            ref_frame: "GCRF".into(),
+            state: StateVector::ZERO,
+            covariance_rtn: [[0.0; 6]; 6],
+        }
+    }
+}
+
+/// Conjunction Data Message (508.0-B-1), KVN; UTC. Object 2 relative to object 1 in
+/// object 1's RTN axes. Optional screening and drag/SRP covariance rows are not carried.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Cdm {
+    pub header: Header,
+    pub message_id: String,
+    pub tca: Epoch,
+    pub miss_distance_km: f64,
+    pub relative_speed_km_s: Option<f64>,
+    pub relative_position_rtn_km: Option<DVec3>,
+    pub relative_velocity_rtn_km_s: Option<DVec3>,
+    pub collision_probability: Option<f64>,
+    pub collision_probability_method: Option<String>,
+    pub objects: [CdmObject; 2],
+}
+
+impl Cdm {
+    pub fn new(tca: Epoch, miss_distance_km: f64) -> Self {
+        Self {
+            header: Header {
+                version: "1.0".into(),
+                ..Header::default()
+            },
+            message_id: "UNKNOWN".into(),
+            tca,
+            miss_distance_km,
+            relative_speed_km_s: None,
+            relative_position_rtn_km: None,
+            relative_velocity_rtn_km_s: None,
+            collision_probability: None,
+            collision_probability_method: None,
+            objects: Default::default(),
+        }
+    }
+
+    pub fn to_kvn(&self) -> String {
+        use std::fmt::Write;
+        let ts = TimeSystem::Utc;
+        let mut out = String::new();
+        write_header(&mut out, "CDM", &self.header);
+        let _ = writeln!(out, "MESSAGE_ID = {}", self.message_id);
+        let _ = writeln!(out, "TCA = {}", ts.format(self.tca));
+        let _ = writeln!(out, "MISS_DISTANCE = {} [m]", self.miss_distance_km * 1e3);
+        if let Some(s) = self.relative_speed_km_s {
+            let _ = writeln!(out, "RELATIVE_SPEED = {} [m/s]", s * 1e3);
+        }
+        for (prefix, value, unit) in [
+            ("RELATIVE_POSITION", self.relative_position_rtn_km, "m"),
+            ("RELATIVE_VELOCITY", self.relative_velocity_rtn_km_s, "m/s"),
+        ] {
+            if let Some(v) = value {
+                for (axis, x) in ["R", "T", "N"].iter().zip(v.to_array()) {
+                    let _ = writeln!(out, "{prefix}_{axis} = {} [{unit}]", x * 1e3);
+                }
+            }
+        }
+        if let Some(p) = self.collision_probability {
+            let _ = writeln!(out, "COLLISION_PROBABILITY = {p:e}");
+        }
+        if let Some(m) = &self.collision_probability_method {
+            let _ = writeln!(out, "COLLISION_PROBABILITY_METHOD = {m}");
+        }
+        for (i, o) in self.objects.iter().enumerate() {
+            let _ = writeln!(out, "\nOBJECT = OBJECT{}", i + 1);
+            for (k, v) in [
+                ("OBJECT_DESIGNATOR", &o.designator),
+                ("CATALOG_NAME", &o.catalog_name),
+                ("OBJECT_NAME", &o.object_name),
+                ("INTERNATIONAL_DESIGNATOR", &o.international_designator),
+                ("EPHEMERIS_NAME", &o.ephemeris_name),
+                ("COVARIANCE_METHOD", &o.covariance_method),
+                ("MANEUVERABLE", &o.maneuverable),
+                ("REF_FRAME", &o.ref_frame),
+            ] {
+                let _ = writeln!(out, "{k} = {v}");
+            }
+            let (r, v) = (o.state.position_km, o.state.velocity_km_s);
+            for (k, x, u) in [
+                ("X", r.x, "km"),
+                ("Y", r.y, "km"),
+                ("Z", r.z, "km"),
+                ("X_DOT", v.x, "km/s"),
+                ("Y_DOT", v.y, "km/s"),
+                ("Z_DOT", v.z, "km/s"),
+            ] {
+                let _ = writeln!(out, "{k} = {x:.9} [{u}]");
+            }
+            let lower = crate::covariance::lower_triangle(&o.covariance_rtn);
+            for (k, x) in CDM_COVARIANCE.iter().zip(lower) {
+                let unit = match k.matches("DOT").count() {
+                    0 => "m**2",
+                    1 => "m**2/s",
+                    _ => "m**2/s**2",
+                };
+                let _ = writeln!(out, "{k} = {:e} [{unit}]", x * 1e6);
+            }
+        }
+        out
+    }
+
+    pub fn from_kvn(text: &str) -> Result<Self, CcsdsError> {
+        let mut cdm = Cdm::new(Epoch::J2000, f64::NAN);
+        let mut tca = None;
+        let mut rel = [[None; 3]; 2];
+        // `None`: relative metadata.
+        let mut object: Option<usize> = None;
+        let mut states = [[None; 6]; 2];
+        let mut covariances = [[None; 21]; 2];
+        for (i, raw) in text.lines().enumerate() {
+            let line = raw.trim();
+            let n = i + 1;
+            if line.is_empty() || line.starts_with("COMMENT") {
+                continue;
+            }
+            let Some((k, v)) = kv(line) else {
+                continue;
+            };
+            let num = || {
+                v.parse::<f64>()
+                    .map_err(|_| err(n, format!("bad number for {k}")))
+            };
+            if k == "OBJECT" {
+                object = Some(match v {
+                    "OBJECT1" => 0,
+                    "OBJECT2" => 1,
+                    _ => return Err(err(n, format!("unknown OBJECT {v}"))),
+                });
+                continue;
+            }
+            let Some(o) = object else {
+                match k {
+                    "CCSDS_CDM_VERS" => cdm.header.version = v.into(),
+                    "CREATION_DATE" => cdm.header.creation_date = v.into(),
+                    "ORIGINATOR" => cdm.header.originator = v.into(),
+                    "MESSAGE_ID" => cdm.message_id = v.into(),
+                    "TCA" => {
+                        tca = Some(
+                            TimeSystem::Utc
+                                .parse_epoch(v)
+                                .ok_or_else(|| err(n, "bad TCA"))?,
+                        )
+                    }
+                    "MISS_DISTANCE" => cdm.miss_distance_km = num()? * 1e-3,
+                    "RELATIVE_SPEED" => cdm.relative_speed_km_s = Some(num()? * 1e-3),
+                    "COLLISION_PROBABILITY" => cdm.collision_probability = Some(num()?),
+                    "COLLISION_PROBABILITY_METHOD" => {
+                        cdm.collision_probability_method = Some(v.into())
+                    }
+                    _ => {
+                        let axis = |s: &str| ["_R", "_T", "_N"].iter().position(|a| s == *a);
+                        if let Some(a) = k.strip_prefix("RELATIVE_POSITION").and_then(axis) {
+                            rel[0][a] = Some(num()? * 1e-3);
+                        } else if let Some(a) = k.strip_prefix("RELATIVE_VELOCITY").and_then(axis) {
+                            rel[1][a] = Some(num()? * 1e-3);
+                        }
+                    }
+                }
+                continue;
+            };
+            let obj = &mut cdm.objects[o];
+            match k {
+                "OBJECT_DESIGNATOR" => obj.designator = v.into(),
+                "CATALOG_NAME" => obj.catalog_name = v.into(),
+                "OBJECT_NAME" => obj.object_name = v.into(),
+                "INTERNATIONAL_DESIGNATOR" => obj.international_designator = v.into(),
+                "EPHEMERIS_NAME" => obj.ephemeris_name = v.into(),
+                "COVARIANCE_METHOD" => obj.covariance_method = v.into(),
+                "MANEUVERABLE" => obj.maneuverable = v.into(),
+                "REF_FRAME" => obj.ref_frame = v.into(),
+                _ => {
+                    if let Some(c) = ["X", "Y", "Z", "X_DOT", "Y_DOT", "Z_DOT"]
+                        .iter()
+                        .position(|s| *s == k)
+                    {
+                        states[o][c] = Some(num()?);
+                    } else if let Some(c) = CDM_COVARIANCE.iter().position(|s| *s == k) {
+                        covariances[o][c] = Some(num()? * 1e-6);
+                    }
+                }
+            }
+        }
+        cdm.tca = tca.ok_or_else(|| err(0, "missing TCA"))?;
+        if cdm.miss_distance_km.is_nan() {
+            return Err(err(0, "missing MISS_DISTANCE"));
+        }
+        let vector = |c: [Option<f64>; 3]| Some(DVec3::new(c[0]?, c[1]?, c[2]?));
+        cdm.relative_position_rtn_km = vector(rel[0]);
+        cdm.relative_velocity_rtn_km_s = vector(rel[1]);
+        for o in 0..2 {
+            let s = states[o]
+                .iter()
+                .map(|c| c.ok_or_else(|| err(0, format!("OBJECT{}: incomplete state", o + 1))))
+                .collect::<Result<Vec<_>, _>>()?;
+            cdm.objects[o].state =
+                StateVector::new(DVec3::new(s[0], s[1], s[2]), DVec3::new(s[3], s[4], s[5]));
+            let lower: [f64; 21] = std::array::from_fn(|i| covariances[o][i].unwrap_or(f64::NAN));
+            if lower.iter().any(|x| x.is_nan()) {
+                return Err(err(0, format!("OBJECT{}: incomplete covariance", o + 1)));
+            }
+            cdm.objects[o].covariance_rtn = from_lower_triangle(&lower);
+        }
+        Ok(cdm)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1068,5 +1338,130 @@ COVARIANCE_STOP
         let back = Aem::from_kvn(&flipped).unwrap();
         assert!((back.segments[0].quaternions[0].1 - q).length() < 1e-11);
         assert!(Aem::from_kvn(&text.replace("= QUATERNION\n", "= EULER_ANGLE\n")).is_err());
+    }
+
+    /// CCSDS 508.0-B-1 Annex C style sample (abridged, covariance rows trimmed to 6×6).
+    const CDM_SAMPLE: &str = "CCSDS_CDM_VERS = 1.0
+CREATION_DATE = 2010-03-12T22:31:12.000
+ORIGINATOR = JSPOC
+MESSAGE_FOR = SATELLITE A
+MESSAGE_ID = 201113719185
+TCA = 2010-03-13T22:37:52.618
+MISS_DISTANCE = 715 [m]
+RELATIVE_SPEED = 14762 [m/s]
+RELATIVE_POSITION_R = 27.4 [m]
+RELATIVE_POSITION_T = -70.2 [m]
+RELATIVE_POSITION_N = 711.8 [m]
+RELATIVE_VELOCITY_R = -7.2 [m/s]
+RELATIVE_VELOCITY_T = -14692.0 [m/s]
+RELATIVE_VELOCITY_N = -1437.2 [m/s]
+COLLISION_PROBABILITY = 4.835E-05
+COLLISION_PROBABILITY_METHOD = FOSTER-1992
+OBJECT = OBJECT1
+OBJECT_DESIGNATOR = 12345
+CATALOG_NAME = SATCAT
+OBJECT_NAME = SATELLITE A
+INTERNATIONAL_DESIGNATOR = 1997-030E
+EPHEMERIS_NAME = EPHEMERIS SATELLITE A
+COVARIANCE_METHOD = CALCULATED
+MANEUVERABLE = YES
+REF_FRAME = EME2000
+X = 2570.097065 [km]
+Y = 2244.654904 [km]
+Z = 6281.497978 [km]
+X_DOT = 4.418769571 [km/s]
+Y_DOT = 4.833547743 [km/s]
+Z_DOT = -3.526774282 [km/s]
+CR_R = 4.142E+01 [m**2]
+CT_R = -8.579E+00 [m**2]
+CT_T = 2.533E+03 [m**2]
+CN_R = -2.313E+01 [m**2]
+CN_T = 1.336E+01 [m**2]
+CN_N = 7.098E+01 [m**2]
+CRDOT_R = 2.520E-03 [m**2/s]
+CRDOT_T = -5.476E+00 [m**2/s]
+CRDOT_N = 8.626E-04 [m**2/s]
+CRDOT_RDOT = 5.744E-03 [m**2/s**2]
+CTDOT_R = -1.006E-02 [m**2/s]
+CTDOT_T = 4.041E-03 [m**2/s]
+CTDOT_N = -1.359E-03 [m**2/s]
+CTDOT_RDOT = -1.502E-05 [m**2/s**2]
+CTDOT_TDOT = 1.049E-05 [m**2/s**2]
+CNDOT_R = 1.053E-03 [m**2/s]
+CNDOT_T = -3.412E-03 [m**2/s]
+CNDOT_N = 1.213E-02 [m**2/s]
+CNDOT_RDOT = -3.004E-06 [m**2/s**2]
+CNDOT_TDOT = -1.091E-06 [m**2/s**2]
+CNDOT_NDOT = 5.529E-05 [m**2/s**2]
+OBJECT = OBJECT2
+OBJECT_DESIGNATOR = 30337
+CATALOG_NAME = SATCAT
+OBJECT_NAME = FENGYUN 1C DEB
+INTERNATIONAL_DESIGNATOR = 1999-025AA
+EPHEMERIS_NAME = NONE
+COVARIANCE_METHOD = CALCULATED
+MANEUVERABLE = NO
+REF_FRAME = EME2000
+X = 2569.540800 [km]
+Y = 2245.093614 [km]
+Z = 6281.599946 [km]
+X_DOT = -2.888612500 [km/s]
+Y_DOT = -6.007247516 [km/s]
+Z_DOT = 3.328770172 [km/s]
+CR_R = 1.337E+03 [m**2]
+CT_R = -4.806E+04 [m**2]
+CT_T = 2.492E+06 [m**2]
+CN_R = -3.298E+01 [m**2]
+CN_T = -7.5888E+02 [m**2]
+CN_N = 7.105E+01 [m**2]
+CRDOT_R = 2.591E-03 [m**2/s]
+CRDOT_T = -4.152E-02 [m**2/s]
+CRDOT_N = -1.784E-06 [m**2/s]
+CRDOT_RDOT = 6.886E-05 [m**2/s**2]
+CTDOT_R = -1.016E-02 [m**2/s]
+CTDOT_T = -1.506E-04 [m**2/s]
+CTDOT_N = 1.637E-03 [m**2/s]
+CTDOT_RDOT = -2.987E-06 [m**2/s**2]
+CTDOT_TDOT = 1.059E-05 [m**2/s**2]
+CNDOT_R = 4.400E-03 [m**2/s]
+CNDOT_T = 8.482E-03 [m**2/s]
+CNDOT_N = 8.633E-03 [m**2/s]
+CNDOT_RDOT = -1.903E-06 [m**2/s**2]
+CNDOT_TDOT = -4.594E-06 [m**2/s**2]
+CNDOT_NDOT = 5.178E-05 [m**2/s**2]
+";
+
+    #[test]
+    fn cdm_reads_and_round_trips() {
+        let cdm = Cdm::from_kvn(CDM_SAMPLE).unwrap();
+        assert_eq!(cdm.message_id, "201113719185");
+        assert!((cdm.miss_distance_km - 0.715).abs() < 1e-12);
+        assert_eq!(cdm.collision_probability, Some(4.835e-5));
+        let rel = cdm.relative_position_rtn_km.unwrap();
+        assert!((rel - DVec3::new(0.0274, -0.0702, 0.7118)).length() < 1e-12);
+        let [a, b] = &cdm.objects;
+        assert_eq!(
+            (a.designator.as_str(), b.object_name.as_str()),
+            ("12345", "FENGYUN 1C DEB")
+        );
+        assert_eq!(b.state.velocity_km_s.y, -6.007247516);
+        assert!((b.covariance_rtn[1][1] - 2.492).abs() < 1e-12);
+        assert_eq!(b.covariance_rtn[0][1], b.covariance_rtn[1][0]);
+        assert!((a.covariance_rtn[5][5] - 5.529e-11).abs() < 1e-24);
+        let back = Cdm::from_kvn(&cdm.to_kvn()).unwrap();
+        assert_eq!(back.tca, cdm.tca);
+        assert!((back.miss_distance_km - cdm.miss_distance_km).abs() < 1e-15);
+        assert_eq!(back.objects[1].state, cdm.objects[1].state);
+        for (x, y) in back.objects[0]
+            .covariance_rtn
+            .iter()
+            .flatten()
+            .zip(cdm.objects[0].covariance_rtn.iter().flatten())
+        {
+            assert!((x - y).abs() <= 1e-15 * y.abs().max(1e-30), "{x} vs {y}");
+        }
+        assert!(
+            Cdm::from_kvn(&CDM_SAMPLE.replace("CNDOT_NDOT = 5.178E-05 [m**2/s**2]\n", "")).is_err()
+        );
     }
 }

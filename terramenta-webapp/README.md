@@ -85,7 +85,7 @@ Relative URLs resolve against the app root (the directory holding
 | `hud` | `{visible, help}` | Globe's built-in HUD (off unless set) |
 | `director` | `{type, ...}` | Timeline preset; see [Directors](#directors) |
 | `timeline` | `{directed, skipTo, events: [{id, label, at, actions}]}` | See [Timeline](#timeline) |
-| `analysis` | `{plots: [{id, label, quantity, spacecraft}], porkchops: [{id, label, origin, destination, departure, arrival, retrograde, steps}], coverage: [{id, label, spacecraft, access, minElevationDeg, resolution, bounds, stepS, metric, show}]}` | See [Reports](#reports), [Coverage](#coverage). Overlay id `coverage` is reserved |
+| `analysis` | `{plots: [{id, label, quantity, spacecraft}], porkchops: [{id, label, origin, destination, departure, arrival, retrograde, steps}], coverage: [{id, label, spacecraft, access, minElevationDeg, resolution, bounds, stepS, metric, show}], conjunctions: [{id, label, primary, secondaries, layers, thresholdKm, hardBodyRadiusM, stepS, secondarySigmaKm}]}` | See [Reports](#reports), [Coverage](#coverage), [Conjunctions](#conjunctions). Overlay id `coverage` is reserved |
 | `groundStations` | `[{id, label, latDeg, lonDeg, altKm, minElevationDeg, horizon, color}]` | See [Events](#events). Overlay id `ground-stations` is reserved |
 | `events` | `{eclipses, apsides, nodes, stepS}` | See [Events](#events) |
 | `targets` | `[{id, label, spacecraft, variables, goals, maxIterations}]` | See [Targeting](#targeting) |
@@ -96,7 +96,7 @@ what [`globe.js`](src/globe.js) recorded from `add*` calls (inline text,
 mission search options, explicit satellite selections, camera lock). `ui`,
 `description` and `director` carry over from the loaded project; the timeline,
 analysis, ground stations and event options are saved as edited, minus events whose references no longer hold
-and plot and coverage spacecraft no longer in the scene. Not saved: per-satellite trail
+and plot, coverage and conjunction spacecraft and layers no longer in the scene. Not saved: per-satellite trail
 toggles, local-file overlay refresh timers, unsaved porkchop inputs.
 
 ### Workspace
@@ -123,6 +123,7 @@ Listed in [`projects/manifest.json`](projects/manifest.json).
 | [`ground-contacts`](projects/ground-contacts.terramenta.json) | 700 km SSO for a day over five ground stations; contacts, eclipses, nodes; timeline slows the clock for `polar.aos.svalbard.1` |
 | [`targeted-transfer`](projects/targeted-transfer.terramenta.json) | Rough first-guess burns, solved on the Spacecraft tab: Hohmann Δv and second-burn epoch for a circular 800 km orbit; 20 N finite-burn duration for a 150 km SMA raise |
 | [`attitude-modes`](projects/attitude-modes.terramenta.json) | Three pointing laws over six hours: LVLH observer with a star-tracker sun angle, SSO tracking Svalbard with its array sun-constrained, 6°/s inertial spinner; body axes and boresights on the globe |
+| [`conjunction-screening`](projects/conjunction-screening.terramenta.json) | 550 km SSO satellite and a debris object crossing it at 70° with a 120 m radial miss, both with covariance; screened against the debris and the CelesTrak visual catalogue; timeline slows through TCA; opens on Analysis |
 | [`coverage-study`](projects/coverage-study.terramenta.json) | Six nadir imagers in three 700 km SSO planes from Keplerian elements, cone and rectangular fields of view with footprints; one-day sensor revisit over Europe (H3 4, shown) and global access above 10° (H3 2); Svalbard with a terrain horizon; opens on Analysis |
 
 ## Full panel
@@ -131,7 +132,7 @@ Six tabs on one row. Hidden panes stay mounted and bound. Sections collapse;
 a non-default open/closed state is remembered per title (`localStorage`).
 Sections marked *closed* start collapsed; Plots and Spacecraft reports hide
 while the project has neither spacecraft nor plots, Events while it has no
-spacecraft, Coverage while it has neither spacecraft nor studies.
+spacecraft, Coverage and Conjunctions while it has neither spacecraft nor studies.
 
 | Tab | Section | Controls |
 | --- | --- | --- |
@@ -149,6 +150,7 @@ spacecraft, Coverage while it has neither spacecraft nor studies.
 | **Analysis** | Plots | Saved plots: one quantity against time per spacecraft, burn markers, clock cursor (click to set the clock), CSV, remove. Add plot: quantity, spacecraft, label |
 | | Spacecraft reports | Per spacecraft: span, samples, start/end/min/max of altitude, SMA, eccentricity, inclination, period, perigee/apogee, and 1σ radial/in-track/cross-track/RSS with covariance; Δv budget per burn; CSV. CZML of all spacecraft |
 | | Events | Search options (eclipses, apsides, nodes, step). Per spacecraft: contact and umbra totals; contacts (station, AOS, duration, max elevation) and eclipses (entry, umbra, total) — click a row to set the clock; CSV |
+| | Conjunctions | Per study: primary, secondaries and layers, threshold, radius, step, assumed σ; run/re-run, CSV, edit, remove; found/screened/filtered, layers not loaded; top 20 by Pc: TCA, object, miss (speed on hover), Pc (σ on hover), Pc max, CDM. Row: clock to TCA, catalogue object pinned. Editor: name, primary, spacecraft, catalogue layers, threshold, radius, step, catalogue σ |
 | | Coverage | Per study: spacecraft, access, H3 resolution, region, step; run/re-run, show/hide on the globe, shaded metric, CSV, GeoJSON, edit, remove; cells seen, mean time covered, max gap (median and worst cell), mean revisit; metric legend. Editor: name, spacecraft, access (line of sight or sensor FOV), mask, resolution, bounds, step |
 | | Porkchop plot | Origin/destination bodies, departure/arrival date ranges, grid steps; contoured total-Δv SVG from `terramenta-charta`, minimum marked and listed, grid CSV |
 | | Porkchop studies | Save the inputs under a label (same label replaces); Open fills and computes; remove. The first study opens with the project |
@@ -365,6 +367,28 @@ each propagation.
 - **Export**: CSV (`h3, lat_deg, lon_deg, fraction, accesses, max_gap_s,
   mean_gap_s, first_access_s`) and GeoJSON (drawn cells with every statistic).
 
+## Conjunctions
+
+[`conjunction.js`](src/conjunction.js), [`conjunction-panel.js`](src/conjunction-panel.js);
+`terramenta-solare` `conjunction` via `globe.conjunctions(options)`, which re-runs
+each propagation.
+
+- **Sources**: `primary` and `secondaries` are spacecraft ids; `layers` are
+  ephemeris layers (every object, SGP4 or OEM). Layers not loaded when the
+  study runs are skipped and listed.
+- **Search**: closest approaches within `thresholdKm` (default 5) on a
+  `stepS` grid (default 60), refined to 0.1 ms; SGP4 objects outside the
+  primary's radius band are filtered.
+- **Pc**: Foster 2D with `hardBodyRadiusM` (combined, default 20) and the
+  combined covariance: spacecraft `propagation.covariance`, or
+  `secondarySigmaKm` (RSW 1σ) for catalogue objects and spacecraft without
+  one. Pc max: largest Pc over the covariance's scale.
+- **Results** are not saved; Run re-runs. A study is stale when it or a
+  spacecraft entry changes.
+- **Export**: CSV (`tca_utc, secondary, name, norad_id, miss_m,
+  relative_speed_m_s, radial_m, in_track_m, cross_track_m, sigma_major_m,
+  sigma_minor_m, pc, pc_max`), CCSDS CDM per conjunction.
+
 ## Timeline
 
 [`timeline.js`](src/timeline.js), [`timeline-panel.js`](src/timeline-panel.js).
@@ -500,6 +524,7 @@ projects/
   targeted-transfer.terramenta.json  Differential correction of burns
   attitude-modes.terramenta.json  Pointing laws, body axes, sensor angles
   coverage-study.terramenta.json  Imager constellation, footprints, H3 coverage
+  conjunction-screening.terramenta.json  Close approaches, Pc, CDM
 data/
   geometry-tour.geojson         One feature per geometry type
   extruded-cube.geojson         Extruded ring
@@ -520,6 +545,7 @@ src/
   targeting.js           Project targets, solve/apply via globe.target
   attitude.js            Project attitude profiles, sampling and drawing via globe.attitude
   coverage.js            Project coverage studies, globe.coverage runs, shading, CSV/GeoJSON
+  conjunction.js         Project conjunction studies, globe.conjunctions runs, ranking, CSV
   reports.js             OEM parsing, osculating elements, Δv budget, CSV, CZML
   flight-panel.js        Flight panel
   globe.js               Sole wrapper around the globe WASM module; records add* sources, reports scene changes
@@ -533,6 +559,7 @@ src/
   targeting-panel.js     Spacecraft tab targeting section and editor
   attitude-panel.js      Spacecraft tab attitude section: charts, AEM, editor
   coverage-panel.js      Analysis tab coverage section: summaries, legend, export, editor
+  conjunction-panel.js   Analysis tab conjunctions section: ranked table, CDM/CSV, editor
   timeline-panel.js      Timeline tab: strip, event list, add event
   reports-panel.js       Analysis tab: plots, spacecraft reports, CSV/CZML export
   chart.js               SVG builder and time-series line chart

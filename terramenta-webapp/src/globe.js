@@ -130,6 +130,7 @@ const UNTRACKED = new Set([
   "showAttitude",
   "hideAttitude",
   "coverage",
+  "conjunctions",
 ]);
 
 let changeListener = null;
@@ -726,6 +727,18 @@ export const hideAttitude = (id) => required().hideAttitude(id);
  * Full option list: `terramenta-globe/src/wasm.rs`, `coverage`.
  */
 export const coverage = (options) => required().coverage(options);
+
+/**
+ * Close-approach screening: `{primary: propagation, secondaries: [{id?,
+ * propagation} | {tle} | {omm} | {layer}], start?, stop?, stepS?,
+ * thresholdKm?, hardBodyRadiusM?, secondarySigmaKm?, exclude?, cdm?}` →
+ * `{start, stop, screened, filtered, conjunctions: [{secondary, name,
+ * noradId?, layer?, tca, missKm, relativeSpeedKmS, relativePositionRswKm,
+ * relativeVelocityRswKmS, sigmaKm, pc, pcMax, cdm?}]}`. Synchronous; throws
+ * on bad input or a layer not loaded.
+ * Full option list: `terramenta-globe/src/wasm.rs`, `conjunctions`.
+ */
+export const conjunctions = (options) => required().conjunctions(options);
 
 /**
  * Propagates `propagation` (`propagate` options; `kvn` ignored) and puts the
