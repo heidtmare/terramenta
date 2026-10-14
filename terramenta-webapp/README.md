@@ -88,6 +88,7 @@ Relative URLs resolve against the app root (the directory holding
 | `analysis` | `{plots: [{id, label, quantity, spacecraft}], porkchops: [{id, label, origin, destination, departure, arrival, retrograde, steps}]}` | See [Reports](#reports) |
 | `groundStations` | `[{id, label, latDeg, lonDeg, altKm, minElevationDeg, color}]` | See [Events](#events). Overlay id `ground-stations` is reserved |
 | `events` | `{eclipses, apsides, nodes, stepS}` | See [Events](#events) |
+| `targets` | `[{id, label, spacecraft, variables, goals, maxIterations}]` | See [Targeting](#targeting) |
 
 **Save** (Project tab) writes the current scene: state-stream values plus
 what [`globe.js`](src/globe.js) recorded from `add*` calls (inline text,
@@ -119,6 +120,7 @@ Listed in [`projects/manifest.json`](projects/manifest.json).
 | [`mars-windows`](projects/mars-windows.terramenta.json) | Earth → Mars porkchop studies, 2026 and 2028 windows; opens on Analysis |
 | [`leo-transfer`](projects/leo-transfer.terramenta.json) | 500 → 800 km Hohmann transfer vs. coasting reference; CelesTrak EOP and space weather; timeline slows the clock around each burn; altitude, SMA and eccentricity plots |
 | [`ground-contacts`](projects/ground-contacts.terramenta.json) | 700 km SSO for a day over five ground stations; contacts, eclipses, nodes; timeline slows the clock for `polar.aos.svalbard.1` |
+| [`targeted-transfer`](projects/targeted-transfer.terramenta.json) | Rough first-guess burns, solved on the Spacecraft tab: Hohmann Δv and second-burn epoch for a circular 800 km orbit; 20 N finite-burn duration for a 150 km SMA raise |
 
 ## Full panel
 
@@ -136,6 +138,7 @@ spacecraft.
 | | GeoJSON overlays | Add from URL or local file; bundled samples and USGS feeds; refresh period; picking on/off. Per layer: visibility, colour, clamp to surface, extrude, simplestyle on/off, refresh, remove, feature counts and age |
 | | Satellites | Add OMM from URL or local file; five Celestrak groups. Per layer: visibility, colour, trails and trail window, refresh, remove, and a filterable object list with per-object draw and trail toggles |
 | **Spacecraft** | Spacecraft | Per spacecraft: visibility, colour, trails, span/samples/final mass, edit, go to start, OEM/SPK export, remove. Editor: initial state (GCRF state with circular-orbit fill, TLE, OMM), start/duration/step, vehicle, forces, integrator, impulsive and finite burns |
+| | Targeting | Per target: spacecraft, solve, apply, edit, remove; last solution's variables (initial, solved) and goals (desired, achieved, error; misses in red). Editor: name, spacecraft, iterations, variables (burn, parameter, perturbation, max step), goals (quantity, at, value, tolerance) |
 | | Ground stations | Per station: name, position, altitude, mask, edit, remove. Add/edit: name, lat/lon, altitude, mask, colour. Drawn as a point overlay |
 | | Propagation environment (*closed*) | EOP, space weather, kernel: URL or local file, coverage |
 | **Timeline** | Timeline | Directed on/off; searched events shown/hidden (remembered, default hidden); previous/next event; strip (click to set the clock) and list of every event with time, source, actions, Go, Remove (project events). Add event: label, at clock or an event plus offset, actions from the current scene (rate, paused, view, frame, camera, focus) |
@@ -259,6 +262,33 @@ options)`, which re-runs the propagation.
 - Spans open at either end are clipped to the propagation span. Results are
   cached per spacecraft entry and invalidated by any station or option edit.
 - **CSV**: `utc, end_utc, event, station, max_elevation_deg`, time-ordered.
+
+## Targeting
+
+[`targeting.js`](src/targeting.js), [`targeting-panel.js`](src/targeting-panel.js);
+solver in `terramenta-solare` `targeting` via `globe.target(propagation,
+options)`.
+
+- **Variables**: impulsive burn `dv1`–`dv3` (km/s, components in the burn's
+  frame) or `epoch` (s offset); finite burn `start` (s offset) or `duration`
+  (s). Burns 1-based, in propagation order. `perturbation` (default 1e-5 km/s,
+  1 s) is the finite-difference step and the variable's scale; `maxStep`
+  (default 0.1 km/s, 600 s) caps each iteration's change.
+- **Goals**: `quantity` from the report quantities plus `flightPathAngleDeg`
+  and `massKg`, two-body osculating about Earth; `at` `end`, `burnN` (after
+  the burn), `burnN.before`, `finiteN`, `finiteN.end` or a UTC epoch.
+  Angles compare modulo 360°. Met when every |error| ≤ `tolerance`.
+- **Method**: Newton on residuals scaled by tolerance; forward-difference
+  Jacobian, one propagation per variable per iteration. Minimum-norm step with
+  more variables than goals, least squares with fewer; the step is scaled to
+  respect `maxStep`, then halved until the residual norm drops. Stops after
+  `maxIterations` (default 25) or when no step improves.
+- Each evaluation is a full propagation, ended two steps after the latest goal
+  unless a goal is at `end`. Burn-relative goals use the propagator's exact
+  burn states; other epochs are Hermite-interpolated.
+- **Apply** re-propagates the spacecraft with the solved burns (epochs rounded
+  to 1 ms) and marks the project unsaved. Results are not saved; editing a
+  target drops its result, re-propagating the spacecraft marks it stale.
 
 ## Timeline
 
@@ -392,6 +422,7 @@ projects/
   mars-windows.terramenta.json  Porkchop studies
   leo-transfer.terramenta.json  Propagated Hohmann transfer
   ground-contacts.terramenta.json  Ground station contacts and eclipses
+  targeted-transfer.terramenta.json  Differential correction of burns
 data/
   geometry-tour.geojson         One feature per geometry type
   extruded-cube.geojson         Extruded ring
@@ -409,6 +440,7 @@ src/
   timeline.js            Timeline: scene/project/director events, resolution, runner
   analysis.js            Project analysis: saved plots and porkchop studies
   events.js              Ground stations, event options, findEvents cache, searched timeline events
+  targeting.js           Project targets, solve/apply via globe.target
   reports.js             OEM parsing, osculating elements, Δv budget, CSV, CZML
   flight-panel.js        Flight panel
   globe.js               Sole wrapper around the globe WASM module; records add* sources, reports scene changes
@@ -419,6 +451,7 @@ src/
   mission.js             Analysis tab: porkchop plot, studies, grid CSV, launch
   spacecraft-panel.js    Spacecraft tab: spacecraft list, editor, OEM/SPK export, environment
   events-panel.js        Ground stations section; Analysis tab events section, CSV
+  targeting-panel.js     Spacecraft tab targeting section and editor
   timeline-panel.js      Timeline tab: strip, event list, add event
   reports-panel.js       Analysis tab: plots, spacecraft reports, CSV/CZML export
   chart.js               SVG builder and time-series line chart

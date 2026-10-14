@@ -39,6 +39,23 @@ export function attachFake({ objects = {} } = {}) {
         orbit: apsides ? [{ kind: "periapsis", at: t0 + 100 }] : [],
       };
     },
+    /** Moves every variable by +1 and meets every goal; throws with no goals. */
+    target: (propagation, { variables, goals }) => {
+      if (!goals?.length) throw new Error("need at least one variable and one goal");
+      const maneuvers = structuredClone(propagation.maneuvers ?? []);
+      for (const variable of variables) {
+        if (variable.burn && variable.parameter.startsWith("dv")) maneuvers[variable.burn - 1].deltaVKmS[variable.parameter[2] - 1] += 1;
+      }
+      return {
+        converged: true,
+        iterations: 2,
+        history: [40, 3, 0.5],
+        values: variables.map(() => 1),
+        goals: goals.map((goal) => ({ achieved: goal.value, error: 0 })),
+        maneuvers,
+        finiteBurns: structuredClone(propagation.finiteBurns ?? []),
+      };
+    },
   };
   const module = new Proxy(
     {},
@@ -62,5 +79,5 @@ export const commands = (calls) =>
   calls
     .map(([name]) => name)
     .filter(
-      (name) => !(name in { layers: 0, vectorLayers: 0, limits: 0, ephemerisObjects: 0, propagationEnvironment: 0, findEvents: 0 }),
+      (name) => !(name in { layers: 0, vectorLayers: 0, limits: 0, ephemerisObjects: 0, propagationEnvironment: 0, findEvents: 0, target: 0 }),
     );

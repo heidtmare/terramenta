@@ -23,5 +23,10 @@
     "file": "ground-contacts.terramenta.json",
     "name": "Ground contacts",
     "description": "Sun-synchronous LEO over five ground stations: contacts, eclipses and nodes; timeline keyed to the first Svalbard pass."
+  },
+  {
+    "file": "targeted-transfer.terramenta.json",
+    "name": "Targeted transfer",
+    "description": "Differential correction of rough first-guess burns: Hohmann Δv and timing, low-thrust burn duration."
   }
 ]

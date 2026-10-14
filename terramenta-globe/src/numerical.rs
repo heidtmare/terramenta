@@ -105,7 +105,7 @@ pub fn describe_environment() -> EnvironmentInfo {
 }
 
 /// `propagate` options.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PropagationRequest {
     #[serde(default)]
@@ -150,7 +150,7 @@ fn default_step() -> f64 {
     60.0
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", untagged)]
 pub enum Initial {
     Tle {
@@ -169,7 +169,7 @@ pub enum Initial {
     },
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct VehicleOptions {
     pub mass_kg: f64,
@@ -215,7 +215,7 @@ pub enum DragModel {
     Nrlmsise00,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ForceOptions {
     /// `[degree, order]`, EGM2008, ≤ 20. `[0, 0]`: point mass.
@@ -238,7 +238,7 @@ impl Default for ForceOptions {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct IntegratorOptions {
     /// `dop853` | `rkf78` | `rk4`.
@@ -260,18 +260,18 @@ impl Default for IntegratorOptions {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManeuverOptions {
     pub epoch: String,
     pub delta_v_km_s: [f64; 3],
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub isp_s: Option<f64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FiniteBurnOptions {
     pub start: String,
@@ -279,7 +279,7 @@ pub struct FiniteBurnOptions {
     pub thrust_n: f64,
     pub isp_s: f64,
     pub direction: [f64; 3],
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame: Option<String>,
 }
 
@@ -803,6 +803,397 @@ pub fn find_events(propagated: &Propagated, req: &EventRequest) -> Result<Events
     Ok(out)
 }
 
+// --- Targeting ------------------------------------------------------------------------
+
+/// `target` options.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetRequest {
+    pub variables: Vec<TargetVariable>,
+    pub goals: Vec<TargetGoal>,
+    #[serde(default = "default_max_iterations")]
+    pub max_iterations: usize,
+}
+
+fn default_max_iterations() -> usize {
+    25
+}
+
+/// One of `burn` (impulsive, 1-based; `parameter` `dv1`–`dv3` km/s in its frame, or
+/// `epoch` s offset) or `finite` (1-based; `start` s offset, `duration` s).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetVariable {
+    #[serde(default)]
+    pub burn: Option<usize>,
+    #[serde(default)]
+    pub finite: Option<usize>,
+    pub parameter: String,
+    /// Forward-difference step and scale. Default: 1e-5 km/s, 1 s.
+    #[serde(default)]
+    pub perturbation: Option<f64>,
+    /// Largest change per iteration. Default: 0.1 km/s, 600 s.
+    #[serde(default)]
+    pub max_step: Option<f64>,
+}
+
+/// `quantity` (as reports: `smaKm`, `eccentricity`, … plus `flightPathAngleDeg`, `massKg`)
+/// at `at`: `end`, `burnN` (after), `burnN.before`, `finiteN`, `finiteN.end` or a UTC epoch.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetGoal {
+    pub quantity: String,
+    pub at: String,
+    pub value: f64,
+    pub tolerance: f64,
+}
+
+/// `target` result; `maneuvers`/`finiteBurns` are the request's with `values` applied.
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Targeted {
+    pub converged: bool,
+    pub iterations: usize,
+    /// Largest |error / tolerance| at the start and after each iteration.
+    pub history: Vec<f64>,
+    /// Final variable values, request order: km/s, s offset, s.
+    pub values: Vec<f64>,
+    pub goals: Vec<GoalResult>,
+    pub maneuvers: Vec<ManeuverOptions>,
+    pub finite_burns: Vec<FiniteBurnOptions>,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct GoalResult {
+    pub achieved: f64,
+    /// Achieved − desired; angles wrapped to ±180°.
+    pub error: f64,
+}
+
+const QUANTITY_NAMES: [&str; 14] = [
+    "altitudeKm",
+    "radiusKm",
+    "speedKmS",
+    "smaKm",
+    "eccentricity",
+    "inclinationDeg",
+    "raanDeg",
+    "argPerigeeDeg",
+    "trueAnomalyDeg",
+    "periodMin",
+    "perigeeAltKm",
+    "apogeeAltKm",
+    "flightPathAngleDeg",
+    "massKg",
+];
+
+/// Two-body osculating quantity about Earth (EGM2008 GM); altitudes above the equatorial
+/// radius. Matches the webapp's `reports.js`.
+fn quantity(name: &str, s: &SpacecraftState) -> f64 {
+    let (r, v) = (s.position_km, s.velocity_km_s);
+    let mu = EGM2008_GM_KM3_S2;
+    let (radius, speed) = (r.length(), v.length());
+    let h = r.cross(v);
+    let rv = r.dot(v);
+    let e_vec = ((speed * speed - mu / radius) * r - rv * v) / mu;
+    let e = e_vec.length();
+    let a = -mu / (2.0 * (speed * speed / 2.0 - mu / radius));
+    let node = bevy::math::DVec3::new(-h.y, h.x, 0.0);
+    let wrap = |x: f64| x.rem_euclid(360.0);
+    let angle = |a: bevy::math::DVec3, b: bevy::math::DVec3| {
+        (a.dot(b) / (a.length() * b.length()))
+            .clamp(-1.0, 1.0)
+            .acos()
+            .to_degrees()
+    };
+    match name {
+        "altitudeKm" => radius - EARTH_RADIUS_KM,
+        "radiusKm" => radius,
+        "speedKmS" => speed,
+        "smaKm" => a,
+        "eccentricity" => e,
+        "inclinationDeg" => (h.z / h.length()).clamp(-1.0, 1.0).acos().to_degrees(),
+        "raanDeg" => wrap(node.y.atan2(node.x).to_degrees()),
+        "argPerigeeDeg" => {
+            let w = angle(node, e_vec);
+            wrap(if e_vec.z < 0.0 { -w } else { w })
+        }
+        "trueAnomalyDeg" => {
+            let nu = angle(e_vec, r);
+            if rv < 0.0 { 360.0 - nu } else { nu }
+        }
+        "periodMin" => 2.0 * std::f64::consts::PI * (a.powi(3) / mu).sqrt() / 60.0,
+        "perigeeAltKm" => a * (1.0 - e) - EARTH_RADIUS_KM,
+        "apogeeAltKm" => a * (1.0 + e) - EARTH_RADIUS_KM,
+        "flightPathAngleDeg" => (rv / (radius * speed)).clamp(-1.0, 1.0).asin().to_degrees(),
+        "massKg" => s.mass_kg,
+        _ => f64::NAN,
+    }
+}
+
+fn is_angle(name: &str) -> bool {
+    matches!(name, "raanDeg" | "argPerigeeDeg" | "trueAnomalyDeg")
+}
+
+/// Goal epoch in `req`, or `None` for the end of the propagation.
+fn goal_epoch(at: &str, req: &PropagationRequest) -> Result<Option<Epoch>, String> {
+    let index = |s: &str, n: usize| -> Result<usize, String> {
+        s.parse::<usize>()
+            .ok()
+            .filter(|i| (1..=n).contains(i))
+            .map(|i| i - 1)
+            .ok_or_else(|| format!("goal at {at:?}: no such burn"))
+    };
+    if at == "end" {
+        return Ok(None);
+    }
+    if let Some(rest) = at.strip_prefix("burn") {
+        let i = index(rest.trim_end_matches(".before"), req.maneuvers.len())?;
+        return epoch(&req.maneuvers[i].epoch).map(Some);
+    }
+    if let Some(rest) = at.strip_prefix("finite") {
+        let (n, end) = match rest.strip_suffix(".end") {
+            Some(n) => (n, true),
+            None => (rest, false),
+        };
+        let b = &req.finite_burns[index(n, req.finite_burns.len())?];
+        let start = epoch(&b.start)?;
+        return Ok(Some(if end {
+            start.advanced_by_seconds(b.duration_s)
+        } else {
+            start
+        }));
+    }
+    epoch(at).map(Some)
+}
+
+/// UTC ISO 8601 with `Z`, nanoseconds.
+fn utc_iso(e: Epoch) -> String {
+    format!("{}Z", TimeSystem::Utc.format(e))
+}
+
+/// As [`utc_iso`], rounded to milliseconds.
+fn utc_iso_ms(e: Epoch) -> String {
+    let s = TimeSystem::Utc.format(e.advanced_by_seconds(5e-4));
+    format!("{}Z", &s[..s.len() - 6])
+}
+
+/// Differential correction ([`terramenta_solare::targeting`]) of `req`'s burns to meet
+/// `target.goals`. Each evaluation is a full propagation, ended a step after the latest
+/// goal unless one is at `end`.
+pub fn target(req: &PropagationRequest, target: &TargetRequest) -> Result<Targeted, String> {
+    use terramenta_solare::targeting::{Variable, solve};
+
+    if target.variables.is_empty() || target.goals.is_empty() {
+        return Err("need at least one variable and one goal".into());
+    }
+    let mut variables = Vec::with_capacity(target.variables.len());
+    let mut seen = std::collections::HashSet::new();
+    for (k, v) in target.variables.iter().enumerate() {
+        let (value, perturbation, max_step) = match (v.burn, v.finite, v.parameter.as_str()) {
+            (Some(n), None, p @ ("dv1" | "dv2" | "dv3" | "epoch")) => {
+                let m = req
+                    .maneuvers
+                    .get(n.wrapping_sub(1))
+                    .ok_or(format!("variables[{k}]: no burn {n}"))?;
+                match p {
+                    "epoch" => (0.0, 1.0, 600.0),
+                    _ => (
+                        m.delta_v_km_s[p.as_bytes()[2] as usize - b'1' as usize],
+                        1e-5,
+                        0.1,
+                    ),
+                }
+            }
+            (None, Some(n), p @ ("start" | "duration")) => {
+                let b = req
+                    .finite_burns
+                    .get(n.wrapping_sub(1))
+                    .ok_or(format!("variables[{k}]: no finite burn {n}"))?;
+                (if p == "start" { 0.0 } else { b.duration_s }, 1.0, 600.0)
+            }
+            _ => {
+                return Err(format!(
+                    "variables[{k}]: need burn with dv1|dv2|dv3|epoch or finite with start|duration"
+                ));
+            }
+        };
+        if !seen.insert((v.burn, v.finite, v.parameter.as_str())) {
+            return Err(format!("variables[{k}]: duplicate"));
+        }
+        let variable = Variable {
+            value,
+            perturbation: v.perturbation.unwrap_or(perturbation),
+            max_step: v.max_step.unwrap_or(max_step),
+        };
+        if !(variable.perturbation > 0.0 && variable.max_step > 0.0) {
+            return Err(format!(
+                "variables[{k}]: perturbation and maxStep must be positive"
+            ));
+        }
+        variables.push(variable);
+    }
+    for (k, g) in target.goals.iter().enumerate() {
+        if !QUANTITY_NAMES.contains(&g.quantity.as_str()) {
+            return Err(format!("goals[{k}]: unknown quantity {:?}", g.quantity));
+        }
+        if g.tolerance.is_nan() || g.tolerance <= 0.0 || !g.value.is_finite() {
+            return Err(format!(
+                "goals[{k}]: need a finite value and positive tolerance"
+            ));
+        }
+        goal_epoch(&g.at, req).map_err(|e| format!("goals[{k}]: {e}"))?;
+    }
+
+    let base_epochs: Vec<Epoch> = req
+        .maneuvers
+        .iter()
+        .map(|m| epoch(&m.epoch))
+        .collect::<Result<_, _>>()?;
+    let base_starts: Vec<Epoch> = req
+        .finite_burns
+        .iter()
+        .map(|b| epoch(&b.start))
+        .collect::<Result<_, _>>()?;
+    let apply = |x: &[f64]| -> PropagationRequest {
+        let mut r = req.clone();
+        for (v, &value) in target.variables.iter().zip(x) {
+            match (v.burn, v.finite, v.parameter.as_str()) {
+                (Some(n), _, "epoch") => {
+                    r.maneuvers[n - 1].epoch =
+                        utc_iso(base_epochs[n - 1].advanced_by_seconds(value));
+                }
+                (Some(n), _, p) => {
+                    r.maneuvers[n - 1].delta_v_km_s[p.as_bytes()[2] as usize - b'1' as usize] =
+                        value;
+                }
+                (_, Some(n), "start") => {
+                    r.finite_burns[n - 1].start =
+                        utc_iso(base_starts[n - 1].advanced_by_seconds(value));
+                }
+                (_, Some(n), _) => r.finite_burns[n - 1].duration_s = value,
+                _ => unreachable!("validated"),
+            }
+        }
+        r
+    };
+    let at_end = target.goals.iter().any(|g| g.at == "end");
+    let evaluate = |x: &[f64]| -> Result<Vec<(f64, f64)>, String> {
+        let mut r = apply(x);
+        let epochs: Vec<Option<Epoch>> = target
+            .goals
+            .iter()
+            .map(|g| goal_epoch(&g.at, &r))
+            .collect::<Result<_, _>>()?;
+        if !at_end {
+            let latest = epochs
+                .iter()
+                .flatten()
+                .max_by(|a, b| a.seconds_since(**b).total_cmp(&0.0));
+            if let (Some(latest), Initial::State { epoch: e, .. }) = (latest, &r.initial) {
+                let start = epoch(r.start.as_deref().unwrap_or(e))?;
+                let stop = match (&r.stop, r.duration_s) {
+                    (Some(s), _) => Some(epoch(s)?),
+                    (None, Some(d)) => Some(start.advanced_by_seconds(d)),
+                    _ => None,
+                };
+                let early = latest.advanced_by_seconds(2.0 * r.step_s.abs());
+                if stop.is_some_and(|stop| {
+                    early.seconds_since(stop) < 0.0 && early.seconds_since(start) > 0.0
+                }) {
+                    r.stop = Some(utc_iso(early));
+                }
+            }
+        }
+        let out = propagate(&r)?;
+        let states = {
+            let mut s = out.states.clone();
+            if s.first().map(|s| s.epoch) > s.last().map(|s| s.epoch) {
+                s.reverse();
+            }
+            s
+        };
+        let ephemeris = (states.len() >= 2).then(|| {
+            SampledEphemeris::new(
+                states.iter().map(|s| (s.epoch, s.state_vector())).collect(),
+                Interpolation::default(),
+            )
+        });
+        target
+            .goals
+            .iter()
+            .zip(&epochs)
+            .map(|(g, e)| {
+                let state = match e {
+                    None => *states.last().ok_or("empty propagation")?,
+                    Some(e) if g.at.starts_with("burn") => {
+                        let mut at = states.iter().filter(|s| s.epoch == *e);
+                        *if g.at.ends_with(".before") {
+                            at.next()
+                        } else {
+                            at.next_back()
+                        }
+                        .ok_or(format!("{}: outside the propagation", g.at))?
+                    }
+                    Some(e) => {
+                        let sv = ephemeris
+                            .as_ref()
+                            .and_then(|eph| eph.try_state_at(*e))
+                            .ok_or(format!("{}: outside the propagation", g.at))?;
+                        let i = states.partition_point(|s| s.epoch <= *e).max(1) - 1;
+                        SpacecraftState::new(*e, sv, states[i].mass_kg)
+                    }
+                };
+                let achieved = quantity(&g.quantity, &state);
+                let mut error = achieved - g.value;
+                if is_angle(&g.quantity) {
+                    error = (error + 180.0).rem_euclid(360.0) - 180.0;
+                }
+                Ok((achieved, error))
+            })
+            .collect()
+    };
+    let tolerances: Vec<f64> = target.goals.iter().map(|g| g.tolerance).collect();
+    let solution = solve(
+        |x| Ok::<_, String>(evaluate(x)?.into_iter().map(|(_, e)| e).collect()),
+        &variables,
+        &tolerances,
+        target.max_iterations,
+    )?;
+    let goals = evaluate(&solution.values)?
+        .into_iter()
+        .map(|(achieved, error)| GoalResult { achieved, error })
+        .collect();
+    let mut solved = apply(&solution.values);
+    for m in &mut solved.maneuvers {
+        m.epoch = utc_iso_ms(epoch(&m.epoch)?);
+    }
+    for b in &mut solved.finite_burns {
+        b.start = utc_iso_ms(epoch(&b.start)?);
+    }
+    // Untouched epochs keep the request's spelling.
+    for (m, orig) in solved.maneuvers.iter_mut().zip(&req.maneuvers) {
+        if epoch(&m.epoch)? == epoch(&orig.epoch)? {
+            m.epoch.clone_from(&orig.epoch);
+        }
+    }
+    for (b, orig) in solved.finite_burns.iter_mut().zip(&req.finite_burns) {
+        if epoch(&b.start)? == epoch(&orig.start)? {
+            b.start.clone_from(&orig.start);
+        }
+    }
+    Ok(Targeted {
+        converged: solution.converged,
+        iterations: solution.iterations,
+        history: solution.history,
+        values: solution.values,
+        goals,
+        maneuvers: solved.maneuvers,
+        finite_burns: solved.finite_burns,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -965,5 +1356,96 @@ mod tests {
             serde_json::from_str(r#"{ "stations": [{ "id": "x", "latDeg": 95, "lonDeg": 0 }] }"#)
                 .unwrap();
         assert!(find_events(&out, &bad).is_err());
+    }
+    /// Point-mass 500 → 800 km Hohmann: vary both Δv and the second burn's epoch to put it
+    /// at apoapsis on a circular 800 km orbit; matches the analytic transfer.
+    #[test]
+    fn targets_a_hohmann_transfer() {
+        let mu = 398_600.441_8_f64;
+        let (r1, r2) = (6878.137_f64, 7178.137_f64);
+        let v = (mu / r1).sqrt();
+        let req = request(&format!(
+            r#"{{ "initial": {{ "epoch": "2026-01-01T00:00:00Z",
+                   "positionKm": [{r1}, 0, 0], "velocityKmS": [0, {v}, 0] }},
+                 "durationS": 21600, "stepS": 60,
+                 "forces": {{ "gravity": [0, 0], "thirdBody": false, "srp": false, "drag": "none" }},
+                 "maneuvers": [
+                   {{ "epoch": "2026-01-01T00:30:00Z", "deltaVKmS": [0.07, 0, 0] }},
+                   {{ "epoch": "2026-01-01T01:18:20Z", "deltaVKmS": [0.07, 0, 0], "ispS": 300 }}
+                 ] }}"#
+        ));
+        let goals: TargetRequest = serde_json::from_str(&format!(
+            r#"{{ "variables": [
+                   {{ "burn": 1, "parameter": "dv1" }},
+                   {{ "burn": 2, "parameter": "epoch" }},
+                   {{ "burn": 2, "parameter": "dv1" }} ],
+                 "goals": [
+                   {{ "quantity": "flightPathAngleDeg", "at": "burn2.before", "value": 0, "tolerance": 1e-4 }},
+                   {{ "quantity": "radiusKm", "at": "burn2", "value": {r2}, "tolerance": 1e-3 }},
+                   {{ "quantity": "smaKm", "at": "burn2", "value": {r2}, "tolerance": 1e-3 }} ] }}"#
+        ))
+        .unwrap();
+        let out = target(&req, &goals).unwrap();
+        assert!(out.converged, "{out:?}");
+        assert!(out.iterations <= 8, "{} iterations", out.iterations);
+        let a = (r1 + r2) / 2.0;
+        let dv1 = (mu * (2.0 / r1 - 1.0 / a)).sqrt() - v;
+        let dv2 = (mu / r2).sqrt() - (mu * (2.0 / r2 - 1.0 / a)).sqrt();
+        let half = std::f64::consts::PI * (a.powi(3) / mu).sqrt();
+        assert!(
+            (out.values[0] - dv1).abs() < 1e-6,
+            "{} vs {dv1}",
+            out.values[0]
+        );
+        assert!(
+            (out.values[2] - dv2).abs() < 1e-6,
+            "{} vs {dv2}",
+            out.values[2]
+        );
+        assert!((1800.0 + 2900.0 + out.values[1] - 1800.0 - half).abs() < 0.05);
+        assert!(
+            out.goals
+                .iter()
+                .zip(&goals.goals)
+                .all(|(g, w)| g.error.abs() <= w.tolerance)
+        );
+        // Untouched epoch kept verbatim; solved one rounded to ms.
+        assert_eq!(out.maneuvers[0].epoch, "2026-01-01T00:30:00Z");
+        assert!(out.maneuvers[1].epoch.starts_with("2026-01-01T01:18:"));
+        assert_eq!(out.maneuvers[1].epoch.len(), 24);
+        assert_eq!(out.maneuvers[1].isp_s, Some(300.0));
+
+        for (variables, goals) in [
+            (
+                r#"[{ "burn": 3, "parameter": "dv1" }]"#,
+                r#"[{ "quantity": "smaKm", "at": "end", "value": 7000, "tolerance": 1 }]"#,
+            ),
+            (
+                r#"[{ "burn": 1, "parameter": "dv4" }]"#,
+                r#"[{ "quantity": "smaKm", "at": "end", "value": 7000, "tolerance": 1 }]"#,
+            ),
+            (
+                r#"[{ "burn": 1, "parameter": "dv1" }]"#,
+                r#"[{ "quantity": "sma", "at": "end", "value": 7000, "tolerance": 1 }]"#,
+            ),
+            (
+                r#"[{ "burn": 1, "parameter": "dv1" }]"#,
+                r#"[{ "quantity": "smaKm", "at": "burn9", "value": 7000, "tolerance": 1 }]"#,
+            ),
+            (
+                r#"[{ "burn": 1, "parameter": "dv1" }]"#,
+                r#"[{ "quantity": "smaKm", "at": "end", "value": 7000, "tolerance": 0 }]"#,
+            ),
+            (
+                r#"[{ "burn": 1, "parameter": "dv1" }, { "burn": 1, "parameter": "dv1" }]"#,
+                r#"[{ "quantity": "smaKm", "at": "end", "value": 7000, "tolerance": 1 }]"#,
+            ),
+        ] {
+            let bad: TargetRequest = serde_json::from_str(&format!(
+                r#"{{ "variables": {variables}, "goals": {goals} }}"#
+            ))
+            .unwrap();
+            assert!(target(&req, &bad).is_err(), "{variables} {goals}");
+        }
     }
 }

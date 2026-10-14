@@ -1165,6 +1165,37 @@ pub fn find_events(propagation: JsValue, options: JsValue) -> Result<JsValue, Js
     Ok(to_js(&found))
 }
 
+/// Differential correction of `propagation`'s burns (as [`propagate`]) to meet `options.goals`.
+///
+/// ```js
+/// const { converged, iterations, history, values, goals, maneuvers, finiteBurns } = target(propagation, {
+///   variables: [
+///     { burn: 1, parameter: "dv1" },      // Δv component 1–3 in the burn's frame, km/s
+///     { burn: 2, parameter: "epoch" },    // s offset; finite: "start" (offset) | "duration"
+///     { burn: 2, parameter: "dv1", perturbation: 1e-5, maxStep: 0.1 },
+///   ],
+///   goals: [
+///     { quantity: "flightPathAngleDeg", at: "burn2.before", value: 0, tolerance: 1e-4 },
+///     { quantity: "smaKm", at: "burn2", value: 7178.137, tolerance: 1e-3 },
+///   ],
+///   maxIterations: 25,
+/// });
+/// // maneuvers / finiteBurns: propagation's, solved values applied (epochs to ms).
+/// ```
+///
+/// Synchronous; one propagation per variable per iteration plus the line search. Not
+/// converging is not an error: check `converged`.
+#[wasm_bindgen]
+pub fn target(propagation: JsValue, options: JsValue) -> Result<JsValue, JsError> {
+    let request = propagation_request(&propagation)?;
+    let json = js_sys::JSON::stringify(&options)
+        .map_err(|_| JsError::new("options are not JSON-serialisable"))?;
+    let goals: crate::numerical::TargetRequest =
+        serde_json::from_str(&String::from(json)).map_err(|e| JsError::new(&e.to_string()))?;
+    let out = crate::numerical::target(&request, &goals).map_err(|e| JsError::new(&e))?;
+    Ok(to_js(&out))
+}
+
 fn propagation_request(options: &JsValue) -> Result<crate::numerical::PropagationRequest, JsError> {
     let json = js_sys::JSON::stringify(options)
         .map_err(|_| JsError::new("options are not JSON-serialisable"))?;

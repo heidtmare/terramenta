@@ -1210,3 +1210,7 @@ textarea.coordinate {
   color: var(--ink);
   background: var(--surface-raised);
 }
+
+.report-table tr.miss td {
+  color: #ff8a8a;
+}
