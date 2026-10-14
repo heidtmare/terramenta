@@ -732,7 +732,9 @@ export const coverage = (options) => required().coverage(options);
  * result up as ephemeris layer `id` with `display` (`addEphemeris` options,
  * `url`/`text` ignored); replaces a layer of that id. Returns `propagate`'s
  * info. Recorded even if propagation throws — the spec is kept for saving, the
- * old layer removed — then rethrows.
+ * old layer removed — then rethrows. With `propagation.covariance`, draws the
+ * position ellipsoid at `display.uncertaintySigma` (default 3; 0 hides) in the
+ * point colour.
  */
 export function addSpacecraft(id, propagation, display = {}) {
   const entry = { propagation, display, info: null, error: null };
@@ -745,6 +747,12 @@ export function addSpacecraft(id, propagation, display = {}) {
     throw error;
   }
   required().addPropagated(id, display);
+  const sigma = display.uncertaintySigma ?? 3;
+  if (entry.info.covariance && sigma > 0) {
+    required().showUncertainty(id, { sigma, color: display.pointColor?.slice(0, 7) });
+  } else {
+    required().hideUncertainty(id);
+  }
   sources.spacecraft.set(id, entry);
   return entry.info;
 }
@@ -752,6 +760,7 @@ export function addSpacecraft(id, propagation, display = {}) {
 /** Removes a spacecraft, failed or not. */
 export function removeSpacecraft(id) {
   sources.spacecraft.delete(id);
+  required().hideUncertainty(id);
   return required().removeEphemeris(id);
 }
 

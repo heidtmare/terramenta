@@ -51,7 +51,7 @@ test("analysis is typed and cross-checked", () => {
       }),
     ),
     [
-      "analysis.plots[0].quantity: expected one of altitudeKm, radiusKm, speedKmS, smaKm, eccentricity, inclinationDeg, raanDeg, argPerigeeDeg, trueAnomalyDeg, periodMin, perigeeAltKm, apogeeAltKm, got \"mass\"",
+      "analysis.plots[0].quantity: expected one of altitudeKm, radiusKm, speedKmS, smaKm, eccentricity, inclinationDeg, raanDeg, argPerigeeDeg, trueAnomalyDeg, periodMin, perigeeAltKm, apogeeAltKm, sigmaRadialM, sigmaInTrackM, sigmaCrossTrackM, sigmaPositionM, got \"mass\"",
       "analysis.plots[0].spacecraft: expected ≥ 1 items, got []",
       "analysis.porkchops[0].origin: expected one of Sun, Earth, Mars, got \"Venus\"",
       "analysis.porkchops[0].steps: expected a number ≥ 2, got 1",

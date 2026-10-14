@@ -12,8 +12,9 @@ use serde::{Deserialize, Serialize};
 use terramenta_solare::attitude::{self, AlignConstrain, Direction, Geometry, Law, Profile, Spin};
 use terramenta_solare::bodies::{GM_MOON_KM3_S2, GM_SUN_KM3_S2};
 use terramenta_solare::ccsds::{
-    Aem, AemMetadata, AemSegment, Header, Oem, OemMetadata, OemSegment, TimeSystem,
+    Aem, AemMetadata, AemSegment, Header, Oem, OemCovariance, OemMetadata, OemSegment, TimeSystem,
 };
+use terramenta_solare::covariance::{self, CovariancePropagation, Matrix6, ProcessNoise};
 use terramenta_solare::coverage::{self, Coverage, FieldOfView, Grid, Observer, Region};
 use terramenta_solare::earth::{EarthModel, TerrestrialTransform};
 use terramenta_solare::eop::{EopTable, FinalsKind};
@@ -146,6 +147,95 @@ pub struct PropagationRequest {
     /// Return OEM KVN text. `false` skips formatting and the JS copy (`addPropagated` only).
     #[serde(default = "default_kvn")]
     pub kvn: bool,
+    /// Linear covariance from the propagation start.
+    #[serde(default)]
+    pub covariance: Option<CovarianceOptions>,
+}
+
+/// Initial `[r, v]` covariance at the propagation start: sigmas or a full matrix.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CovarianceOptions {
+    /// rsw (default; ric, rtn) | vnb | lvlh | gcrf.
+    #[serde(default)]
+    pub frame: Option<String>,
+    /// 1σ per frame axis, km.
+    #[serde(default)]
+    pub position_sigma_km: Option<[f64; 3]>,
+    /// 1σ per frame axis, km/s.
+    #[serde(default)]
+    pub velocity_sigma_km_s: Option<[f64; 3]>,
+    /// Lower triangle row by row (21), km², km²/s, km²/s². Instead of sigmas.
+    #[serde(default)]
+    pub lower_triangle: Option<Vec<f64>>,
+    /// White acceleration noise spectral density per frame axis, km²/s³.
+    #[serde(default)]
+    pub process_noise_km2_s3: Option<[f64; 3]>,
+}
+
+impl CovarianceOptions {
+    /// `(frame, P₀ in frame, noise)`.
+    fn resolve(&self) -> Result<(LocalFrame, Matrix6, Option<ProcessNoise>), String> {
+        let frame = match self
+            .frame
+            .as_deref()
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            None | Some("rsw" | "ric" | "rtn") => LocalFrame::Rsw,
+            Some(other) => local_frame(Some(other)).map_err(|_| {
+                format!("covariance.frame: expected rsw, vnb, lvlh or gcrf, got {other:?}")
+            })?,
+        };
+        let bad = |v: &[f64]| v.iter().any(|x| !x.is_finite() || *x < 0.0);
+        let p0 = match (
+            &self.lower_triangle,
+            self.position_sigma_km,
+            self.velocity_sigma_km_s,
+        ) {
+            (Some(_), Some(_), _) | (Some(_), _, Some(_)) => {
+                return Err("covariance: lowerTriangle or sigmas, not both".into());
+            }
+            (Some(t), None, None) => {
+                let t: [f64; 21] = t
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| "covariance.lowerTriangle: expected 21 values".to_string())?;
+                let p = covariance::from_lower_triangle(&t);
+                let diag: [f64; 6] = std::array::from_fn(|i| p[i][i]);
+                let correlated = (0..6).any(|i| {
+                    (0..i).any(|j| p[i][j].abs() > (1.0 + 1e-9) * (diag[i] * diag[j]).sqrt())
+                });
+                if t.iter().any(|x| !x.is_finite()) || bad(&diag) || correlated {
+                    return Err("covariance.lowerTriangle: not a covariance matrix".into());
+                }
+                p
+            }
+            (None, None, None) => {
+                return Err(
+                    "covariance: needs positionSigmaKm/velocitySigmaKmS or lowerTriangle".into(),
+                );
+            }
+            (None, r, v) => {
+                let (r, v) = (r.unwrap_or_default(), v.unwrap_or_default());
+                if bad(&r) || bad(&v) {
+                    return Err("covariance: sigmas must be finite and non-negative".into());
+                }
+                covariance::diagonal([r[0], r[1], r[2], v[0], v[1], v[2]].map(|x| x * x))
+            }
+        };
+        let noise = match self.process_noise_km2_s3 {
+            Some(q) if bad(&q) => {
+                return Err("covariance.processNoiseKm2S3 must be finite and non-negative".into());
+            }
+            Some(q) => Some(ProcessNoise {
+                psd_km2_s3: q.into(),
+                frame,
+            }),
+            None => None,
+        };
+        Ok((frame, p0, noise))
+    }
 }
 
 fn default_kvn() -> bool {
@@ -351,6 +441,8 @@ pub struct Propagated {
     pub object_id: String,
     pub naif_id: i32,
     pub states: Vec<SpacecraftState>,
+    /// GCRF, one per state; empty without `covariance`.
+    pub covariances: Vec<Matrix6>,
 }
 
 #[derive(Serialize, Debug)]
@@ -363,6 +455,20 @@ pub struct PropagatedInfo {
     pub final_mass_kg: f64,
     pub start: String,
     pub stop: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub covariance: Option<CovarianceInfo>,
+}
+
+/// Per sample, in sample order.
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CovarianceInfo {
+    /// Unix s, UTC.
+    pub times: Vec<f64>,
+    /// 1σ RSW: radial, in-track, cross-track (km), then their rates (km/s).
+    pub sigma_rsw: Vec<[f64; 6]>,
+    /// 1σ position ellipsoid semi-axes, km, descending.
+    pub ellipsoid_km: Vec<[f64; 3]>,
 }
 
 /// Now, UTC, `YYYY-MM-DDThh:mm:ss.sss` (CCSDS `CREATION_DATE`).
@@ -604,28 +710,78 @@ pub fn propagate(req: &PropagationRequest) -> Result<Propagated, String> {
         sc.vehicle = req.vehicle.resolve();
         sc.set_propagation(numerical()?);
     }
-    let states = sc.samples(stop, step).map_err(|e| e.to_string())?;
+    let (states, covariances) = match &req.covariance {
+        None => (
+            sc.samples(stop, step).map_err(|e| e.to_string())?,
+            Vec::new(),
+        ),
+        Some(options) => {
+            let (frame, p0, noise) = options.resolve()?;
+            let Propagation::Numerical(p) = sc.propagation() else {
+                unreachable!("numerical from start");
+            };
+            let mut p = (**p).clone();
+            p.vehicle = sc.vehicle;
+            let s0 = *sc.state();
+            let p0 = covariance::from_local(&p0, frame, s0.position_km, s0.velocity_km_s);
+            let mut linear = CovariancePropagation::new(p0, noise);
+            let (mut states, mut covariances) = (Vec::new(), Vec::new());
+            p.propagate_stm_with(&s0, stop, step, |s, phi| {
+                let t = s.epoch.seconds_since(s0.epoch);
+                covariances.push(linear.sample(t, phi, s.position_km, s.velocity_km_s));
+                states.push(*s);
+            })
+            .map_err(|e| e.to_string())?;
+            (states, covariances)
+        }
+    };
     let name = req.name.clone().unwrap_or_else(|| "SPACECRAFT".into());
     Ok(Propagated {
         object_id: req.object_id.clone().unwrap_or_else(|| name.clone()),
         name,
         naif_id: req.naif_id.unwrap_or(DEFAULT_NAIF_ID),
         states,
+        covariances,
     })
 }
 
+/// [`propagate`] without covariance, for analyses of the trajectory alone.
+pub fn trajectory(req: &PropagationRequest) -> Result<Propagated, String> {
+    match req.covariance {
+        None => propagate(req),
+        Some(_) => propagate(&PropagationRequest {
+            covariance: None,
+            ..req.clone()
+        }),
+    }
+}
+
 /// Maneuver arcs: split at impulsive maneuvers (repeated epochs); single-state arcs dropped.
-fn arcs(states: &[(Epoch, StateVector)]) -> impl Iterator<Item = &[(Epoch, StateVector)]> {
+fn arcs<T>(states: &[(Epoch, T)]) -> impl Iterator<Item = &[(Epoch, T)]> {
     states.chunk_by(|a, b| a.0 != b.0).filter(|g| g.len() >= 2)
 }
 
 impl Propagated {
     /// Time-ordered states.
     fn ordered_states(&self) -> Vec<(Epoch, StateVector)> {
-        let mut states: Vec<(Epoch, StateVector)> = self
+        self.ordered()
+            .into_iter()
+            .map(|(e, (s, _))| (e, s))
+            .collect()
+    }
+
+    /// Time-ordered states with their covariance, if any.
+    fn ordered(&self) -> Vec<(Epoch, (StateVector, Option<Matrix6>))> {
+        let mut states: Vec<_> = self
             .states
             .iter()
-            .map(|s| (s.epoch, s.state_vector()))
+            .enumerate()
+            .map(|(i, s)| {
+                (
+                    s.epoch,
+                    (s.state_vector(), self.covariances.get(i).copied()),
+                )
+            })
             .collect();
         if states.first().map(|s| s.0) > states.last().map(|s| s.0) {
             states.reverse();
@@ -648,10 +804,20 @@ impl Propagated {
                 creation_date: creation_date(),
                 ..Header::default()
             },
-            segments: arcs(&self.ordered_states())
-                .map(|states| OemSegment {
+            segments: arcs(&self.ordered())
+                .map(|arc| OemSegment {
                     metadata: metadata.clone(),
-                    states: states.to_vec(),
+                    states: arc.iter().map(|(e, (s, _))| (*e, *s)).collect(),
+                    covariances: arc
+                        .iter()
+                        .filter_map(|(e, (_, p))| {
+                            p.map(|matrix| OemCovariance {
+                                epoch: *e,
+                                ref_frame: None,
+                                matrix,
+                            })
+                        })
+                        .collect(),
                 })
                 .collect(),
         }
@@ -688,6 +854,37 @@ impl Propagated {
         spk::write_spk(&segments, "TERRAMENTA").map_err(|e| e.to_string())
     }
 
+    /// `(unix s, TEME position covariance, km²)` per sample; empty without covariance.
+    pub fn position_covariance_teme(&self) -> Vec<(f64, [[f64; 3]; 3])> {
+        let env = environment();
+        let mut grid = terramenta_solare::earth::TemeGrid::new(|e| {
+            env.eop.as_ref().map(|t| t.at(e)).unwrap_or_default()
+        });
+        let mut out: Vec<_> = self
+            .states
+            .iter()
+            .zip(&self.covariances)
+            .map(|(s, p)| {
+                // TEME → GCRF.
+                let m = grid.at(s.epoch).to_cols_array_2d();
+                let gcrf: [[f64; 3]; 3] = std::array::from_fn(|i| std::array::from_fn(|j| p[i][j]));
+                let teme = std::array::from_fn(|i| {
+                    std::array::from_fn(|j| {
+                        (0..3)
+                            .flat_map(|k| (0..3).map(move |l| (k, l)))
+                            .map(|(k, l)| m[i][k] * gcrf[k][l] * m[j][l])
+                            .sum()
+                    })
+                });
+                (s.epoch.to_unix_seconds(), teme)
+            })
+            .collect();
+        if out.first().map(|s| s.0) > out.last().map(|s| s.0) {
+            out.reverse();
+        }
+        out
+    }
+
     /// `oem`: [`Self::to_oem`], passed in so the caller can keep it.
     /// `oem`: KVN source; `None` omits the text.
     pub fn info(&self, oem: Option<&Oem>) -> PropagatedInfo {
@@ -698,6 +895,32 @@ impl Propagated {
             final_mass_kg: last.mass_kg,
             start: TimeSystem::Utc.format(first.epoch),
             stop: TimeSystem::Utc.format(last.epoch),
+            covariance: (!self.covariances.is_empty()).then(|| CovarianceInfo {
+                times: self
+                    .states
+                    .iter()
+                    .map(|s| s.epoch.to_unix_seconds())
+                    .collect(),
+                sigma_rsw: self
+                    .states
+                    .iter()
+                    .zip(&self.covariances)
+                    .map(|(s, p)| {
+                        let local = covariance::to_local(
+                            p,
+                            LocalFrame::Rsw,
+                            s.position_km,
+                            s.velocity_km_s,
+                        );
+                        covariance::sigmas(&local)
+                    })
+                    .collect(),
+                ellipsoid_km: self
+                    .covariances
+                    .iter()
+                    .map(|p| covariance::position_ellipsoid(p).0)
+                    .collect(),
+            }),
         }
     }
 }
@@ -1233,7 +1456,7 @@ pub fn target(req: &PropagationRequest, target: &TargetRequest) -> Result<Target
                 }
             }
         }
-        let out = propagate(&r)?;
+        let out = trajectory(&r)?;
         let states = {
             let mut s = out.states.clone();
             if s.first().map(|s| s.epoch) > s.last().map(|s| s.epoch) {
@@ -1795,7 +2018,7 @@ pub fn coverage(req: &CoverageRequest) -> Result<CoverageResult, String> {
     let (mut start, mut stop) = (None::<Epoch>, None::<Epoch>);
     for (i, o) in req.spacecraft.iter().enumerate() {
         let what = |e: String| format!("spacecraft[{i}]: {e}");
-        let states = propagate(&o.propagation).map_err(what)?.ordered_states();
+        let states = trajectory(&o.propagation).map_err(what)?.ordered_states();
         let (Some(&(first, _)), Some(&(last, _))) = (states.first(), states.last()) else {
             return Err(what("no states".into()));
         };
@@ -1965,6 +2188,108 @@ mod tests {
         );
         let d: f64 = (0..3).map(|i| (a[i] - b[i]).powi(2)).sum::<f64>().sqrt();
         assert!(d < 1e-3, "{d} km");
+    }
+
+    #[test]
+    fn covariance_grows_in_track_and_round_trips_oem() {
+        let json = |covariance: &str| {
+            request(&format!(
+                r#"{{
+                    "initial": {{ "epoch": "2024-03-01T00:00:00Z",
+                                 "positionKm": [6778.137, 0, 0], "velocityKmS": [0, 4.7, 6.0] }},
+                    "durationS": 21600, "stepS": 600,
+                    "forces": {{ "gravity": [4, 4], "drag": "exponential" }},
+                    "maneuvers": [{{ "epoch": "2024-03-01T01:00:00", "deltaVKmS": [0.01, 0, 0] }}],
+                    "covariance": {covariance}
+                }}"#
+            ))
+        };
+        let plain = propagate(&request(
+            r#"{ "initial": { "epoch": "2024-03-01T00:00:00Z",
+                              "positionKm": [6778.137, 0, 0], "velocityKmS": [0, 4.7, 6.0] },
+                 "durationS": 21600, "stepS": 600,
+                 "forces": { "gravity": [4, 4], "drag": "exponential" },
+                 "maneuvers": [{ "epoch": "2024-03-01T01:00:00", "deltaVKmS": [0.01, 0, 0] }] }"#,
+        ))
+        .unwrap();
+        let out = propagate(&json(
+            r#"{ "positionSigmaKm": [0.1, 0.3, 0.05], "velocitySigmaKmS": [1e-4, 5e-5, 5e-5] }"#,
+        ))
+        .unwrap();
+        assert_eq!(
+            out.states, plain.states,
+            "covariance leaves the trajectory alone"
+        );
+        assert_eq!(out.covariances.len(), out.states.len());
+        let info = out.info(Some(&out.to_oem()));
+        let cov = info.covariance.as_ref().unwrap();
+        assert_eq!(cov.times.len(), out.states.len());
+        let first = cov.sigma_rsw[0];
+        for (a, b) in first.iter().zip([0.1, 0.3, 0.05, 1e-4, 5e-5, 5e-5]) {
+            assert!((a - b).abs() < 1e-12, "{first:?}");
+        }
+        let last = cov.sigma_rsw.last().unwrap();
+        assert!(last[1] > 20.0 * last[0] && last[1] > 5.0, "{last:?}");
+        assert!(cov.ellipsoid_km.last().unwrap()[0] >= last[1]);
+
+        let back = Oem::from_kvn(info.oem.as_deref().unwrap()).unwrap();
+        let blocks: Vec<_> = back.segments.iter().map(|s| s.covariances.len()).collect();
+        assert_eq!(blocks, [7, 31], "one per state, split at the burn");
+        let p = &back.segments[1].covariances.last().unwrap().matrix;
+        let q = out.covariances.last().unwrap();
+        assert!((p[1][1] / q[1][1] - 1.0).abs() < 1e-6);
+
+        // Process noise only adds; a full matrix equals its sigmas.
+        let noisy = propagate(&json(
+            r#"{ "positionSigmaKm": [0.1, 0.3, 0.05], "velocitySigmaKmS": [1e-4, 5e-5, 5e-5],
+                 "processNoiseKm2S3": [1e-12, 1e-12, 1e-12] }"#,
+        ))
+        .unwrap();
+        let grown = |p: &Propagated| p.covariances.last().unwrap()[2][2];
+        assert!(grown(&noisy) > grown(&out));
+        let mut triangle = [0.0; 21];
+        for (k, x) in [0.1, 0.3, 0.05, 1e-4, 5e-5, 5e-5].iter().enumerate() {
+            triangle[k * (k + 3) / 2] = x * x;
+        }
+        let full = propagate(&json(&format!(r#"{{ "lowerTriangle": {triangle:?} }}"#))).unwrap();
+        assert_eq!(full.covariances, out.covariances);
+
+        // TEME is a rotation of GCRF: trace kept.
+        let teme = out.position_covariance_teme();
+        assert_eq!(teme.len(), out.states.len());
+        let (p, q) = (&out.covariances[20], &teme[20].1);
+        let trace = p[0][0] + p[1][1] + p[2][2];
+        assert!(((q[0][0] + q[1][1] + q[2][2]) / trace - 1.0).abs() < 1e-12);
+        assert!((q[0][1] - q[1][0]).abs() < 1e-12 * trace);
+    }
+
+    #[test]
+    fn rejects_bad_covariance() {
+        for (covariance, message) in [
+            (r#"{}"#, "needs positionSigmaKm"),
+            (r#"{ "positionSigmaKm": [-1, 0, 0] }"#, "non-negative"),
+            (
+                r#"{ "positionSigmaKm": [1, 1, 1], "lowerTriangle": [] }"#,
+                "not both",
+            ),
+            (r#"{ "lowerTriangle": [1, 2] }"#, "21 values"),
+            (
+                r#"{ "lowerTriangle": [1, 5, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1] }"#,
+                "not a covariance",
+            ),
+            (
+                r#"{ "positionSigmaKm": [1, 1, 1], "frame": "body" }"#,
+                "covariance.frame",
+            ),
+        ] {
+            let req = request(&format!(
+                r#"{{ "initial": {{ "epoch": "2024-03-01T00:00:00Z",
+                                   "positionKm": [6778.137, 0, 0], "velocityKmS": [0, 7.7, 0] }},
+                     "durationS": 600, "covariance": {covariance} }}"#
+            ));
+            let err = propagate(&req).err().unwrap();
+            assert!(err.contains(message), "{covariance}: {err}");
+        }
     }
 
     #[test]

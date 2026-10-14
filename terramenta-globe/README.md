@@ -111,6 +111,7 @@ from a real failure.
 | `target(propagation, options)` | Differential correction of a propagation's burns to meet orbit goals |
 | `attitude(propagation, options)` | Attitude under a pointing law over a propagation: quaternions, LVLH Euler angles, sensor angles, AEM |
 | `showAttitude(id, options)` / `hideAttitude(id)` | Draw the last `attitude` result on ephemeris layer `id`: body axes, sensor boresights, field-of-view footprints |
+| `showUncertainty(id, options)` / `hideUncertainty(id)` | Draw the last `propagate` covariance on ephemeris layer `id`: position ellipsoid at `sigma` |
 | `coverage(options)` | Access coverage of an H3 grid by spacecraft, line of sight or through sensor fields of view: per-cell fraction, accesses, gaps |
 | `loadKernel(bytes)` `loadEop(text)` `loadSpaceWeather(text)` `propagationEnvironment()` | Propagation data |
 | `setPickingEnabled(bool)` `pinFeature(layer, index)` `clearPinnedFeature()` | Overlay feature picking |
@@ -481,7 +482,10 @@ state vector, or osculating Keplerian `elements` (`smaKm`, `eccentricity`,
 (SGP4 carries TLE/OMM to `start`), then Cowell with EGM2008 (≤ 20×20),
 Sun/Moon, SRP, drag (`exponential` | `harrisPriester` | `nrlmsise00`), relativity,
 impulsive and finite burns. Output is a GCRF/UTC OEM, which `addEphemeris` draws
-as tabulated motion.
+as tabulated motion. With `covariance`, the state transition matrix is integrated
+alongside and the initial `[r, v]` covariance propagated linearly
+(`P = Φ P₀ Φᵀ`, plus white-acceleration process noise between samples); the OEM
+gets a GCRF `COVARIANCE` block per sample.
 
 ```js
 globe.loadKernel(new Uint8Array(await (await fetch("de440s.bsp")).arrayBuffer())); // optional
@@ -496,7 +500,26 @@ globe.addEphemeris("demo", { text: oem, leadingOrbits: 1 });
 globe.propagate({ ...sameOptions, kvn: false });     // no OEM text; layer via:
 globe.addPropagated("demo", { leadingOrbits: 1 });
 const spk = globe.propagateSpk({ ...sameOptions, naifId: -100900 }); // Uint8Array
+
+const { covariance } = globe.propagate({ ...sameOptions, kvn: false, covariance: {
+  frame: "rsw",                                     // rsw | vnb | lvlh | gcrf
+  positionSigmaKm: [0.05, 0.2, 0.03], velocitySigmaKmS: [2e-4, 5e-5, 3e-5],
+  processNoiseKm2S3: [1e-13, 1e-13, 1e-13],         // or lowerTriangle: [21]
+} });
+// covariance: { times, sigmaRsw: [[r, s, w, ṙ, ṡ, ẇ]], ellipsoidKm: [[a, b, c]] }, per sample
+globe.addPropagated("demo", {});
+globe.showUncertainty("demo", { sigma: 3, color: "#ffb86b" });
 ```
+
+- Covariance is at the propagation start (after SGP4 for TLE/OMM). Linear:
+  no unscented or Monte Carlo propagation. Force partials: point mass
+  analytic, the rest central differences; mass is not a solve-for. Local
+  frames rotate both blocks (OEM/CDM convention). `findEvents`, `target`,
+  `attitude`, `coverage` and `propagateSpk` drop it. About 5× the cost of the
+  trajectory alone.
+- [`uncertainty.rs`](src/uncertainty.rs) draws the TEME position covariance,
+  interpolated linearly at the sim clock, as the ellipsoid's three principal
+  ellipses at every drawn object of the layer. Cleared by `Reset`.
 
 ```js
 const { contacts, eclipses, orbit } = globe.findEvents(sameOptions, {
@@ -809,6 +832,7 @@ src/
   overlays.rs      Overlay layers, geojson:// source, refresh, meshes
   ephemeris.rs     Satellite layers, omm:// source, propagation, arcs
   attitude.rs      Body axes, sensor boresights and footprints on ephemeris layers
+  uncertainty.rs   Position covariance ellipsoids on ephemeris layers
   placemark.rs     Subsolar/sublunar icons
   view.rs          Globe/heliocentric view state and transition
   heliocentric.rs  Heliocentric bodies, spacecraft meshes, camera

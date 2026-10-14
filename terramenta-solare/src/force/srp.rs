@@ -74,6 +74,10 @@ impl ForceModel for SolarRadiationPressure {
         // m/s² → km/s².
         nu * p * v.reflectivity * v.srp_area_m2 / ctx.mass_kg * 1e-3 * d / dist
     }
+
+    fn velocity_dependent(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]

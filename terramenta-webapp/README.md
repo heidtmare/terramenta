@@ -78,7 +78,7 @@ Relative URLs resolve against the app root (the directory holding
 | `overlays` | `{enabled, picking, layers: [{id, ...addOverlay options}]}` | One of `url`/`text` per layer |
 | `ephemerides` | `{enabled, layers: [{id, ...addEphemeris options}]}` | OMM JSON or KVN OEM |
 | `environment` | `{eop, spaceWeather, kernel}` | URLs; see [Spacecraft](#spacecraft) |
-| `spacecraft` | `[{id, ...addEphemeris display options, propagation}]` | `propagation`: `propagate` options; one of `stop`/`durationS`; `initial` a TLE, OMM, GCRF state or `{epoch, elements}`. Id unique across `ephemerides` |
+| `spacecraft` | `[{id, ...addEphemeris display options, uncertaintySigma, propagation}]` | `propagation`: `propagate` options; one of `stop`/`durationS`; `initial` a TLE, OMM, GCRF state or `{epoch, elements}`; optional `covariance`. `uncertaintySigma`: ellipsoid scale, default 3, 0 hides. Id unique across `ephemerides` |
 | `missions` | `[{id, ...addMission options}]` | |
 | `placemarks.enabled`, `keyboard` | bool | |
 | `gnc` | `{enabled, eciAxes, ecefAxes, graticule, graticuleStepDeg, sidereal, track, trackOrbits, focus: {layer, noradId}}` | |
@@ -119,7 +119,7 @@ Listed in [`projects/manifest.json`](projects/manifest.json).
 | [`overview`](projects/overview.terramenta.json) | Geometry tour, extruded cube, USGS past hour (60 s refresh), Celestrak `stations` |
 | [`mars-mission`](projects/mars-mission.terramenta.json) | Earth → Mars, flight panel, `missionFlight` director, Earth layers off |
 | [`mars-windows`](projects/mars-windows.terramenta.json) | Earth → Mars porkchop studies, 2026 and 2028 windows; opens on Analysis |
-| [`leo-transfer`](projects/leo-transfer.terramenta.json) | 500 → 800 km Hohmann transfer vs. coasting reference; CelesTrak EOP and space weather; timeline slows the clock around each burn; altitude, SMA and eccentricity plots |
+| [`leo-transfer`](projects/leo-transfer.terramenta.json) | 500 → 800 km Hohmann transfer vs. coasting reference; CelesTrak EOP and space weather; timeline slows the clock around each burn; RSW covariance with 3σ ellipsoids; altitude, SMA, eccentricity and 1σ in-track plots |
 | [`ground-contacts`](projects/ground-contacts.terramenta.json) | 700 km SSO for a day over five ground stations; contacts, eclipses, nodes; timeline slows the clock for `polar.aos.svalbard.1` |
 | [`targeted-transfer`](projects/targeted-transfer.terramenta.json) | Rough first-guess burns, solved on the Spacecraft tab: Hohmann Δv and second-burn epoch for a circular 800 km orbit; 20 N finite-burn duration for a 150 km SMA raise |
 | [`attitude-modes`](projects/attitude-modes.terramenta.json) | Three pointing laws over six hours: LVLH observer with a star-tracker sun angle, SSO tracking Svalbard with its array sun-constrained, 6°/s inertial spinner; body axes and boresights on the globe |
@@ -140,14 +140,14 @@ spacecraft, Coverage while it has neither spacecraft nor studies.
 | | Vector tiles | Source (MapLibre boundaries, OSM Shortbread), its source layers and depth, colour, ring fill, streaming on/off |
 | | GeoJSON overlays | Add from URL or local file; bundled samples and USGS feeds; refresh period; picking on/off. Per layer: visibility, colour, clamp to surface, extrude, simplestyle on/off, refresh, remove, feature counts and age |
 | | Satellites | Add OMM from URL or local file; five Celestrak groups. Per layer: visibility, colour, trails and trail window, refresh, remove, and a filterable object list with per-object draw and trail toggles |
-| **Spacecraft** | Spacecraft | Per spacecraft: visibility, colour, trails, span/samples/final mass, edit, go to start, OEM/SPK export, remove. Editor: initial state (Keplerian elements, GCRF state with circular-orbit fill, TLE, OMM), start/duration/step, vehicle, forces, integrator, impulsive and finite burns |
+| **Spacecraft** | Spacecraft | Per spacecraft: visibility, colour, trails, span/samples/final mass/final 1σ, edit, go to start, OEM/SPK export, remove. Editor: initial state (Keplerian elements, GCRF state with circular-orbit fill, TLE, OMM), start/duration/step, vehicle, forces, integrator, impulsive and finite burns, uncertainty (frame, 1σ position and velocity, process noise, ellipsoid σ) |
 | | Targeting | Per target: spacecraft, solve, apply, edit, remove; last solution's variables (initial, solved) and goals (desired, achieved, error; misses in red). Editor: name, spacecraft, iterations, variables (burn, parameter, perturbation, max step), goals (quantity, at, value, tolerance) |
 | | Attitude | Per profile: law, AEM export, edit, remove; sensor angles (or LVLH Euler angles) chart with clock cursor (click to set the clock), min/time/max table. Editor: spacecraft, name, law (align/constrain axes and directions, or inertial quaternion), spin, target (station or site), step, body axes on/off, sensors (name, axis, direction or none, field of view: cone or rectangle, colour, drawing on/off) |
 | | Ground stations | Per station: name, position, altitude, mask, horizon points, edit, remove. Add/edit: name, lat/lon, altitude, mask, horizon (`az:el, …`), colour. Drawn as a point overlay |
 | | Propagation environment (*closed*) | EOP, space weather, kernel: URL or local file, coverage |
 | **Timeline** | Timeline | Directed on/off; searched events shown/hidden (remembered, default hidden); previous/next event; strip (click to set the clock) and list of every event with time, source, actions, Go, Remove (project events). Add event: label, at clock or an event plus offset, actions from the current scene (rate, paused, view, frame, camera, focus) |
 | **Analysis** | Plots | Saved plots: one quantity against time per spacecraft, burn markers, clock cursor (click to set the clock), CSV, remove. Add plot: quantity, spacecraft, label |
-| | Spacecraft reports | Per spacecraft: span, samples, start/end/min/max of altitude, SMA, eccentricity, inclination, period, perigee/apogee; Δv budget per burn; CSV. CZML of all spacecraft |
+| | Spacecraft reports | Per spacecraft: span, samples, start/end/min/max of altitude, SMA, eccentricity, inclination, period, perigee/apogee, and 1σ radial/in-track/cross-track/RSS with covariance; Δv budget per burn; CSV. CZML of all spacecraft |
 | | Events | Search options (eclipses, apsides, nodes, step). Per spacecraft: contact and umbra totals; contacts (station, AOS, duration, max elevation) and eclipses (entry, umbra, total) — click a row to set the clock; CSV |
 | | Coverage | Per study: spacecraft, access, H3 resolution, region, step; run/re-run, show/hide on the globe, shaded metric, CSV, GeoJSON, edit, remove; cells seen, mean time covered, max gap (median and worst cell), mean revisit; metric legend. Editor: name, spacecraft, access (line of sight or sensor FOV), mask, resolution, bounds, step |
 | | Porkchop plot | Origin/destination bodies, departure/arrival date ranges, grid steps; contoured total-Δv SVG from `terramenta-charta`, minimum marked and listed, grid CSV |
@@ -219,8 +219,14 @@ Satellites.
   projects. URL sources are saved; local files are not. CelesTrak serves
   `EOP-All.csv`/`SW-All.csv` with CORS; NAIF kernels need a local file or a
   same-origin URL.
-- **Export**: OEM (KVN, GCRF/UTC) and SPK Type 13 re-run the propagation.
-  CSV and CZML: [Reports](#reports).
+- **Uncertainty**: `propagation.covariance` (1σ per axis or a 21-value lower
+  triangle, in RSW, VNB, LVLH or GCRF; optional white-acceleration process
+  noise) at the start, propagated linearly through the state transition
+  matrix. The editor takes metres, m/s and m²/s³. The position ellipsoid is
+  drawn at `uncertaintySigma` σ in the point colour. Events, attitude,
+  coverage and targeting ignore it.
+- **Export**: OEM (KVN, GCRF/UTC; covariance blocks with a covariance) and SPK
+  Type 13 re-run the propagation. CSV and CZML: [Reports](#reports).
 
 ## Reports
 
@@ -233,19 +239,20 @@ Satellites.
   (μ = 398600.4418 km³/s²) from each GCRF state: altitude, radius, speed, SMA,
   eccentricity, inclination, RAAN, argument of perigee, true anomaly (argument
   of latitude when circular), period, perigee/apogee altitude. Altitudes are
-  radius − 6378.137 km, not geodetic.
+  radius − 6378.137 km, not geodetic. With a covariance: 1σ radial,
+  in-track, cross-track and RSS position (m), matched to samples by time.
 - **Δv budget**: from the request by the rocket equation, as the propagator
   models burns: impulsive burns spend propellant only with `ispS`; finite
   burns flow at `thrustN / (ispS·g0)` and stop at dry mass (default
   min(850 kg, wet)).
-- **CSV**: per spacecraft (UTC, GCRF state, every quantity), per plot
+- **CSV**: per spacecraft (UTC, GCRF state, every quantity, 1σ columns with a covariance), per plot
   (`utc, spacecraft, value`), per porkchop grid (dates, time of flight,
   departure/arrival/total Δv; unsolved cells empty).
 - **CZML**: all spacecraft, `INERTIAL` frame (ICRF ≈ GCRF), metres, one
   Lagrange position interval per OEM segment so burns are not interpolated
   across; document clock spans the data.
 - **Saved** under `analysis`: `plots` (`quantity` is a `reports.js`
-  `QUANTITIES` key) and `porkchops` (dates `YYYY-MM-DD`, UTC; `steps` 2–101,
+  `PLOT_QUANTITIES` key) and `porkchops` (dates `YYYY-MM-DD`, UTC; `steps` 2–101,
   default 33).
 
 ## Events

@@ -9,7 +9,8 @@
 //! limb land on it) and four edges of its cone. Outside a track's span nothing is drawn.
 //!
 //! Tracks live in a process-wide table keyed by layer id, set from the JavaScript API.
-//! A track whose layer is gone, hidden or off draws nothing.
+//! A track whose layer is gone, hidden or off draws nothing. [`crate::uncertainty`]
+//! ellipsoids share the mesh.
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, RwLock};
@@ -143,7 +144,13 @@ fn draw_attitude(
     let eye = camera.iter().next().map(GlobalTransform::translation);
     let paths = match eye {
         Some(eye) if !crate::view::is_departing_view(&view) => {
-            paths(&ephemerides, clock.unix_seconds, &frame, eye)
+            let mut paths = paths(&ephemerides, clock.unix_seconds, &frame, eye);
+            paths.extend(crate::uncertainty::paths(
+                &ephemerides,
+                clock.unix_seconds,
+                &frame,
+            ));
+            paths
         }
         _ => Vec::new(),
     };

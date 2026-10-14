@@ -3,7 +3,7 @@
 //! Harmonics use the Cunningham V/W recursion (Montenbruck & Gill, *Satellite Orbits*, §3.2.4)
 //! in fully normalised form; singularity-free at the poles.
 
-use glam::DVec3;
+use glam::{DMat3, DVec3};
 
 use super::{ForceContext, ForceModel};
 
@@ -250,6 +250,19 @@ impl ForceModel for PointMass {
         let r = ctx.position_km;
         -self.gm_km3_s2 * r / r.length().powi(3)
     }
+
+    /// `−μ/r³ (I − 3 r̂r̂ᵀ)`.
+    fn partials(&self, ctx: &ForceContext) -> Option<(DMat3, DMat3)> {
+        let r = ctx.position_km;
+        let u = r.normalize();
+        let outer = DMat3::from_cols(u * u.x, u * u.y, u * u.z);
+        let g = (DMat3::IDENTITY - 3.0 * outer) * (-self.gm_km3_s2 / r.length().powi(3));
+        Some((g, DMat3::ZERO))
+    }
+
+    fn velocity_dependent(&self) -> bool {
+        false
+    }
 }
 
 /// Central-body spherical harmonics, evaluated in the body-fixed frame. Includes the
@@ -288,6 +301,10 @@ impl ForceModel for SphericalHarmonics {
 
     fn requires_body_fixed(&self) -> bool {
         self.degree >= 2
+    }
+
+    fn velocity_dependent(&self) -> bool {
+        false
     }
 }
 

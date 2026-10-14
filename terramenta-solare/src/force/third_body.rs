@@ -51,6 +51,10 @@ impl ForceModel for ThirdBody {
         };
         third_body_acceleration(self.gm_km3_s2, ctx.position_km, s)
     }
+
+    fn velocity_dependent(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]

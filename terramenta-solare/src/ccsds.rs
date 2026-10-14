@@ -2,11 +2,12 @@
 //! Messages (504.0-B-1), KVN: quaternion AEM read/write.
 //!
 //! Frames and centres are carried as strings; no frame conversion is applied.
-//! Covariance blocks are skipped on read.
+//! OEM covariance: lower-triangle `[r, v]` blocks, `EPOCH` and optional `COV_REF_FRAME`.
 
 use glam::{DQuat, DVec3};
 use hifitime::TimeScale;
 
+use crate::covariance::{Matrix6, from_lower_triangle};
 use crate::frame::StateVector;
 use crate::interpolate::Interpolation;
 use crate::time::Epoch;
@@ -199,6 +200,16 @@ impl Default for OemMetadata {
 pub struct OemSegment {
     pub metadata: OemMetadata,
     pub states: Vec<(Epoch, StateVector)>,
+    pub covariances: Vec<OemCovariance>,
+}
+
+/// `[r, v]` covariance, km², km²/s, km²/s².
+#[derive(Debug, Clone, PartialEq)]
+pub struct OemCovariance {
+    pub epoch: Epoch,
+    /// `COV_REF_FRAME`; `None` = the segment's `REF_FRAME`.
+    pub ref_frame: Option<String>,
+    pub matrix: Matrix6,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -270,12 +281,29 @@ impl Oem {
                     v.z
                 );
             }
+            if !seg.covariances.is_empty() {
+                let _ = writeln!(out, "\nCOVARIANCE_START");
+                for c in &seg.covariances {
+                    let _ = writeln!(out, "EPOCH = {}", ts.format(c.epoch));
+                    if let Some(frame) = &c.ref_frame {
+                        let _ = writeln!(out, "COV_REF_FRAME = {frame}");
+                    }
+                    for (i, row) in c.matrix.iter().enumerate() {
+                        let line: Vec<String> =
+                            row[..=i].iter().map(|x| format!("{x:.7e}")).collect();
+                        let _ = writeln!(out, "{}", line.join(" "));
+                    }
+                }
+                let _ = writeln!(out, "COVARIANCE_STOP");
+            }
         }
         out
     }
 
     pub fn from_kvn(text: &str) -> Result<Self, CcsdsError> {
         let mut oem = Oem::default();
+        // Covariance being read: epoch, frame, lower-triangle values so far.
+        let mut cov: Option<(Epoch, Option<String>, Vec<f64>)> = None;
         let mut in_meta = false;
         let mut in_cov = false;
         let mut interp_kind: Option<String> = None;
@@ -297,6 +325,7 @@ impl Oem {
                             ..OemMetadata::default()
                         },
                         states: Vec::new(),
+                        covariances: Vec::new(),
                     });
                     continue;
                 }
@@ -322,12 +351,59 @@ impl Oem {
                     continue;
                 }
                 "COVARIANCE_STOP" => {
+                    if cov.take().is_some() {
+                        return Err(err(n, "covariance needs 21 values"));
+                    }
                     in_cov = false;
                     continue;
                 }
                 _ => {}
             }
             if in_cov {
+                let seg = oem
+                    .segments
+                    .last_mut()
+                    .ok_or_else(|| err(n, "covariance before metadata"))?;
+                if let Some((k, v)) = kv(line) {
+                    match k {
+                        "EPOCH" => {
+                            if cov.is_some() {
+                                return Err(err(n, "covariance needs 21 values"));
+                            }
+                            let epoch = seg
+                                .metadata
+                                .time_system
+                                .parse_epoch(v)
+                                .ok_or_else(|| err(n, "bad EPOCH"))?;
+                            cov = Some((epoch, None, Vec::with_capacity(21)));
+                        }
+                        "COV_REF_FRAME" => {
+                            let c = cov
+                                .as_mut()
+                                .ok_or_else(|| err(n, "COV_REF_FRAME before EPOCH"))?;
+                            c.1 = Some(v.into());
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+                let c = cov
+                    .as_mut()
+                    .ok_or_else(|| err(n, "covariance values before EPOCH"))?;
+                for x in line.split_whitespace() {
+                    c.2.push(x.parse().map_err(|_| err(n, "bad number"))?);
+                }
+                if c.2.len() >= 21 {
+                    let (epoch, ref_frame, values) = cov.take().unwrap();
+                    let values: [f64; 21] = values
+                        .try_into()
+                        .map_err(|_| err(n, "covariance needs 21 values"))?;
+                    seg.covariances.push(OemCovariance {
+                        epoch,
+                        ref_frame,
+                        matrix: from_lower_triangle(&values),
+                    });
+                }
                 continue;
             }
             if in_meta {
@@ -834,6 +910,11 @@ COVARIANCE_START
 EPOCH = 1996-12-28T21:29:07.267
 COV_REF_FRAME = EME2000
 3.3313494e-04
+4.6189273e-04 6.7824216e-04
+-3.0700078e-04 -4.2212341e-04 3.2319319e-04
+-3.3493650e-07 -4.6860842e-07 2.4849495e-07 4.2960228e-10
+-2.2118325e-07 -2.8641868e-07 1.7980986e-07 2.6088992e-10 1.7675147e-10
+-3.0413460e-07 -4.9894969e-07 3.5403109e-07 1.8692631e-10 1.0088625e-10 6.2244443e-10
 COVARIANCE_STOP
 ";
 
@@ -849,6 +930,14 @@ COVARIANCE_STOP
         );
         assert_eq!(seg.states.len(), 4);
         assert_eq!(seg.states[1].1.position_km.y, -878.141);
+        let [cov] = &seg.covariances[..] else {
+            panic!("{:?}", seg.covariances)
+        };
+        assert_eq!(cov.ref_frame.as_deref(), Some("EME2000"));
+        assert_eq!(cov.matrix[0][0], 3.3313494e-04);
+        assert_eq!(cov.matrix[5][4], 1.0088625e-10);
+        assert_eq!(cov.matrix[4][5], 1.0088625e-10);
+        assert_eq!(Oem::from_kvn(&oem.to_kvn()).unwrap(), oem);
         assert_eq!(
             TimeSystem::Utc.format(seg.states[0].0),
             "1996-12-28T21:29:07.267000000"
@@ -878,6 +967,7 @@ COVARIANCE_STOP
                         ..Default::default()
                     },
                     states: states.clone(),
+                    covariances: Vec::new(),
                 }],
             };
             let kvn = oem.to_kvn();

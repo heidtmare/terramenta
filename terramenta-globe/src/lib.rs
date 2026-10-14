@@ -48,6 +48,9 @@ mod tessellate;
 mod tiles;
 mod time;
 mod trail;
+// Tracks set from `wasm`.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+mod uncertainty;
 mod vector_tiles;
 mod view;
 #[cfg(target_arch = "wasm32")]

@@ -142,6 +142,10 @@ impl ForceModel for FiniteBurn {
     fn discontinuities(&self) -> Vec<Epoch> {
         vec![self.start, self.end()]
     }
+
+    fn velocity_dependent(&self) -> bool {
+        self.frame != LocalFrame::Inertial
+    }
 }
 
 #[cfg(test)]

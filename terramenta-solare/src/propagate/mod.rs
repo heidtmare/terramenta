@@ -3,11 +3,17 @@
 //! State `[r, v, m]`: central-body-centred, ICRF axes (GCRF for Earth), km, km/s, kg.
 //! Impulsive maneuvers apply on `[start, end)`: a maneuver at the start epoch fires, one at
 //! the end epoch does not.
+//!
+//! State transition matrix `Φ = ∂(r, v)/∂(r₀, v₀)`: variational equations integrated with the
+//! state (error control on the state only). `∂a/∂(r, v)` per force from
+//! [`ForceModel::partials`], else central differences. Impulsive maneuvers map `Φ` through
+//! their own Jacobian. Mass is not a solve-for: `∂m` terms are dropped.
 
 use std::sync::Arc;
 
-use glam::DVec3;
+use glam::{DMat3, DVec3};
 
+use crate::covariance::Matrix6;
 use crate::earth::{EarthModel, TerrestrialTransform, gcrf_to_itrf};
 use crate::eop::{Eop, EopTable};
 use crate::force::{ForceContext, ForceModel, Vehicle};
@@ -46,7 +52,7 @@ impl SpacecraftState {
         [r.x, r.y, r.z, v.x, v.y, v.z, self.mass_kg]
     }
 
-    fn from_slice(epoch: Epoch, y: &[f64]) -> Self {
+    pub(crate) fn from_slice(epoch: Epoch, y: &[f64]) -> Self {
         Self {
             epoch,
             position_km: DVec3::new(y[0], y[1], y[2]),
@@ -175,7 +181,8 @@ impl Propagator {
         state: &SpacecraftState,
         to: Epoch,
     ) -> Result<SpacecraftState, PropagationError> {
-        self.run(state, to, None, |_| {})
+        let y = self.run(state, to, None, false, |_, _| {})?;
+        Ok(SpacecraftState::from_slice(to, &y))
     }
 
     /// Calls `on_sample` at `state.epoch`, every `step_s`, and at `to`. At each impulsive
@@ -185,9 +192,36 @@ impl Propagator {
         state: &SpacecraftState,
         to: Epoch,
         step_s: f64,
-        on_sample: impl FnMut(&SpacecraftState),
+        mut on_sample: impl FnMut(&SpacecraftState),
     ) -> Result<SpacecraftState, PropagationError> {
-        self.run(state, to, Some(step_s.abs()), on_sample)
+        let y = self.run(state, to, Some(step_s.abs()), false, |e, y| {
+            on_sample(&SpacecraftState::from_slice(e, y))
+        })?;
+        Ok(SpacecraftState::from_slice(to, &y))
+    }
+
+    /// State and `Φ(to, state.epoch)` at `to`.
+    pub fn propagate_stm(
+        &mut self,
+        state: &SpacecraftState,
+        to: Epoch,
+    ) -> Result<(SpacecraftState, Matrix6), PropagationError> {
+        self.propagate_stm_with(state, to, 0.0, |_, _| {})
+    }
+
+    /// As [`Self::propagate_with`], with `Φ(t, state.epoch)` at each sample.
+    pub fn propagate_stm_with(
+        &mut self,
+        state: &SpacecraftState,
+        to: Epoch,
+        step_s: f64,
+        mut on_sample: impl FnMut(&SpacecraftState, &Matrix6),
+    ) -> Result<(SpacecraftState, Matrix6), PropagationError> {
+        let sampling = (step_s != 0.0).then_some(step_s.abs());
+        let y = self.run(state, to, sampling, true, |e, y| {
+            on_sample(&SpacecraftState::from_slice(e, y), &stm(y))
+        })?;
+        Ok((SpacecraftState::from_slice(to, &y), stm(&y)))
     }
 
     /// Samples every `step_s` from `state.epoch` to `to` inclusive.
@@ -267,6 +301,51 @@ impl Propagator {
         d[..3].copy_from_slice(&y[3..6]);
         d[3..6].copy_from_slice(&a.to_array());
         d[6] = mdot;
+        if y.len() > STATE {
+            let (g, h) = self.jacobian(&ctx);
+            variational(g, h, &y[STATE..], &mut d[STATE..]);
+        }
+    }
+
+    /// `(∂a/∂r, ∂a/∂v)`: analytic where a force has them, central differences for the rest.
+    fn jacobian(&self, ctx: &ForceContext) -> (DMat3, DMat3) {
+        let (mut g, mut h) = (DMat3::ZERO, DMat3::ZERO);
+        let mut rest = Vec::new();
+        for f in &self.forces {
+            match f.partials(ctx) {
+                Some((dr, dv)) => {
+                    g += dr;
+                    h += dv;
+                }
+                None => rest.push(f),
+            }
+        }
+        if rest.is_empty() {
+            return (g, h);
+        }
+        let accel = |c: &ForceContext| rest.iter().map(|f| f.acceleration(c)).sum::<DVec3>();
+        let (r, v) = (ctx.position_km, ctx.velocity_km_s);
+        let step_r = 1e-5 * r.length().max(1.0);
+        let cols = DVec3::AXES.map(|e| {
+            let at = |s: f64| ForceContext {
+                position_km: r + s * e,
+                ..*ctx
+            };
+            (accel(&at(step_r)) - accel(&at(-step_r))) / (2.0 * step_r)
+        });
+        g += DMat3::from_cols(cols[0], cols[1], cols[2]);
+        if rest.iter().any(|f| f.velocity_dependent()) {
+            let step_v = 1e-5 * v.length().max(1e-3);
+            let cols = DVec3::AXES.map(|e| {
+                let at = |s: f64| ForceContext {
+                    velocity_km_s: v + s * e,
+                    ..*ctx
+                };
+                (accel(&at(step_v)) - accel(&at(-step_v))) / (2.0 * step_v)
+            });
+            h += DMat3::from_cols(cols[0], cols[1], cols[2]);
+        }
+        (g, h)
     }
 
     /// Offset in `(t, ts)` where mass reaches dry; ṁ is constant between discontinuities.
@@ -275,19 +354,21 @@ impl Propagator {
         if y[6] <= dry {
             return None;
         }
-        let mut d = [0.0; 7];
-        self.eval(start.advanced_by_seconds(t), y, &mut d);
+        let mut d = [0.0; STATE];
+        self.eval(start.advanced_by_seconds(t), &y[..STATE], &mut d);
         let td = t + (dry - y[6]) / d[6];
         (d[6] < 0.0 && td > t && td < ts).then_some(td)
     }
 
+    /// Final `y`: `[r, v, m]`, then `Φ` row-major when `with_stm`.
     fn run(
         &mut self,
         state: &SpacecraftState,
         to: Epoch,
         step_s: Option<f64>,
-        mut on_sample: impl FnMut(&SpacecraftState),
-    ) -> Result<SpacecraftState, PropagationError> {
+        with_stm: bool,
+        mut on_sample: impl FnMut(Epoch, &[f64]),
+    ) -> Result<Vec<f64>, PropagationError> {
         if self.orientation.is_none() && self.forces.iter().any(|f| f.requires_body_fixed()) {
             return Err(PropagationError::MissingOrientation);
         }
@@ -329,9 +410,14 @@ impl Propagator {
         }
         stops.sort_by(|a, b| (a.0 * dir).total_cmp(&(b.0 * dir)).then(a.1.cmp(&b.1)));
 
-        let mut y = state.to_array();
+        let mut y = state.to_array().to_vec();
+        if with_stm {
+            y.extend(IDENTITY6.iter().flatten());
+        }
         let mut t = 0.0;
         let mut integ = std::mem::replace(&mut self.integrator, Integrator::new(Method::Rkf78));
+        let controlled = integ.controlled;
+        integ.controlled = with_stm.then_some(STATE).or(controlled);
         integ.reset();
         let sampling = step_s.is_some();
         // Last emitted offset; a burn epoch emits pre- and post-burn states once each.
@@ -347,12 +433,8 @@ impl Propagator {
                         .expect("End is last");
                     let te = stops[j].0;
                     let outputs: Vec<f64> = stops[i..j].iter().map(|s| s.0).collect();
-                    let mut emit = |tt: f64, yy: &[f64]| {
-                        on_sample(&SpacecraftState::from_slice(
-                            start.advanced_by_seconds(tt),
-                            yy,
-                        ));
-                    };
+                    let mut emit =
+                        |tt: f64, yy: &[f64]| on_sample(start.advanced_by_seconds(tt), yy);
                     self.switch_epoch = Some(start.advanced_by_seconds(0.5 * (t + te)));
                     self.switch_mass = Some(y[6]);
                     let mut from = 0;
@@ -387,17 +469,15 @@ impl Propagator {
                 match kind {
                     Stop::Maneuver(m) => {
                         if sampling && emitted != Some(t) {
-                            on_sample(&SpacecraftState::from_slice(epoch, &y));
+                            on_sample(epoch, &y);
                             emitted = Some(t);
                         }
                         let m = self.maneuvers[m];
                         let (r, v) = (DVec3::new(y[0], y[1], y[2]), DVec3::new(y[3], y[4], y[5]));
-                        let (dv, mass) = if dir > 0.0 {
-                            m.apply(r, v, y[6])
-                        } else {
-                            let (dv, mass) = m.undo(r, v, y[6]);
-                            (-dv, mass)
-                        };
+                        let (dv, mass) = impulse(&m, dir, r, v, y[6]);
+                        if with_stm {
+                            maneuver_stm(&m, dir, r, v, y[6], &mut y[STATE..]);
+                        }
                         y[3] += dv.x;
                         y[4] += dv.y;
                         y[5] += dv.z;
@@ -418,17 +498,86 @@ impl Propagator {
                         Stop::Discontinuity => false,
                     };
                 if emit {
-                    on_sample(&SpacecraftState::from_slice(epoch, &y));
+                    on_sample(epoch, &y);
                     emitted = Some(t);
                 }
                 i += 1;
             }
-            Ok(SpacecraftState::from_slice(to, &y))
+            Ok(())
         })();
+        integ.controlled = controlled;
         self.integrator = integ;
         self.switch_epoch = None;
         self.switch_mass = None;
-        result
+        result.map(|()| y)
+    }
+}
+
+/// `[r, v, m]` length.
+const STATE: usize = 7;
+
+const IDENTITY6: Matrix6 = {
+    let mut m = [[0.0; 6]; 6];
+    let mut i = 0;
+    while i < 6 {
+        m[i][i] = 1.0;
+        i += 1;
+    }
+    m
+};
+
+/// `Φ` from `y[STATE..]`.
+fn stm(y: &[f64]) -> Matrix6 {
+    let mut m = [[0.0; 6]; 6];
+    for (i, row) in m.iter_mut().enumerate() {
+        row.copy_from_slice(&y[STATE + 6 * i..STATE + 6 * i + 6]);
+    }
+    m
+}
+
+/// `Φ̇ = [[0, I], [G, H]] Φ`, row-major.
+fn variational(g: DMat3, h: DMat3, p: &[f64], d: &mut [f64]) {
+    for j in 0..6 {
+        let pos = DVec3::new(p[j], p[6 + j], p[12 + j]);
+        let vel = DVec3::new(p[18 + j], p[24 + j], p[30 + j]);
+        let acc = g * pos + h * vel;
+        for (i, x) in vel.to_array().into_iter().chain(acc.to_array()).enumerate() {
+            d[6 * i + j] = x;
+        }
+    }
+}
+
+/// Signed inertial Δv and mass after: applied forward, undone backward.
+fn impulse(m: &ImpulsiveManeuver, dir: f64, r: DVec3, v: DVec3, mass: f64) -> (DVec3, f64) {
+    if dir > 0.0 {
+        m.apply(r, v, mass)
+    } else {
+        let (dv, mass) = m.undo(r, v, mass);
+        (-dv, mass)
+    }
+}
+
+/// `Φ ← J Φ`, `J = ∂(r, v + Δv(r, v))/∂(r, v)` by central differences. Inertial Δv: `J = I`.
+fn maneuver_stm(m: &ImpulsiveManeuver, dir: f64, r: DVec3, v: DVec3, mass: f64, p: &mut [f64]) {
+    if m.frame == crate::maneuver::LocalFrame::Inertial {
+        return;
+    }
+    let dv = |r, v| impulse(m, dir, r, v, mass).0;
+    let (step_r, step_v) = (1e-5 * r.length(), 1e-5 * v.length());
+    // ∂Δv/∂(r, v), one column per state component.
+    let cols: [DVec3; 6] = std::array::from_fn(|k| {
+        let e = DVec3::AXES[k % 3];
+        if k < 3 {
+            (dv(r + step_r * e, v) - dv(r - step_r * e, v)) / (2.0 * step_r)
+        } else {
+            (dv(r, v + step_v * e) - dv(r, v - step_v * e)) / (2.0 * step_v)
+        }
+    });
+    for j in 0..6 {
+        let col: [f64; 6] = std::array::from_fn(|k| p[6 * k + j]);
+        for i in 0..3 {
+            p[6 * (3 + i) + j] += (0..6).map(|k| cols[k][i] * col[k]).sum::<f64>();
+        }
     }
 }
 
@@ -790,5 +939,95 @@ mod tests {
         assert_eq!(s1, base);
         assert_eq!(own1, 0);
         assert!(own0 >= 3 * prop1, "{own0} vs {prop1}");
+    }
+
+    /// `Φ` column `k` by central differences of whole propagations.
+    fn stm_by_differences(p: &mut Propagator, s0: &SpacecraftState, to: Epoch) -> Matrix6 {
+        let mut phi = [[0.0; 6]; 6];
+        for k in 0..6 {
+            let step = if k < 3 { 1e-3 } else { 1e-6 };
+            let shifted = |sign: f64| {
+                let mut y = s0.to_array();
+                y[k] += sign * step;
+                SpacecraftState::from_slice(s0.epoch, &y)
+            };
+            let plus = p.propagate(&shifted(1.0), to).unwrap().to_array();
+            let minus = p.propagate(&shifted(-1.0), to).unwrap().to_array();
+            for i in 0..6 {
+                phi[i][k] = (plus[i] - minus[i]) / (2.0 * step);
+            }
+        }
+        phi
+    }
+
+    fn assert_stm_close(a: &Matrix6, b: &Matrix6, tol: f64) {
+        for i in 0..6 {
+            for j in 0..6 {
+                // Scale by the block's magnitude: position/velocity rows and columns differ.
+                let scale = (0..6).map(|k| b[i][k].abs()).fold(1e-9, f64::max);
+                assert!(
+                    (a[i][j] - b[i][j]).abs() <= tol * scale,
+                    "Φ[{i}][{j}]: {} vs {}",
+                    a[i][j],
+                    b[i][j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn stm_matches_differences_with_harmonics_and_drag() {
+        use crate::force::{Drag, ExponentialAtmosphere};
+        let s0 = SpacecraftState::new(
+            Epoch::from_utc(2024, 1, 1, 0, 0, 0.0),
+            StateVector::new(DVec3::new(6778.0, 0.0, 0.0), DVec3::new(0.0, 5.9, 4.9)),
+            1000.0,
+        );
+        let to = s0.epoch.advanced_by_seconds(6000.0);
+        let mut p = Propagator::new(Integrator::new(Method::Dop853))
+            .with_force(SphericalHarmonics::egm2008(8, 8))
+            .with_force(Drag::new(ExponentialAtmosphere))
+            .with_orientation(EarthOrientation::default());
+        let (s1, phi) = p.propagate_stm(&s0, to).unwrap();
+        assert_eq!(
+            s1,
+            p.propagate(&s0, to).unwrap(),
+            "Φ does not perturb the state"
+        );
+        assert_stm_close(&phi, &stm_by_differences(&mut p, &s0, to), 1e-5);
+    }
+
+    #[test]
+    fn stm_maps_through_local_frame_burns_both_ways() {
+        let s0 = leo();
+        let to = s0.epoch.advanced_by_seconds(3000.0);
+        let mut p = two_body(Method::Dop853).with_maneuver(ImpulsiveManeuver::new(
+            s0.epoch.advanced_by_seconds(1000.0),
+            DVec3::new(0.2, 0.05, -0.1),
+            LocalFrame::Vnb,
+        ));
+        let (s1, phi) = p.propagate_stm(&s0, to).unwrap();
+        assert_stm_close(&phi, &stm_by_differences(&mut p, &s0, to), 1e-5);
+        let (_, back) = p.propagate_stm(&s1, s0.epoch).unwrap();
+        let round = crate::covariance::mul(&back, &phi);
+        assert_stm_close(&round, &crate::covariance::identity(), 1e-6);
+    }
+
+    #[test]
+    fn sampled_stm_ends_at_the_final_one() {
+        let s0 = leo();
+        let to = s0.epoch.advanced_by_seconds(5000.0);
+        let mut p = two_body(Method::Dop853);
+        let mut samples = Vec::new();
+        let (_, last) = p
+            .propagate_stm_with(&s0, to, 1000.0, |s, phi| samples.push((s.epoch, *phi)))
+            .unwrap();
+        assert_eq!(samples.len(), 6);
+        assert_eq!(samples[0].1, crate::covariance::identity());
+        assert_stm_close(&samples[5].1, &last, 1e-12);
+        let (_, mid) = p
+            .propagate_stm(&s0, s0.epoch.advanced_by_seconds(2000.0))
+            .unwrap();
+        assert_stm_close(&samples[2].1, &mid, 1e-8);
     }
 }

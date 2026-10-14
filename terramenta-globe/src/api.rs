@@ -1066,6 +1066,7 @@ fn apply_commands(
                 overlays.reset();
                 ephemerides.reset();
                 crate::attitude::clear();
+                crate::uncertainty::clear();
                 missions.reset();
                 *placemarks = PlacemarkSettings::default();
                 *gnc = GncSettings::default();
