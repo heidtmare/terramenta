@@ -13,7 +13,7 @@
 import * as environment from "./environment.js";
 import * as globe from "./globe.js";
 import { el, row, section } from "./dom.js";
-import { clock } from "./format.js";
+import { clock, utcSeconds } from "./format.js";
 import { PROJECT_VERSION, layerDisplay, parseProject } from "./project.js";
 import { button, toggle } from "./widgets.js";
 
@@ -226,11 +226,6 @@ function describeInfo({ info, propagation }, state) {
     `${clock(start)} → ${clock(stop)} · ${info.samples} samples · ${info.finalMassKg.toFixed(1)} kg` +
     `${burns ? ` · ${burns} burn${burns > 1 ? "s" : ""}` : ""} · ${where}`
   );
-}
-
-/** `propagate`'s UTC times (`2026-01-01T00:00:00.000`, no zone) → Unix seconds. */
-function utcSeconds(text) {
-  return Date.parse(`${text.slice(0, 23)}Z`) / 1000;
 }
 
 function exportOem(id, propagation) {

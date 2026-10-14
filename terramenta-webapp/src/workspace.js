@@ -1,10 +1,11 @@
 /**
  * Workspace: the open project and everything around it.
  *
- * - Switching: `open` resets the globe, applies the new project and rebuilds
- *   the UI in place — no reload, the module and renderer stay up.
- * - Unsaved changes: any scene-changing command outside `globe.quietly` marks
- *   the project dirty (`globe.onSceneChange`). Opening another project asks
+ * - Switching: `open` resets the globe, applies the new project, loads its
+ *   timeline and rebuilds the UI in place — no reload, the module and renderer
+ *   stay up. Each snapshot runs the timeline (`timeline.js`).
+ * - Unsaved changes: any scene-changing command outside `globe.quietly`, or a
+ *   timeline edit, marks the project dirty (`globe.onSceneChange`). Opening another project asks
  *   first; leaving the page prompts.
  * - Autosave: a dirty scene is captured to IndexedDB `AUTOSAVE_KEY` after
  *   `AUTOSAVE_DELAY_MS` of quiet; cleared on save or discard. One left over
@@ -22,7 +23,6 @@ import {
   applyProject,
   applySpacecraft,
   captureProject,
-  directorFor,
   downloadProject,
   emptyProject,
   fetchProject,
@@ -32,6 +32,7 @@ import {
   stashProject,
   startOptions,
 } from "./project.js";
+import { openTimeline, runTimeline, subscribe as onTimelineEdit } from "./timeline.js";
 
 const AUTOSAVE_KEY = "autosave";
 const AUTOSAVE_DELAY_MS = 3_000;
@@ -43,7 +44,6 @@ const RECENT_TEXT_LIMIT = 4_000_000;
 let mountView = null;
 let view = null;
 let current = null;
-let director = null;
 let lastState = null;
 let started = false;
 /** Bumped per `open`; stale async application checks it. */
@@ -75,9 +75,10 @@ export async function initWorkspace({ mount }) {
   globe.onState((state) => {
     lastState = state;
     view?.sync(state);
-    if (director) globe.quietly(() => director(state));
+    globe.quietly(() => runTimeline(state));
   });
   globe.onSceneChange(markDirty);
+  onTimelineEdit(markDirty);
 
   addEventListener("beforeunload", (event) => {
     if (dirty) event.preventDefault();
@@ -130,7 +131,7 @@ export async function open(loaded, { force = false, recent: listed = true } = {}
   });
 
   current = { project: loaded.project, source: loaded.source };
-  director = directorFor(loaded.project);
+  openTimeline(loaded.project);
   const controller = new AbortController();
   view = { ...mountView(loaded.project, loaded.source, controller.signal), abort: () => controller.abort() };
   // The last snapshot is the old scene.

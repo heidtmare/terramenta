@@ -14,6 +14,7 @@ import {
   parseProject,
   projectFromText,
 } from "../src/project.js";
+import { openTimeline } from "../src/timeline.js";
 import { attachFake, commands } from "./fake-globe.js";
 
 const APP = new URL("../", import.meta.url);
@@ -341,6 +342,25 @@ test("a director whose mission is gone is not saved", () => {
   const captured = captureProject(state, { director: { type: "missionFlight", mission: "mars" } });
   assert.equal(captured.director, undefined);
   assert.deepEqual(parse(JSON.parse(JSON.stringify(captured))).warnings, []);
+});
+
+test("the timeline is saved, events on a removed mission dropped", () => {
+  const timeline = {
+    directed: false,
+    events: [
+      { id: "go", at: { event: "mars.departure", offsetS: -60 }, actions: { timeScale: 100 } },
+      { id: "then", at: { event: "go" }, actions: { follow: "mars" } },
+      { id: "fixed", at: "2026-01-01T00:00:00Z" },
+    ],
+  };
+  openTimeline(v({ missions: [{ id: "mars" }], timeline }));
+  const captured = captureProject(snapshot());
+  assert.deepEqual(captured.timeline, timeline);
+  assert.deepEqual(parse(JSON.parse(JSON.stringify(captured))).warnings, []);
+
+  const alone = captureProject({ ...snapshot(), missions: [] });
+  assert.deepEqual(alone.timeline, { directed: false, events: [timeline.events[2]] });
+  openTimeline(v({}));
 });
 
 // --- Spacecraft and environment ------------------------------------------------------

@@ -30,8 +30,8 @@ npm test                       # node --test (Node 22+); no dependencies
 ```
 
 Tests ([`test/`](test/)) cover the schema validator, project validation,
-migrations, spacecraft/environment application, and capture → parse → apply
-round trips against a fake globe module (`globe.attach`).
+migrations, spacecraft/environment application, timeline resolution and
+runner, and capture → parse → apply round trips against a fake globe module (`globe.attach`).
 
 ## Project files
 
@@ -46,7 +46,7 @@ fresh-globe defaults.
 Validation ([`schema.js`](src/schema.js), [`project.js`](src/project.js)
 `parseProject`): structure against the schema, then ids and references
 (duplicate ids, `url` xor `text`, `camera.follow`, `gnc.focus.layer`, director
-mission). Errors list every failing path. Unknown keys warn and are ignored, so
+mission, timeline event references and cycles). Errors list every failing path. Unknown keys warn and are ignored, so
 files with keys from newer builds still open.
 
 Versions: older files are upgraded on load (`migrateProject`) and saved at the
@@ -65,7 +65,7 @@ Relative URLs resolve against the app root (the directory holding
 | `terramenta` | `2` | Format version. Required. |
 | `name`, `description` | string | Masthead, Project tab, page title |
 | `ui.panel` | `"full"` \| `"flight"` | Full tabbed panel (default) or [flight panel](#flight-panel) |
-| `ui.tab` | `"project"` \| `"imagery"` \| `"data"` \| `"spacecraft"` \| `"other"` \| `"mission"` | Initial tab (full panel) |
+| `ui.tab` | `"project"` \| `"imagery"` \| `"data"` \| `"spacecraft"` \| `"timeline"` \| `"other"` \| `"mission"` | Initial tab (full panel) |
 | `ui.readout`, `ui.collapsed` | bool | Telemetry + picked-item panels (default on); panel collapsed |
 | `view` | `"globe"` \| `"heliocentric"` | Initial view, no transition |
 | `frame` | `"ecef"` \| `"eci"` | `setFrame` |
@@ -80,12 +80,14 @@ Relative URLs resolve against the app root (the directory holding
 | `placemarks.enabled`, `keyboard` | bool | |
 | `gnc` | `{enabled, eciAxes, ecefAxes, graticule, graticuleStepDeg, sidereal, track, trackOrbits, focus: {layer, noradId}}` | |
 | `hud` | `{visible, help}` | Globe's built-in HUD (off unless set) |
-| `director` | `{type, ...}` | Scripted clock/view control; see [Directors](#directors) |
+| `director` | `{type, ...}` | Timeline preset; see [Directors](#directors) |
+| `timeline` | `{directed, skipTo, events: [{id, label, at, actions}]}` | See [Timeline](#timeline) |
 
 **Save** (Project tab) writes the current scene: state-stream values plus
 what [`globe.js`](src/globe.js) recorded from `add*` calls (inline text,
 mission search options, explicit satellite selections, camera lock). `ui`,
-`description` and `director` carry over from the loaded project. Not saved:
+`description` and `director` carry over from the loaded project; the timeline
+is saved as edited, minus events whose references no longer hold. Not saved:
 per-satellite trail toggles, local-file overlay refresh timers, porkchop
 inputs.
 
@@ -96,7 +98,7 @@ inputs.
 | | |
 | --- | --- |
 | Open | Project tab (file, URL, recent, examples) or drop a file on the page. Switches in place: abort old panel → `globe.reset()` → apply → mount. |
-| Unsaved changes | Any scene-changing `globe.js` command outside `globe.quietly` marks the project dirty (`•` in title and Project tab). Camera moves, view switches, pins, refreshes, project application and directors do not. Opening another project asks; leaving the page prompts. |
+| Unsaved changes | Any scene-changing `globe.js` command outside `globe.quietly`, or a timeline edit, marks the project dirty (`•` in title and Project tab). Camera moves, view switches, pins, refreshes, project application and the timeline runner do not. Opening another project asks; leaving the page prompts. |
 | Autosave | Dirty scene captured to IndexedDB 3 s after the last change; cleared on save or discard. One left at boot is offered under the Project tab (Recover / Dismiss). |
 | Recent | Last 8 opened projects (IndexedDB). Local files keep their text up to 4 MB. |
 
@@ -108,11 +110,11 @@ Listed in [`projects/manifest.json`](projects/manifest.json).
 | --- | --- |
 | [`overview`](projects/overview.terramenta.json) | Geometry tour, extruded cube, USGS past hour (60 s refresh), Celestrak `stations` |
 | [`mars-mission`](projects/mars-mission.terramenta.json) | Earth → Mars, flight panel, `missionFlight` director, Earth layers off |
-| [`leo-transfer`](projects/leo-transfer.terramenta.json) | 500 → 800 km Hohmann transfer vs. coasting reference; CelesTrak EOP and space weather |
+| [`leo-transfer`](projects/leo-transfer.terramenta.json) | 500 → 800 km Hohmann transfer vs. coasting reference; CelesTrak EOP and space weather; timeline slows the clock around each burn |
 
 ## Full panel
 
-The panel has six tabs. All controls stay bound while hidden, so switching
+The panel has seven tabs. All controls stay bound while hidden, so switching
 tabs does not resync anything.
 
 | Tab | Section | Controls |
@@ -124,6 +126,7 @@ tabs does not resync anything.
 | | Satellites | Add OMM from URL or local file; five Celestrak groups. Per layer: visibility, colour, trails and trail window, refresh, remove, and a filterable object list with per-object draw and trail toggles |
 | **Spacecraft** | Propagation environment | EOP, space weather, kernel: URL or local file, coverage |
 | | Spacecraft | Per spacecraft: visibility, colour, trails, span/samples/final mass, edit, go to start, OEM/SPK export, remove. Editor: initial state (GCRF state with circular-orbit fill, TLE, OMM), start/duration/step, vehicle, forces, integrator, impulsive and finite burns |
+| **Timeline** | Timeline | Directed on/off; previous/next event; strip (click to set the clock) and list of every event with time, source, actions, Go, Remove (project events). Add event: label, at clock or an event plus offset, actions from the current scene (rate, paused, view, frame, camera, focus) |
 | **Other** | Sun & clock | Run/pause, rate (1× to 86,400×), jump to now or by hours/days, terminator shading |
 | | Reference frame | ECEF / ECI |
 | | Both frames at once | ECI and ECEF triads, graticule and spacing, sidereal arc, focused satellite's orbit and ground track over a set number of orbits; quaternion readout and per-frame speeds |
@@ -194,12 +197,44 @@ Satellites.
   same-origin URL.
 - **Export**: OEM (KVN, GCRF/UTC) and SPK Type 13 re-run the propagation.
 
+## Timeline
+
+[`timeline.js`](src/timeline.js), [`timeline-panel.js`](src/timeline-panel.js).
+Events on the simulated clock; the workspace runs the timeline on every
+snapshot.
+
+| Source | Ids | Actions |
+| --- | --- | --- |
+| Spacecraft | `<id>.start`, `.end`, `.burnN`, `.finiteN`, `.finiteN.end` | none |
+| Missions | `<id>.departure`, `.escape`, `.arrival`, `.capture` (once known) | none |
+| Director | `director-*` | generated, not saved |
+| Project | `timeline.events[].id` (no dots) | `actions` |
+
+`at`: a date-time, or `{event, offsetS}` naming any event above (chains
+allowed, cycles rejected). `skipTo` (same form): once it resolves, a clock
+before it jumps forward to it, once per open.
+
+Actions: `timeScale` (number or `"max"`; keeps the clock's direction),
+`rampDoublingS` (doubles the rate every N wall-clock seconds up to the
+maximum), `paused`, `view`, `frame`, `focus: {layer, noradId?}` (default:
+the layer's first object), `follow` (mission id), `camera: {lat, lon,
+altitudeKm}`.
+
+Directed (`timeline.directed`, default true): when the latest event at or
+before the clock changes — played past, scrubbed, jumped — the baseline
+(project `clock.timeScale`/`paused`, `view`, `frame`) and the actions of every
+event up to it are merged. A key is applied if its merged value changed since
+the last application or the latest event sets it, so a rate set by hand holds
+until an event changes the rate, and scrubbing back before every event
+restores the baseline. `camera` applies from the latest event only. A view
+request repeats until it lands.
+
 ## Flight panel
 
 `ui.panel: "flight"` ([`flight-panel.js`](src/flight-panel.js)): one mission
 (`director.mission`, else the first), no tabs.
 
-- **Clock**: run/pause, forward/backward, rate slider.
+- **Clock**: directed on/off, run/pause, forward/backward, rate slider.
 - **Mission**: status line and four phase buttons (departure, escape, arrival,
   capture) that jump the clock to each milestone once known and highlight when
   reached.
@@ -209,22 +244,21 @@ Satellites.
 
 ## Directors
 
-[`director.js`](src/director.js). A director is a state-stream callback that
-drives clock and view. Fields are typed in the schema (`$defs/<type>`); a new
-director needs a `$defs` entry and an `allOf` branch in `$defs/director`.
+[`director.js`](src/director.js). A director is a timeline preset:
+`events(config)` returns `{events, skipTo}` in `timeline` form, run alongside
+the project's own events and shown read-only. Fields are typed in the schema
+(`$defs/<type>`); a new director needs a `$defs` entry and an `allOf` branch
+in `$defs/director`.
 
 `missionFlight` — `{mission, launchLeadSeconds = 3600, departureTimeScale = 600,
 departureDoublingSeconds = 2}`:
 
-1. Mission `waiting`: clock to `launchLeadSeconds` before departure at
-   `departureTimeScale`.
-2. Orbiting origin: rate doubles every `departureDoublingSeconds` (wall clock)
-   up to the maximum.
-3. Heliocentric cruise: maximum rate, heliocentric view.
-4. Orbiting destination: pause.
-
-View: globe around the origin, heliocentric elsewhere. Rate changes keep the
-sign of the current time scale, so reverse playback works.
+| At | Actions |
+| --- | --- |
+| `skipTo`, `<mission>.departure − launchLeadSeconds` | `departureTimeScale`, globe view |
+| `<mission>.departure` | `departureTimeScale`, `rampDoublingS: departureDoublingSeconds` |
+| `<mission>.escape` | `"max"`, heliocentric view |
+| `<mission>.capture` | pause |
 
 ## Data flow
 
@@ -303,7 +337,8 @@ src/
   environment.js         Propagation environment: EOP, space weather, kernel
   schema.js              JSON Schema subset validator
   project-panel.js       Project section (open, save, recover, recent, examples)
-  director.js            Scripted clock/view control (missionFlight)
+  director.js            Timeline presets (missionFlight)
+  timeline.js            Timeline: scene/project/director events, resolution, runner
   flight-panel.js        Flight panel
   globe.js               Sole wrapper around the globe WASM module; records add* sources, reports scene changes
   porkchop.js            Sole wrapper around the charta WASM module
@@ -312,10 +347,11 @@ src/
   ephemeris.js           Satellite layer controls, object list
   mission.js             Mission tab: porkchop plot and launch
   spacecraft-panel.js    Spacecraft tab: environment, spacecraft list, editor, OEM/SPK export
+  timeline-panel.js      Timeline tab: strip, event list, add event
   feature.js             Picking, click handling, placemark calculations
   readout.js             Telemetry panel
   widgets.js             Buttons, toggles, choices, sliders
-  format.js              Coordinate, altitude, rate and duration formatting
+  format.js              Coordinate, altitude, rate, duration and UTC time formatting
   dom.js                 Element helpers and tab strip
   places.js              Camera presets
   feeds.js               Overlay catalogue
