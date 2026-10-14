@@ -2,7 +2,7 @@
  * Workspace: the open project and everything around it.
  *
  * - Switching: `open` resets the globe, applies the new project, loads its
- *   timeline, analysis, events, targets, attitudes and coverage and rebuilds the UI in place — no reload, the module and renderer
+ *   timeline, analysis, events, targets, attitudes, coverage and conjunctions and rebuilds the UI in place — no reload, the module and renderer
  *   stay up. Each snapshot runs the timeline (`timeline.js`).
  * - Unsaved changes: any scene-changing command outside `globe.quietly`, or a
  *   timeline, analysis or events edit, marks the project dirty (`globe.onSceneChange`). Opening another project asks
@@ -37,6 +37,7 @@ import { openAnalysis, subscribe as onAnalysisEdit } from "./analysis.js";
 import { openEvents, subscribe as onEventsEdit } from "./events.js";
 import { openTargets, subscribe as onTargetsEdit } from "./targeting.js";
 import { openAttitudes, subscribe as onAttitudesEdit } from "./attitude.js";
+import { openConjunctions, subscribe as onConjunctionEdit } from "./conjunction.js";
 import { openCoverage, subscribe as onCoverageEdit } from "./coverage.js";
 
 const AUTOSAVE_KEY = "autosave";
@@ -89,6 +90,7 @@ export async function initWorkspace({ mount }) {
   onTargetsEdit(markDirty);
   onAttitudesEdit(markDirty);
   onCoverageEdit(markDirty);
+  onConjunctionEdit(markDirty);
 
   addEventListener("beforeunload", (event) => {
     if (dirty) event.preventDefault();
@@ -147,6 +149,7 @@ export async function open(loaded, { force = false, recent: listed = true } = {}
   openTargets(loaded.project);
   openAttitudes(loaded.project);
   openCoverage(loaded.project);
+  openConjunctions(loaded.project);
   const controller = new AbortController();
   view = { ...mountView(loaded.project, loaded.source, controller.signal), abort: () => controller.abort() };
   // The last snapshot is the old scene.

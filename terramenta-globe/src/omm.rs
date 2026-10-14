@@ -247,7 +247,7 @@ pub fn parse(text: &str) -> Result<Catalogue, OmmError> {
 }
 
 /// Initialises one record, or drops it.
-fn satellite(elements: &sgp4::Elements) -> Option<Satellite> {
+pub(crate) fn satellite(elements: &sgp4::Elements) -> Option<Satellite> {
     // A mean motion that is not a positive number cannot describe an orbit, and
     // it would divide by zero on its way to a period. `from_elements` refuses
     // most such records anyway; this is the one it cannot, because a period is

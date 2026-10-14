@@ -99,6 +99,31 @@ export function attachFake({ objects = {} } = {}) {
         cells: [cell("8a", 10, 0.25), cell("8b", 20, 0)],
       };
     },
+    /** One approach per secondary, 1 h apart, miss 100 m × index; Pc only with a primary covariance. Throws with none. */
+    conjunctions: ({ primary, secondaries = [], cdm }) => {
+      if (!secondaries.length) throw new Error("conjunctions needs a secondary");
+      const t0 = Date.parse("2026-01-01T00:00:00Z") / 1000;
+      return {
+        start: t0,
+        stop: t0 + 21600,
+        screened: secondaries.length,
+        filtered: 0,
+        conjunctions: secondaries.map((secondary, index) => ({
+          secondary: secondary.id ?? "ISS (ZARYA)",
+          name: secondary.propagation ? (secondary.propagation.name ?? "SPACECRAFT") : "ISS (ZARYA)",
+          ...(secondary.layer ? { layer: secondary.layer, noradId: 25544 } : {}),
+          tca: t0 + 3600 * (index + 1),
+          missKm: 0.1 * (index + 1),
+          relativeSpeedKmS: 10,
+          relativePositionRswKm: [0.1 * (index + 1), 0, 0],
+          relativeVelocityRswKmS: [0, -5, 8],
+          sigmaKm: primary.covariance ? [0.5, 0.1] : null,
+          pc: primary.covariance ? 1e-4 / (index + 1) : null,
+          pcMax: 2e-4,
+          ...(cdm ? { cdm: "CCSDS_CDM_VERS = 1.0\n" } : {}),
+        })),
+      };
+    },
   };
   const module = new Proxy(
     {},
@@ -122,5 +147,5 @@ export const commands = (calls) =>
   calls
     .map(([name]) => name)
     .filter(
-      (name) => !(name in { layers: 0, vectorLayers: 0, limits: 0, ephemerisObjects: 0, propagationEnvironment: 0, findEvents: 0, target: 0, attitude: 0, coverage: 0 }),
+      (name) => !(name in { layers: 0, vectorLayers: 0, limits: 0, ephemerisObjects: 0, propagationEnvironment: 0, findEvents: 0, target: 0, attitude: 0, coverage: 0, conjunctions: 0 }),
     );

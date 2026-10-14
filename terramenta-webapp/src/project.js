@@ -3,7 +3,7 @@
  *
  * A project is the full initial scene — layers, spacecraft, missions, clock,
  * camera, UI layout — plus its timeline, an optional director, and saved
- * analysis (plots, porkchop and coverage studies), ground stations, event searches,
+ * analysis (plots, porkchop, coverage and conjunction studies), ground stations, event searches,
  * targeting problems and attitude profiles. Every
  * project, bundled or user-supplied, loads the same way: parsed here, then
  * applied onto a reset globe by `workspace.js`. `?project=<url>` (or
@@ -18,6 +18,7 @@
 import * as globe from "./globe.js";
 import { analysisErrors, analysisSection } from "./analysis.js";
 import { attitudesErrors, attitudesSection } from "./attitude.js";
+import { conjunctionErrors, conjunctionStudies } from "./conjunction.js";
 import { COVERAGE_LAYER, coverageErrors, coverageStudies } from "./coverage.js";
 import { DIRECTORS } from "./director.js";
 import { applyEnvironment, recordedEnvironment } from "./environment.js";
@@ -266,6 +267,7 @@ function referenceErrors(project) {
   errors.push(...timelineErrors(project, { missionIds, layerIds }).map((error) => `timeline.${error}`));
   errors.push(...analysisErrors(project, { spacecraftIds }).map((error) => `analysis.${error}`));
   errors.push(...coverageErrors(project, { spacecraftIds }).map((error) => `analysis.${error}`));
+  errors.push(...conjunctionErrors(project, { spacecraftIds, ephemerisIds }).map((error) => `analysis.${error}`));
   errors.push(...eventsErrors(project));
   errors.push(...targetsErrors(project));
   errors.push(...attitudesErrors(project));
@@ -532,6 +534,11 @@ export function captureProject(state, base = {}) {
   const analysis = analysisSection({ spacecraftIds: new Set(sources.spacecraft.keys()) }) ?? {};
   const coverage = coverageStudies({ spacecraftIds: new Set(sources.spacecraft.keys()) });
   if (coverage.length) analysis.coverage = coverage;
+  const conjunctions = conjunctionStudies({
+    spacecraftIds: new Set(sources.spacecraft.keys()),
+    ephemerisIds: new Set(project.ephemerides.layers.map((layer) => layer.id)),
+  });
+  if (conjunctions.length) analysis.conjunctions = conjunctions;
   if (Object.keys(analysis).length) project.analysis = analysis;
   Object.assign(project, targetsSection({ spacecraftIds: new Set(sources.spacecraft.keys()) }));
   Object.assign(project, attitudesSection({ spacecraftIds: new Set(sources.spacecraft.keys()) }));

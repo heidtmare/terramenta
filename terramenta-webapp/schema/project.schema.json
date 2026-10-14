@@ -436,13 +436,34 @@
       ]
     },
     "analysis": {
-      "description": "Saved plots, porkchop and coverage studies (Analysis tab); see src/analysis.js, src/coverage.js.",
+      "description": "Saved plots, porkchop, coverage and conjunction studies (Analysis tab); see src/analysis.js, src/coverage.js, src/conjunction.js.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "plots": { "type": "array", "items": { "$ref": "#/$defs/plot" } },
         "porkchops": { "type": "array", "items": { "$ref": "#/$defs/porkchop" } },
-        "coverage": { "type": "array", "items": { "$ref": "#/$defs/coverage" } }
+        "coverage": { "type": "array", "items": { "$ref": "#/$defs/coverage" } },
+        "conjunctions": { "type": "array", "items": { "$ref": "#/$defs/conjunction" } }
+      }
+    },
+    "conjunction": {
+      "description": "Close-approach screening of one spacecraft against spacecraft and catalogue layers.",
+      "type": "object",
+      "required": ["id", "primary"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$", "title": "letters, digits, - and _" },
+        "label": { "type": "string" },
+        "primary": { "type": "string", "description": "Spacecraft id; its propagation.covariance feeds Pc." },
+        "secondaries": { "type": "array", "items": { "type": "string" }, "description": "Spacecraft ids." },
+        "layers": { "type": "array", "items": { "type": "string" }, "description": "Ephemeris layer ids: every object they hold." },
+        "thresholdKm": { "type": "number", "exclusiveMinimum": 0, "description": "Default 5." },
+        "hardBodyRadiusM": { "type": "number", "minimum": 0, "description": "Combined; default 20." },
+        "stepS": { "type": "number", "exclusiveMinimum": 0, "description": "Search grid; default 60." },
+        "secondarySigmaKm": {
+          "$ref": "#/$defs/sigma3",
+          "description": "RSW position 1σ for secondaries without a covariance (catalogue objects)."
+        }
       }
     },
     "coverage": {

@@ -113,6 +113,7 @@ from a real failure.
 | `showAttitude(id, options)` / `hideAttitude(id)` | Draw the last `attitude` result on ephemeris layer `id`: body axes, sensor boresights, field-of-view footprints |
 | `showUncertainty(id, options)` / `hideUncertainty(id)` | Draw the last `propagate` covariance on ephemeris layer `id`: position ellipsoid at `sigma` |
 | `coverage(options)` | Access coverage of an H3 grid by spacecraft, line of sight or through sensor fields of view: per-cell fraction, accesses, gaps |
+| `conjunctions(options)` | Screen a propagated spacecraft against propagated spacecraft, TLE/OMM and loaded ephemeris layers: TCA, miss, RSW geometry, Pc, Pc max, CDM |
 | `loadKernel(bytes)` `loadEop(text)` `loadSpaceWeather(text)` `propagationEnvironment()` | Propagation data |
 | `setPickingEnabled(bool)` `pinFeature(layer, index)` `clearPinnedFeature()` | Overlay feature picking |
 | `pinSatellite(layer, noradId)` `clearPinnedSatellite()` | Satellite picking |
@@ -605,6 +606,35 @@ const { start, stop, samples, cells } = globe.coverage({
   inside one of their fields of view under its `attitude` law. Gaps resolve to
   one step. Degrees in the result are rounded to 1e-5.
 
+```js
+const { screened, filtered, conjunctions } = globe.conjunctions({
+  primary: sameOptions,                              // covariance feeds Pc
+  secondaries: [{ id: "debris", propagation: other }, { tle: [l1, l2] }, { layer: "active" }],
+  thresholdKm: 5, hardBodyRadiusM: 20, stepS: 60,
+  secondarySigmaKm: [0.2, 1, 0.2], exclude: [25544], cdm: true,
+});
+// conjunctions: [{ secondary, name, noradId?, layer?, tca, missKm, relativeSpeedKmS,
+//   relativePositionRswKm, relativeVelocityRswKmS, sigmaKm, pc, pcMax, cdm? }], by TCA
+```
+
+- `conjunctions` propagates the primary (with covariance if set) and each
+  `propagation` secondary, and evaluates SGP4 objects in TEME rotated to GCRF.
+  TCAs are interior range minima within `thresholdKm`: `Δr·Δv` sign changes on
+  the `stepS` grid refined by Brent to 0.1 ms; a bracket whose nearer end is
+  beyond `threshold + |Δv|·step` is skipped. SGP4 objects whose
+  perigee/apogee band misses the primary's radius range by more than
+  threshold + 50 km are `filtered`. Two minima inside one step can hide one;
+  co-orbital pairs need a step well under the period.
+- Pc: Foster 2D, short encounter. Combined position covariance (interpolated
+  linearly between samples; `secondarySigmaKm` in the secondary's RSW for
+  objects without one) projected on the plane normal to `Δv`, integrated over
+  the hard-body disc. `pcMax` maximises Pc over a scale on that covariance
+  (isotropic without one). `pc` is `null` without any covariance.
+- CDM: object 1 the primary, object 2 the secondary, GCRF states at TCA, RTN
+  covariances (`DEFAULT` and zero when absent or assumed).
+- Cost: native ~0.8 s for a day at 60 s against 10 000 LEO objects (2 600 past
+  the band filter); WASM ~0.3 s for 5 000.
+
 - Without a kernel, Sun/Moon come from analytic series (Moon ≤ 0.1°).
 - Without EOP, Earth orientation uses zero polar motion and UT1 = UTC.
 - Synchronous; ≤ 200 000 samples per call. Errors throw.
@@ -826,7 +856,7 @@ src/
   geojson.rs       GeoJSON parsing and flattening
   simplestyle.rs   simplestyle-spec 1.1.0
   omm.rs           OMM → SGP4 propagators; OEM → tabulated motion
-  numerical.rs     propagate/propagateSpk/findEvents/target/attitude/coverage requests; kernel, EOP, space weather
+  numerical.rs     propagate/propagateSpk/findEvents/target/attitude/coverage/conjunctions requests; kernel, EOP, space weather
   tessellate.rs    Ear clipping, holes, antimeridian
   picking.rs       Overlay hit-testing
   overlays.rs      Overlay layers, geojson:// source, refresh, meshes

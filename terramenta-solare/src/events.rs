@@ -79,7 +79,14 @@ pub fn intervals(
 }
 
 /// Brent's root finder on `[a, b]`, `f(a)` and `f(b)` of opposite sign (as `> 0`).
-fn brent(f: &mut impl FnMut(f64) -> f64, a: f64, b: f64, fa: f64, fb: f64, tol: f64) -> f64 {
+pub(crate) fn brent(
+    f: &mut impl FnMut(f64) -> f64,
+    a: f64,
+    b: f64,
+    fa: f64,
+    fb: f64,
+    tol: f64,
+) -> f64 {
     let (mut a, mut b, mut fa, mut fb) = (a, b, fa, fb);
     if fa.abs() < fb.abs() {
         (a, b, fa, fb) = (b, a, fb, fa);
