@@ -30,8 +30,8 @@ npm test                       # node --test (Node 22+); no dependencies
 ```
 
 Tests ([`test/`](test/)) cover the schema validator, project validation,
-migrations, and capture → parse → apply round trips against a fake globe
-module (`globe.attach`).
+migrations, spacecraft/environment application, and capture → parse → apply
+round trips against a fake globe module (`globe.attach`).
 
 ## Project files
 
@@ -65,7 +65,7 @@ Relative URLs resolve against the app root (the directory holding
 | `terramenta` | `2` | Format version. Required. |
 | `name`, `description` | string | Masthead, Project tab, page title |
 | `ui.panel` | `"full"` \| `"flight"` | Full tabbed panel (default) or [flight panel](#flight-panel) |
-| `ui.tab` | `"project"` \| `"imagery"` \| `"data"` \| `"other"` \| `"mission"` | Initial tab (full panel) |
+| `ui.tab` | `"project"` \| `"imagery"` \| `"data"` \| `"spacecraft"` \| `"other"` \| `"mission"` | Initial tab (full panel) |
 | `ui.readout`, `ui.collapsed` | bool | Telemetry + picked-item panels (default on); panel collapsed |
 | `view` | `"globe"` \| `"heliocentric"` | Initial view, no transition |
 | `frame` | `"ecef"` \| `"eci"` | `setFrame` |
@@ -74,6 +74,8 @@ Relative URLs resolve against the app root (the directory holding
 | `imagery`, `vectorTiles` | `{enabled, layer, style?}` | `layer`: preset label or index |
 | `overlays` | `{enabled, picking, layers: [{id, ...addOverlay options}]}` | One of `url`/`text` per layer |
 | `ephemerides` | `{enabled, layers: [{id, ...addEphemeris options}]}` | OMM JSON or KVN OEM |
+| `environment` | `{eop, spaceWeather, kernel}` | URLs; see [Spacecraft](#spacecraft) |
+| `spacecraft` | `[{id, ...addEphemeris display options, propagation}]` | `propagation`: `propagate` options; one of `stop`/`durationS`. Id unique across `ephemerides` |
 | `missions` | `[{id, ...addMission options}]` | |
 | `placemarks.enabled`, `keyboard` | bool | |
 | `gnc` | `{enabled, eciAxes, ecefAxes, graticule, graticuleStepDeg, sidereal, track, trackOrbits, focus: {layer, noradId}}` | |
@@ -106,10 +108,11 @@ Listed in [`projects/manifest.json`](projects/manifest.json).
 | --- | --- |
 | [`overview`](projects/overview.terramenta.json) | Geometry tour, extruded cube, USGS past hour (60 s refresh), Celestrak `stations` |
 | [`mars-mission`](projects/mars-mission.terramenta.json) | Earth → Mars, flight panel, `missionFlight` director, Earth layers off |
+| [`leo-transfer`](projects/leo-transfer.terramenta.json) | 500 → 800 km Hohmann transfer vs. coasting reference; CelesTrak EOP and space weather |
 
 ## Full panel
 
-The panel has five tabs. All controls stay bound while hidden, so switching
+The panel has six tabs. All controls stay bound while hidden, so switching
 tabs does not resync anything.
 
 | Tab | Section | Controls |
@@ -119,6 +122,8 @@ tabs does not resync anything.
 | **Data** | Vector tiles | Source (MapLibre boundaries, OSM Shortbread), its source layers and depth, colour, ring fill, streaming on/off |
 | | GeoJSON overlays | Add from URL or local file; bundled samples and USGS feeds; refresh period; picking on/off. Per layer: visibility, colour, clamp to surface, extrude, simplestyle on/off, refresh, remove, feature counts and age |
 | | Satellites | Add OMM from URL or local file; five Celestrak groups. Per layer: visibility, colour, trails and trail window, refresh, remove, and a filterable object list with per-object draw and trail toggles |
+| **Spacecraft** | Propagation environment | EOP, space weather, kernel: URL or local file, coverage |
+| | Spacecraft | Per spacecraft: visibility, colour, trails, span/samples/final mass, edit, go to start, OEM/SPK export, remove. Editor: initial state (GCRF state with circular-orbit fill, TLE, OMM), start/duration/step, vehicle, forces, integrator, impulsive and finite burns |
 | **Other** | Sun & clock | Run/pause, rate (1× to 86,400×), jump to now or by hours/days, terminator shading |
 | | Reference frame | ECEF / ECI |
 | | Both frames at once | ECI and ECEF triads, graticule and spacing, sidereal arc, focused satellite's orbit and ground track over a set number of orbits; quaternion readout and per-frame speeds |
@@ -165,6 +170,29 @@ layer's clamp-to-surface toggle to ignore it.
 Satellite groups ([`orbits.js`](src/orbits.js)): crewed stations, GPS,
 geostationary, Molniya, and a full Starlink shell (exceeds the 600-object
 marker cap).
+
+## Spacecraft
+
+[`spacecraft-panel.js`](src/spacecraft-panel.js),
+[`environment.js`](src/environment.js). A spacecraft is a `propagate` request
+plus ephemeris display options: `globe.addSpacecraft(id, propagation, display)`
+propagates (Cowell, synchronous) and puts the result up as ephemeris layer
+`id` via `addPropagated`. Spacecraft layers are listed under Spacecraft, not
+Satellites.
+
+- **Open**: `workspace.open` applies the scene synchronously, then
+  `applySpacecraft` loads `environment` (skipping URLs already loaded) and
+  propagates each spacecraft. The globe starts without waiting. A spacecraft
+  that fails keeps its spec (saved as is) and shows the error.
+- **Editor**: validates the entry as a project would (`parseProject`), then
+  propagates; editing re-propagates under the same id, keeping display
+  options. Δv in m/s in the editor, km/s in the file. The clock jumps to the
+  start if it is outside the span.
+- **Environment**: wasm-global, not cleared by `reset`; stays loaded across
+  projects. URL sources are saved; local files are not. CelesTrak serves
+  `EOP-All.csv`/`SW-All.csv` with CORS; NAIF kernels need a local file or a
+  same-origin URL.
+- **Export**: OEM (KVN, GCRF/UTC) and SPK Type 13 re-run the propagation.
 
 ## Flight panel
 
@@ -261,6 +289,7 @@ projects/
   manifest.json                 Bundled project list
   overview.terramenta.json      Layers tour
   mars-mission.terramenta.json  Directed Earth → Mars flight
+  leo-transfer.terramenta.json  Propagated Hohmann transfer
 data/
   geometry-tour.geojson         One feature per geometry type
   extruded-cube.geojson         Extruded ring
@@ -271,6 +300,7 @@ src/
   workspace.js           Open project: in-place switching, dirty tracking, autosave, recent, drop
   store.js               IndexedDB key-value store
   project.js             Project load, upgrade, validate, apply, capture, save
+  environment.js         Propagation environment: EOP, space weather, kernel
   schema.js              JSON Schema subset validator
   project-panel.js       Project section (open, save, recover, recent, examples)
   director.js            Scripted clock/view control (missionFlight)
@@ -281,6 +311,7 @@ src/
   overlays.js            GeoJSON layer controls, local-file refresh
   ephemeris.js           Satellite layer controls, object list
   mission.js             Mission tab: porkchop plot and launch
+  spacecraft-panel.js    Spacecraft tab: environment, spacecraft list, editor, OEM/SPK export
   feature.js             Picking, click handling, placemark calculations
   readout.js             Telemetry panel
   widgets.js             Buttons, toggles, choices, sliders

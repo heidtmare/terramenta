@@ -1,0 +1,62 @@
+{
+  "$schema": "../schema/project.schema.json",
+  "terramenta": 2,
+  "name": "LEO Hohmann transfer",
+  "description": "500 → 800 km Hohmann transfer against a coasting reference, Cowell-propagated with EGM2008 8×8, Harris-Priester drag, Sun/Moon and SRP. Export either as OEM or SPK from the Spacecraft tab.",
+  "ui": { "tab": "spacecraft" },
+  "frame": "eci",
+  "clock": { "epoch": "2026-01-01T00:20:00Z", "timeScale": 60, "paused": false },
+  "camera": { "lat": 20, "lon": -40, "altitudeKm": 30000 },
+  "environment": {
+    "eop": "https://celestrak.org/SpaceData/EOP-All.csv",
+    "spaceWeather": "https://celestrak.org/SpaceData/SW-All.csv"
+  },
+  "spacecraft": [
+    {
+      "id": "reference",
+      "label": "Reference · 500 km coast",
+      "pointColor": "#8ce0ff",
+      "lineColor": "#8ce0ffa6",
+      "leadingOrbits": 0,
+      "trailingOrbits": 1,
+      "trailPath": "orbit",
+      "propagation": {
+        "name": "REFERENCE",
+        "initial": {
+          "epoch": "2026-01-01T00:00:00Z",
+          "positionKm": [6878.137, 0, 0],
+          "velocityKmS": [0, 4.728554669, 5.965951219]
+        },
+        "durationS": 21600,
+        "stepS": 30,
+        "vehicle": { "massKg": 500, "dragAreaM2": 4, "srpAreaM2": 4 },
+        "forces": { "gravity": [8, 8], "drag": "harrisPriester" }
+      }
+    },
+    {
+      "id": "transfer",
+      "label": "Transfer · 500 → 800 km",
+      "pointColor": "#ffb86b",
+      "lineColor": "#ffb86ba6",
+      "leadingOrbits": 0,
+      "trailingOrbits": 1,
+      "trailPath": "orbit",
+      "propagation": {
+        "name": "TRANSFER",
+        "initial": {
+          "epoch": "2026-01-01T00:00:00Z",
+          "positionKm": [6878.137, 0, 0],
+          "velocityKmS": [0, 4.728554669, 5.965951219]
+        },
+        "durationS": 21600,
+        "stepS": 30,
+        "vehicle": { "massKg": 500, "dryMassKg": 400, "dragAreaM2": 4, "srpAreaM2": 4 },
+        "forces": { "gravity": [8, 8], "drag": "harrisPriester" },
+        "maneuvers": [
+          { "epoch": "2026-01-01T00:30:00Z", "deltaVKmS": [0.080808, 0, 0], "frame": "vnb", "ispS": 300 },
+          { "epoch": "2026-01-01T01:18:51.847Z", "deltaVKmS": [0.07995, 0, 0], "frame": "vnb", "ispS": 300 }
+        ]
+      }
+    }
+  ]
+}

@@ -19,6 +19,12 @@ export function attachFake({ objects = {} } = {}) {
     vectorLayers: () => VECTOR,
     limits: () => ({ maxTimeScale: 1e6 }),
     ephemerisObjects: (id) => objects[id] ?? null,
+    propagationEnvironment: () => ({ kernel: false, eop: null, spaceWeather: null }),
+    /** Throws for a TLE whose first line is `"bad"`. */
+    propagate: (options) => {
+      if (options.initial.tle?.[0] === "bad") throw new Error("bad TLE");
+      return { samples: 10, finalMassKg: 500, start: "2026-01-01T00:00:00.000", stop: "2026-01-01T06:00:00.000" };
+    },
   };
   const module = new Proxy(
     {},
@@ -39,4 +45,6 @@ export function attachFake({ objects = {} } = {}) {
 
 /** Names of the scene commands in `calls`, queries left out. */
 export const commands = (calls) =>
-  calls.map(([name]) => name).filter((name) => !(name in { layers: 0, vectorLayers: 0, limits: 0, ephemerisObjects: 0 }));
+  calls
+    .map(([name]) => name)
+    .filter((name) => !(name in { layers: 0, vectorLayers: 0, limits: 0, ephemerisObjects: 0, propagationEnvironment: 0 }));

@@ -87,3 +87,12 @@ test("unresolvable $ref throws", () => {
   assert.throws(() => validate({ $ref: "#/$defs/missing" }, 1), /unresolved/);
   assert.throws(() => validate({ $ref: "other.json" }, 1), /only local/);
 });
+
+test("array length", () => {
+  assert.deepEqual(errors({ minItems: 3, maxItems: 3 }, [1, 2, 3]), []);
+  assert.deepEqual(errors({ minItems: 3, maxItems: 3 }, [1, 2]), ["(root): expected 3 items, got [1,2]"]);
+  assert.deepEqual(errors({ minItems: 1 }, []), ["(root): expected ≥ 1 items, got []"]);
+  assert.deepEqual(errors({ minItems: 1, maxItems: 2, items: { type: "string" } }, [1, 2, 3]), [
+    "(root): expected 1–2 items, got [1,2,3]",
+  ]);
+});

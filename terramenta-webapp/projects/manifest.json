@@ -8,5 +8,10 @@
     "file": "mars-mission.terramenta.json",
     "name": "Earth → Mars",
     "description": "Directed Earth → Mars transfer in the flight layout."
+  },
+  {
+    "file": "leo-transfer.terramenta.json",
+    "name": "LEO Hohmann transfer",
+    "description": "Cowell-propagated 500 → 800 km Hohmann transfer with a coasting reference; OEM/SPK export."
   }
 ]

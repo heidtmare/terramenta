@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Terramenta project",
-  "description": "*.terramenta.json, format version 2. Omitted fields keep fresh-globe defaults. Relative URLs resolve against the app root. Cross-references (ids, mission names) are checked by src/project.js.",
+  "description": "*.terramenta.json, format version 2. Omitted fields keep fresh-globe defaults. Relative URLs resolve against the app root. Cross-references (ids, mission names, stop/durationS) are checked by src/project.js.",
   "type": "object",
   "required": ["terramenta"],
   "additionalProperties": false,
@@ -15,7 +15,7 @@
       "additionalProperties": false,
       "properties": {
         "panel": { "enum": ["full", "flight"] },
-        "tab": { "enum": ["project", "imagery", "data", "other", "mission"] },
+        "tab": { "enum": ["project", "imagery", "data", "spacecraft", "other", "mission"] },
         "readout": { "type": "boolean" },
         "collapsed": { "type": "boolean" }
       }
@@ -26,7 +26,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "epoch": { "anyOf": [{ "const": "now" }, { "type": "string", "format": "date-time" }] },
+        "epoch": { "anyOf": [{"const": "now"}, {"type": "string", "format": "date-time"}] },
         "timeScale": { "type": "number" },
         "paused": { "type": "boolean" },
         "shaded": { "type": "boolean" }
@@ -47,10 +47,7 @@
     "imagery": {
       "type": "object",
       "additionalProperties": false,
-      "properties": {
-        "enabled": { "type": "boolean" },
-        "layer": { "$ref": "#/$defs/preset" }
-      }
+      "properties": { "enabled": {"type": "boolean"}, "layer": {"$ref": "#/$defs/preset"} }
     },
     "vectorTiles": {
       "type": "object",
@@ -67,7 +64,7 @@
       "properties": {
         "enabled": { "type": "boolean" },
         "picking": { "type": "boolean" },
-        "layers": { "type": "array", "items": { "$ref": "#/$defs/overlayLayer" } }
+        "layers": { "type": "array", "items": {"$ref": "#/$defs/overlayLayer"} }
       }
     },
     "ephemerides": {
@@ -75,14 +72,35 @@
       "additionalProperties": false,
       "properties": {
         "enabled": { "type": "boolean" },
-        "layers": { "type": "array", "items": { "$ref": "#/$defs/ephemerisLayer" } }
+        "layers": { "type": "array", "items": {"$ref": "#/$defs/ephemerisLayer"} }
       }
     },
-    "missions": { "type": "array", "items": { "$ref": "#/$defs/mission" } },
+    "environment": {
+      "description": "Propagation data, by URL. Loaded once per session; see src/environment.js.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "eop": { "type": "string", "description": "IERS finals2000A.all or CelesTrak EOP-All.csv." },
+        "spaceWeather": {
+          "type": "string",
+          "description": "CelesTrak SW-All.csv; needed by drag nrlmsise00."
+        },
+        "kernel": {
+          "type": "string",
+          "description": "SPK/PCK, e.g. de440s.bsp; Sun/Moon third body."
+        }
+      }
+    },
+    "spacecraft": {
+      "description": "Numerically propagated spacecraft, drawn as ephemeris layers.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/spacecraft" }
+    },
+    "missions": { "type": "array", "items": {"$ref": "#/$defs/mission"} },
     "placemarks": {
       "type": "object",
       "additionalProperties": false,
-      "properties": { "enabled": { "type": "boolean" } }
+      "properties": { "enabled": {"type": "boolean"} }
     },
     "gnc": {
       "type": "object",
@@ -110,10 +128,7 @@
     "hud": {
       "type": "object",
       "additionalProperties": false,
-      "properties": {
-        "visible": { "type": "boolean" },
-        "help": { "type": "boolean" }
-      }
+      "properties": { "visible": {"type": "boolean"}, "help": {"type": "boolean"} }
     },
     "keyboard": { "type": "boolean" },
     "director": { "$ref": "#/$defs/director" }
@@ -126,7 +141,7 @@
     },
     "preset": {
       "description": "Preset label or index.",
-      "anyOf": [{ "type": "string" }, { "type": "integer", "minimum": 0 }]
+      "anyOf": [{"type": "string"}, {"type": "integer", "minimum": 0}]
     },
     "style": {
       "type": "object",
@@ -215,10 +230,10 @@
       "description": "Scripted clock/view control; see src/director.js.",
       "type": "object",
       "required": ["type"],
-      "properties": { "type": { "enum": ["missionFlight"] } },
+      "properties": { "type": {"enum": ["missionFlight"]} },
       "allOf": [
         {
-          "if": { "properties": { "type": { "const": "missionFlight" } } },
+          "if": { "properties": {"type": {"const": "missionFlight"}} },
           "then": { "$ref": "#/$defs/missionFlight" }
         }
       ]
@@ -234,6 +249,165 @@
         "launchLeadSeconds": { "type": "number", "exclusiveMinimum": 0 },
         "departureTimeScale": { "type": "number", "exclusiveMinimum": 0 },
         "departureDoublingSeconds": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "vector3": { "type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3 },
+    "spacecraft": {
+      "description": "Display options as an ephemeris layer; propagation as globe propagate().",
+      "type": "object",
+      "required": ["id", "propagation"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Ephemeris layer id; unique across ephemerides and spacecraft."
+        },
+        "label": { "type": "string" },
+        "visible": { "type": "boolean" },
+        "trails": { "type": "boolean" },
+        "leadingOrbits": { "type": "number", "minimum": 0 },
+        "trailingOrbits": { "type": "number", "minimum": 0 },
+        "trailSamples": { "type": "integer", "minimum": 0 },
+        "trailPath": { "enum": ["track", "orbit"] },
+        "pointColor": { "$ref": "#/$defs/color" },
+        "pointSizePx": { "type": "number", "minimum": 0 },
+        "lineColor": { "$ref": "#/$defs/color" },
+        "lineWidthPx": { "type": "number", "minimum": 0 },
+        "fillColor": { "$ref": "#/$defs/color" },
+        "propagation": { "$ref": "#/$defs/propagation" }
+      }
+    },
+    "propagation": {
+      "description": "Cowell propagation; one of stop and durationS.",
+      "type": "object",
+      "required": ["initial"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "description": "OEM OBJECT_NAME." },
+        "objectId": { "type": "string", "description": "OEM OBJECT_ID; default name." },
+        "naifId": { "type": "integer", "description": "SPK target; default -100900." },
+        "initial": {
+          "title": "a TLE ({tle}), an OMM ({omm}) or a GCRF state ({epoch, positionKm, velocityKmS})",
+          "anyOf": [
+            {
+              "type": "object",
+              "required": ["tle"],
+              "additionalProperties": false,
+              "properties": {
+                "tle": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "minItems": 2,
+                  "maxItems": 2
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["omm"],
+              "additionalProperties": false,
+              "properties": { "omm": {"type": "object"} }
+            },
+            {
+              "type": "object",
+              "required": ["epoch", "positionKm", "velocityKmS"],
+              "additionalProperties": false,
+              "properties": {
+                "epoch": { "type": "string", "format": "date-time" },
+                "positionKm": { "$ref": "#/$defs/vector3" },
+                "velocityKmS": { "$ref": "#/$defs/vector3" }
+              }
+            }
+          ]
+        },
+        "start": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Default: initial epoch."
+        },
+        "stop": { "type": "string", "format": "date-time" },
+        "durationS": { "type": "number" },
+        "stepS": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Output step; default 60."
+        },
+        "vehicle": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "massKg": { "type": "number", "exclusiveMinimum": 0 },
+            "dryMassKg": { "type": "number", "minimum": 0 },
+            "dragAreaM2": { "type": "number", "minimum": 0 },
+            "dragCoefficient": { "type": "number", "minimum": 0 },
+            "srpAreaM2": { "type": "number", "minimum": 0 },
+            "reflectivity": { "type": "number", "minimum": 0 }
+          }
+        },
+        "forces": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "gravity": {
+              "description": "[degree, order], EGM2008, ≤ 20; [0, 0] point mass.",
+              "type": "array",
+              "items": { "type": "integer", "minimum": 0, "maximum": 20 },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "thirdBody": { "type": "boolean" },
+            "drag": { "enum": ["none", "exponential", "harrisPriester", "nrlmsise00"] },
+            "srp": { "type": "boolean" },
+            "relativity": { "type": "boolean" }
+          }
+        },
+        "integrator": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "method": { "enum": ["dop853", "rkf78", "rk4"] },
+            "relativeTolerance": { "type": "number", "exclusiveMinimum": 0 },
+            "absoluteTolerance": { "type": "number", "exclusiveMinimum": 0 },
+            "fixedStepS": { "type": "number", "exclusiveMinimum": 0, "description": "rk4 step." }
+          }
+        },
+        "maneuvers": { "type": "array", "items": {"$ref": "#/$defs/maneuver"} },
+        "finiteBurns": { "type": "array", "items": {"$ref": "#/$defs/finiteBurn"} }
+      }
+    },
+    "maneuver": {
+      "description": "Impulsive.",
+      "type": "object",
+      "required": ["epoch", "deltaVKmS"],
+      "additionalProperties": false,
+      "properties": {
+        "epoch": { "type": "string", "format": "date-time" },
+        "deltaVKmS": { "$ref": "#/$defs/vector3" },
+        "frame": {
+          "enum": ["vnb", "rsw", "ric", "lvlh", "inertial", "gcrf", "eci"],
+          "description": "Default vnb."
+        },
+        "ispS": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Mass from the rocket equation; omitted: mass unchanged."
+        }
+      }
+    },
+    "finiteBurn": {
+      "type": "object",
+      "required": ["start", "durationS", "thrustN", "ispS", "direction"],
+      "additionalProperties": false,
+      "properties": {
+        "start": { "type": "string", "format": "date-time" },
+        "durationS": { "type": "number", "exclusiveMinimum": 0 },
+        "thrustN": { "type": "number", "exclusiveMinimum": 0 },
+        "ispS": { "type": "number", "exclusiveMinimum": 0 },
+        "direction": { "$ref": "#/$defs/vector3" },
+        "frame": {
+          "enum": ["vnb", "rsw", "ric", "lvlh", "inertial", "gcrf", "eci"],
+          "description": "Default vnb."
+        }
       }
     }
   }

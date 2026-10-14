@@ -3,7 +3,7 @@
  * `schema/project.schema.json`.
  *
  * Keywords: `$ref` (local `#/...`), `type`, `const`, `enum`, `properties`,
- * `required`, `additionalProperties`, `items`, `minimum`, `maximum`,
+ * `required`, `additionalProperties`, `items`, `minItems`, `maxItems`, `minimum`, `maximum`,
  * `exclusiveMinimum`, `exclusiveMaximum`, `pattern`, `format: "date-time"`,
  * `anyOf`, `allOf`, `if`/`then`/`else`. Others are ignored.
  *
@@ -49,9 +49,7 @@ function check(schema, value, path, context) {
   if (typeof value === "number") checkNumber(schema, value, path, context);
   if (typeof value === "string") checkString(schema, value, path, context);
   if (isType("object", value)) checkObject(schema, value, path, context);
-  if (Array.isArray(value) && schema.items !== undefined) {
-    value.forEach((item, index) => check(schema.items, item, `${path}[${index}]`, context));
-  }
+  if (Array.isArray(value)) checkArray(schema, value, path, context);
 
   if (schema.anyOf && !schema.anyOf.some((branch) => passes(branch, value, context))) {
     fail(context, path, schema.title ?? schema.anyOf.map((branch) => describe(branch, context)).join(" or "), value);
@@ -84,6 +82,18 @@ function checkString(schema, value, path, context) {
     fail(context, path, schema.title ?? `a string matching ${schema.pattern}`, value);
   } else if (schema.format === "date-time" && !Number.isFinite(Date.parse(value))) {
     fail(context, path, schema.title ?? "an ISO 8601 date-time", value);
+  }
+}
+
+function checkArray(schema, value, path, context) {
+  const { minItems = 0, maxItems = Infinity } = schema;
+  if (value.length < minItems || value.length > maxItems) {
+    const count = minItems === maxItems ? `${minItems}` : maxItems === Infinity ? `≥ ${minItems}` : `${minItems}–${maxItems}`;
+    fail(context, path, schema.title ?? `${count} items`, value);
+    return;
+  }
+  if (schema.items !== undefined) {
+    value.forEach((item, index) => check(schema.items, item, `${path}[${index}]`, context));
   }
 }
 

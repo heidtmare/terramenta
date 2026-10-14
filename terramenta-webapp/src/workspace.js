@@ -20,6 +20,7 @@ import * as store from "./store.js";
 import {
   SESSION_SOURCE,
   applyProject,
+  applySpacecraft,
   captureProject,
   directorFor,
   downloadProject,
@@ -45,6 +46,8 @@ let current = null;
 let director = null;
 let lastState = null;
 let started = false;
+/** Bumped per `open`; stale async application checks it. */
+let generation = 0;
 let dirty = false;
 let autosaveTimer = null;
 let recovery = null;
@@ -108,8 +111,10 @@ function notify() {
 
 /**
  * Opens a loaded project (`{project, source, param, text?}`) in place.
- * Resolves `false` if the user kept unsaved changes. `recent: false` keeps it
- * off the recent list.
+ * Resolves `false` if the user kept unsaved changes, else `true` once its
+ * environment has loaded and its spacecraft are propagated. The scene and UI
+ * are in place synchronously, so `start` need not wait. `recent: false` keeps
+ * it off the recent list.
  */
 export async function open(loaded, { force = false, recent: listed = true } = {}) {
   if (!force && !confirmDiscard()) return false;
@@ -134,7 +139,11 @@ export async function open(loaded, { force = false, recent: listed = true } = {}
   if (loaded.param === SESSION_SOURCE) stashProject(loaded);
   setProjectParam(loaded.param);
   setDirty(false);
-  if (listed) await remember(loaded);
+  const opened = ++generation;
+  await Promise.all([
+    applySpacecraft(loaded.project, () => opened === generation),
+    listed ? remember(loaded) : null,
+  ]);
   return true;
 }
 

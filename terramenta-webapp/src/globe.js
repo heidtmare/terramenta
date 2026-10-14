@@ -168,6 +168,7 @@ export function reset() {
   sources.overlays.clear();
   sources.ephemerides.clear();
   sources.missions.clear();
+  sources.spacecraft.clear();
   sources.selected.clear();
   sources.camera = null;
   return required().reset();
@@ -182,6 +183,8 @@ const sources = {
   overlays: new Map(),
   ephemerides: new Map(),
   missions: new Map(),
+  /** `{propagation, display, info, error}` per `addSpacecraft` id, failed ones included. */
+  spacecraft: new Map(),
   /** Ephemeris layer ids whose selection was set explicitly. */
   selected: new Set(),
   /** `{ mission }` or `{ anchor }`; last camera lock requested. */
@@ -492,6 +495,7 @@ export function addEphemeris(id, options) {
 }
 
 export function removeEphemeris(id) {
+  sources.spacecraft.delete(id);
   sources.ephemerides.delete(id);
   sources.selected.delete(id);
   return required().removeEphemeris(id);
@@ -666,6 +670,34 @@ export const addPropagated = (id, options) => required().addPropagated(id, optio
 
 /** As `propagate`, returning a Type 13 SPK `Uint8Array` (`naifId`, default -100900). */
 export const propagateSpk = (options) => required().propagateSpk(options);
+
+/**
+ * Propagates `propagation` (`propagate` options; `kvn` ignored) and puts the
+ * result up as ephemeris layer `id` with `display` (`addEphemeris` options,
+ * `url`/`text` ignored); replaces a layer of that id. Returns `propagate`'s
+ * info. Recorded even if propagation throws — the spec is kept for saving, the
+ * old layer removed — then rethrows.
+ */
+export function addSpacecraft(id, propagation, display = {}) {
+  const entry = { propagation, display, info: null, error: null };
+  try {
+    entry.info = required().propagate({ ...propagation, kvn: false });
+  } catch (error) {
+    entry.error = error.message ?? String(error);
+    required().removeEphemeris(id);
+    sources.spacecraft.set(id, entry);
+    throw error;
+  }
+  required().addPropagated(id, display);
+  sources.spacecraft.set(id, entry);
+  return entry.info;
+}
+
+/** Removes a spacecraft, failed or not. */
+export function removeSpacecraft(id) {
+  sources.spacecraft.delete(id);
+  return required().removeEphemeris(id);
+}
 
 // --- Geometry --------------------------------------------------------------
 

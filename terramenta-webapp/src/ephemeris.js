@@ -166,7 +166,9 @@ export function mountEphemeris(bind) {
   const rows = new Map();
 
   bind(list, (state) => {
-    const layers = state.ephemerides.layers;
+    // Spacecraft have their own section.
+    const spacecraft = globe.recordedSources().spacecraft;
+    const layers = state.ephemerides.layers.filter((layer) => !spacecraft.has(layer.id));
 
     for (const [id, existing] of rows) {
       if (!layers.some((layer) => layer.id === id)) {
