@@ -99,7 +99,7 @@ export function mountOverlays(bind, signal) {
     value: String(DEFAULT_FEED.refreshSeconds),
   });
 
-  const refreshToggle = toggle("Refresh automatically", () => {});
+  const refreshToggle = toggle("Auto refresh", () => {});
   const period = () => (refreshToggle.input.checked ? readPeriod(periodInput) : null);
 
   const addUrl = () => {
@@ -196,13 +196,7 @@ export function mountOverlays(bind, signal) {
       button("Local file…", () => fileInput.click()),
     ),
     fileInput,
-    el(
-      "p",
-      { class: "detail" },
-      "A URL is the globe's to fetch and refetch. A file is read here and sent " +
-        "as text, so this app re-reads it on the same period — which is also " +
-        "what re-picking a file that has changed on disk would do.",
-    ),
+    el("p", { class: "detail" }, "GeoJSON by URL or local file; both refresh on the period."),
   );
 
   // --- The layers that are up ----------------------------------------------
@@ -243,22 +237,13 @@ export function mountOverlays(bind, signal) {
   // because this is the section about what is under the pointer; the satellite
   // section and the sun and moon placemarks read the same flag rather than
   // keeping one of their own.
-  const pickingToggle = toggle("Pick under the cursor", globe.setPickingEnabled);
+  const pickingToggle = toggle("Pick on hover", globe.setPickingEnabled);
   bind(pickingToggle.node, (state) => pickingToggle.set(state.overlays.picking));
 
   return section(
     "GeoJSON overlays",
     overlaysToggle.node,
     pickingToggle.node,
-    el(
-      "p",
-      { class: "detail" },
-      "The globe hit-tests the geometry and reports what is under the pointer, " +
-        "with its properties; clicking keeps one selected. Satellites are picked " +
-        "by the same switch, where their markers are drawn rather than where " +
-        "they are overhead, and so are the sun and moon icons. All three show " +
-        "top left.",
-    ),
     adding,
     list,
   );
@@ -317,12 +302,9 @@ function layerRow(layer, files) {
     globe.setOverlayAltitude(layer.id, height()),
   );
 
-  // A document is allowed to say how it wants to look — simplestyle-spec's
-  // `stroke`, `fill`, `marker-size` and the rest — and where it does, the
-  // colour above only reaches the features that said nothing. This is how to
-  // take the layer back: it is shown only for a document that styles something,
-  // because otherwise there is nothing for it to do.
-  const ownStyleToggle = toggle("Use the file's own colours", (on) =>
+  // simplestyle-spec properties override the layer colour; shown only when
+  // the document styles something.
+  const ownStyleToggle = toggle("File colours (simplestyle)", (on) =>
     globe.setOverlaySimpleStyle(layer.id, on),
   );
 

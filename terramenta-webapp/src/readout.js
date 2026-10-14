@@ -1,25 +1,26 @@
-/**
- * The telemetry overlay: everything the globe reports, formatted.
- *
- * The globe has a readout of its own, and this app turns it off and draws this
- * instead — not because the built-in one is lacking, but because replacing it
- * is the point. Every number here comes from the state snapshot, so this is
- * also the clearest demonstration of what that snapshot contains.
- */
+/** Telemetry overlay: the state snapshot, formatted (the globe's own HUD is off). */
 
 import { el } from "./dom.js";
 import { altitude, clock, coordinate, timeScale } from "./format.js";
 
-/** Label, and what to pull out of a state snapshot for it. */
+/** `L2/7 · 11 drawn[ · extra]`; `—` while off. */
+const tiles = (source, extra) =>
+  source.enabled ? [`L${source.deepestLevel}/${source.maxLevel}`, `${source.visibleTiles} drawn`, extra].filter(Boolean).join(" · ") : "—";
+
+/** Label (≤ 8 characters, to fit the column), and what to read off a snapshot. */
 const FIELDS = [
   ["cursor", (state) => coordinate(state.cursor)],
   ["centre", (state) => coordinate(state.camera.center)],
   ["altitude", (state) => altitude(state.camera.altitudeKm)],
   ["frame", (state) => state.frame.label],
-  ["sun over", (state) => coordinate(state.sun.subsolar) + (state.sun.shaded ? "" : "  (unshaded)")],
+  ["subsolar", (state) => coordinate(state.sun.subsolar) + (state.sun.shaded ? "" : "  (unshaded)")],
   ["clock", (state) => clock(state.sun.unixSeconds) + (state.sun.paused ? "  (paused)" : "")],
   ["rate", (state) => timeScale(state.sun.timeScale)],
+  ["GMST", (state) => `${state.gnc.gmstDeg.toFixed(3)}°`],
   ["imagery", (state) => (state.imagery.enabled ? state.imagery.label : "off")],
+  ["tiles", (state) => tiles(state.imagery, state.imagery.loadingTiles ? `${state.imagery.loadingTiles} loading` : "")],
+  ["vectors", (state) => (state.vectorTiles.enabled ? state.vectorTiles.label : "off")],
+  ["features", (state) => tiles(state.vectorTiles, `${state.vectorTiles.features} features`)],
   [
     "overlays",
     (state) =>
@@ -29,7 +30,7 @@ const FIELDS = [
           (state.overlays.enabled ? "" : "  (off)"),
   ],
   [
-    "satellites",
+    "objects",
     (state) => {
       const { layers, enabled } = state.ephemerides;
       if (layers.length === 0) return "none";
@@ -39,47 +40,12 @@ const FIELDS = [
     },
   ],
   [
-    "tiles",
-    (state) =>
-      state.imagery.enabled
-        ? `level ${state.imagery.deepestLevel} of ${state.imagery.maxLevel} · ` +
-          `${state.imagery.visibleTiles} drawn · ${state.imagery.loadingTiles} loading`
-        : "—",
-  ],
-  // The sidereal angle is the whole relationship between the two frames, so it
-  // is worth a row of its own whether or not the drawing is up — it is the
-  // number every other frame conversion in the globe is built on.
-  ["sidereal", (state) => `${state.gnc.gmstDeg.toFixed(3)}°  (GMST)`],
-  [
-    "rotation",
+    "followed",
     (state) => {
-      const [x, y, z, w] = state.gnc.quaternion;
-      const fixed = (value) => value.toFixed(4).padStart(7);
-      return `q (${fixed(x)},${fixed(y)},${fixed(z)},${fixed(w)})`;
-    },
-  ],
-  [
-    // One satellite, one moment, two frames: the speeds do not agree, and the
-    // difference is the rotation of the frame it is measured in.
-    "tracked",
-    (state) => {
-      if (!state.gnc.enabled) return "—";
       const focus = state.gnc.focus;
-      if (!focus) return "pin a satellite";
-      return (
-        `${focus.name} · ${focus.speedEciKmS.toFixed(3)} km/s inertial · ` +
-        `${focus.speedEcefKmS.toFixed(3)} km/s over ground`
-      );
+      if (!state.gnc.enabled || !focus) return "—";
+      return `${focus.name} · ${focus.speedEciKmS.toFixed(3)} km/s ECI · ${focus.speedEcefKmS.toFixed(3)} km/s ECEF`;
     },
-  ],
-  ["vectors", (state) => (state.vectorTiles.enabled ? state.vectorTiles.label : "off")],
-  [
-    "vector tiles",
-    (state) =>
-      state.vectorTiles.enabled
-        ? `level ${state.vectorTiles.deepestLevel} of ${state.vectorTiles.maxLevel} · ` +
-          `${state.vectorTiles.visibleTiles} drawn · ${state.vectorTiles.features} features`
-        : "—",
   ],
 ];
 

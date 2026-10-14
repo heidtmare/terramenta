@@ -20,9 +20,44 @@ export function el(tag, props = {}, ...children) {
   return node;
 }
 
-/** A titled block of controls. */
-export function section(title, ...children) {
-  return el("section", { class: "section" }, el("h2", {}, title), ...children);
+/**
+ * A titled, collapsible block of controls. `heading` is a title or
+ * `{title, open}` (`open` defaults to true). A state other than the default
+ * is remembered per title in `localStorage`.
+ */
+export function section(heading, ...children) {
+  const { title, open = true } = typeof heading === "string" ? { title: heading } : heading;
+  const key = `terramenta.section.${title}`;
+  const node = el(
+    "details",
+    {
+      class: "section",
+      open: remembered(key) ?? open,
+      ontoggle: () => remember(key, node.open === open ? undefined : node.open),
+    },
+    el("summary", {}, el("h2", {}, title)),
+    ...children,
+  );
+  return node;
+}
+
+function remembered(key) {
+  try {
+    const value = localStorage.getItem(key);
+    return value === null ? undefined : value === "1";
+  } catch {
+    return undefined;
+  }
+}
+
+/** `open` undefined forgets the key. */
+function remember(key, open) {
+  try {
+    if (open === undefined) localStorage.removeItem(key);
+    else localStorage.setItem(key, open ? "1" : "0");
+  } catch {
+    // Storage blocked: the section still toggles, it just isn't remembered.
+  }
 }
 
 /** A labelled row: the name on the left, the control on the right. */

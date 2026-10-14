@@ -7,7 +7,7 @@
   "additionalProperties": false,
   "properties": {
     "$schema": { "type": "string" },
-    "terramenta": { "const": 2, "description": "Format version." },
+    "terramenta": { "const": 3, "description": "Format version." },
     "name": { "type": "string" },
     "description": { "type": "string" },
     "ui": {
@@ -16,7 +16,7 @@
       "properties": {
         "panel": { "enum": ["full", "flight"] },
         "tab": {
-          "enum": ["project", "imagery", "data", "spacecraft", "timeline", "reports", "other", "mission"]
+          "enum": ["project", "layers", "spacecraft", "timeline", "analysis", "view"]
         },
         "readout": { "type": "boolean" },
         "collapsed": { "type": "boolean" }

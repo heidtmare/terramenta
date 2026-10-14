@@ -23,7 +23,7 @@ import { timelineErrors, timelineSection } from "./timeline.js";
 import SCHEMA from "../schema/project.schema.json" with { type: "json" };
 
 /** Format version written; older ones are upgraded on load (`migrateProject`). */
-export const PROJECT_VERSION = 2;
+export const PROJECT_VERSION = 3;
 export const PROJECT_EXTENSION = ".terramenta.json";
 
 /** Bundled projects: `[{file, name, description}]`, paths relative to `projects/`. */
@@ -193,7 +193,14 @@ const MIGRATIONS = {
       delete project.picking;
     }
   },
+  /** 2 → 3: tabs regrouped; `ui.tab` maps to the tab now holding its sections. */
+  2(project) {
+    const tab = TABS_V2[project.ui?.tab];
+    if (tab) project.ui = { ...project.ui, tab };
+  },
 };
+
+const TABS_V2 = { imagery: "layers", data: "layers", reports: "analysis", mission: "analysis", other: "view" };
 
 /** Ids, uniqueness and cross-references; `project` already matches `SCHEMA`. */
 function referenceErrors(project) {

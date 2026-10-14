@@ -93,7 +93,7 @@ export function mountEphemeris(bind) {
     value: String(MIN_REFRESH_SECONDS * 4),
   });
 
-  const refreshToggle = toggle("Refetch the catalogue", () => {});
+  const refreshToggle = toggle("Auto refetch", () => {});
   refreshToggle.set(false);
   const period = () => (refreshToggle.input.checked ? readPeriod(periodInput) : null);
 
@@ -150,14 +150,7 @@ export function mountEphemeris(bind) {
       button("Local file…", () => fileInput.click()),
     ),
     fileInput,
-    el(
-      "p",
-      { class: "detail" },
-      "OMM JSON: orbit mean elements, the successor to the two-line element " +
-        "set. Each record becomes an SGP4 propagator run against the globe's " +
-        "own clock, so pausing it or running a day a second takes the " +
-        "satellites with it.",
-    ),
+    el("p", { class: "detail" }, "OMM JSON, propagated with SGP4 on the globe clock."),
   );
 
   // --- The layers that are up ----------------------------------------------
@@ -196,15 +189,6 @@ export function mountEphemeris(bind) {
   return section(
     "Satellites",
     enabledToggle.node,
-    el(
-      "p",
-      { class: "detail" },
-      "Switch to the ECI frame to see an orbit as the closed ellipse it is. " +
-        "In ECEF the same arc is a corkscrew, because the Earth turns " +
-        "underneath it while the satellite goes round — which is why switching " +
-        "frames reshapes it. A layer can draw the orbit itself instead, which " +
-        "is the same curve in both.",
-    ),
     adding,
     list,
   );
@@ -241,7 +225,7 @@ function layerRow(layer) {
   // The one control that explains why an arc changes shape when the frame is
   // switched: a track is where the satellite went over the ground, an orbit is
   // the path itself and is the same curve in both frames.
-  const pathToggle = toggle("Draw the orbit, not the ground track", sendTrail);
+  const pathToggle = toggle("Orbit, not ground track", sendTrail);
 
   const periodInput = el("input", {
     class: "coordinate",

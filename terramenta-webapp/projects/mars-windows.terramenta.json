@@ -1,10 +1,10 @@
 {
   "$schema": "../schema/project.schema.json",
-  "terramenta": 2,
+  "terramenta": 3,
   "name": "Mars launch windows",
   "description": "Earth → Mars porkchop studies for the 2026 and 2028 windows; launch a mission from the Mission tab and watch it in the heliocentric view.",
   "ui": {
-    "tab": "mission"
+    "tab": "analysis"
   },
   "view": "heliocentric",
   "imagery": {

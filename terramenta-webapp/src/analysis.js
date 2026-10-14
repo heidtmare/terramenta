@@ -1,6 +1,6 @@
 /**
- * Project `analysis`: saved plots (Reports tab) and porkchop studies (Mission
- * tab). Held here between open and save, like `timeline.js`.
+ * Project `analysis`: saved plots and porkchop studies (Analysis tab). Held
+ * here between open and save, like `timeline.js`.
  *
  * - Plot: `{id, label?, quantity, spacecraft: [id]}`, `quantity` a
  *   `reports.QUANTITIES` key.

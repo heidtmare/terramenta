@@ -182,10 +182,19 @@ test("non-JSON and non-object input", () => {
 test("version 1 upgrades: picking moves under overlays", () => {
   const v1 = { terramenta: 1, picking: false, overlays: { enabled: true } };
   const { project, warnings } = parse(v1);
-  assert.deepEqual(project, { terramenta: 2, overlays: { enabled: true, picking: false } });
+  assert.deepEqual(project, { terramenta: PROJECT_VERSION, overlays: { enabled: true, picking: false } });
   assert.equal(v1.picking, false, "input left alone");
   assert.match(warnings[0], /upgraded from format version 1/);
-  assert.deepEqual(parse({ terramenta: 1 }).project, { terramenta: 2 });
+  assert.deepEqual(parse({ terramenta: 1 }).project, { terramenta: PROJECT_VERSION });
+});
+
+test("version 2 upgrades: ui.tab maps to the regrouped tabs", () => {
+  const tabs = ["project", "imagery", "data", "spacecraft", "timeline", "reports", "other", "mission"];
+  assert.deepEqual(
+    tabs.map((tab) => parse({ terramenta: 2, ui: { tab, readout: false } }).project.ui),
+    ["project", "layers", "layers", "spacecraft", "timeline", "analysis", "view", "analysis"].map((tab) => ({ tab, readout: false })),
+  );
+  assert.deepEqual(parse({ terramenta: 2, ui: { panel: "flight" } }).project, { terramenta: PROJECT_VERSION, ui: { panel: "flight" } });
 });
 
 test("current version passes through untouched", () => {
@@ -312,7 +321,7 @@ test("a captured scene parses cleanly and reapplies", () => {
   globe.setEphemerisSelection("stations", [25544]);
   globe.followMission("mars");
 
-  const base = { name: "Saved", description: "d", ui: { tab: "data" }, director: { type: "missionFlight", mission: "mars" } };
+  const base = { name: "Saved", description: "d", ui: { tab: "layers" }, director: { type: "missionFlight", mission: "mars" } };
   const captured = captureProject(snapshot(), base);
   const { project, warnings } = parse(JSON.parse(JSON.stringify(captured)));
   assert.deepEqual(warnings, []);

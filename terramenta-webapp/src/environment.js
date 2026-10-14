@@ -15,21 +15,19 @@ export const KINDS = {
     label: "EOP",
     url: "https://celestrak.org/SpaceData/EOP-All.csv",
     accept: ".csv,.all,.txt",
-    note: "CelesTrak EOP-All.csv or IERS finals2000A.all: Earth orientation, TEME → GCRF.",
+    note: "EOP-All.csv or finals2000A.all (TEME → GCRF).",
   },
   spaceWeather: {
-    label: "Space weather",
+    label: "Weather",
     url: "https://celestrak.org/SpaceData/SW-All.csv",
     accept: ".csv,.txt",
-    note: "CelesTrak SW-All.csv: F10.7 and Ap for NRLMSISE-00 drag.",
+    note: "SW-All.csv (F10.7, Ap for NRLMSISE-00).",
   },
   kernel: {
     label: "Kernel",
     url: "",
     accept: ".bsp,.bpc",
-    note:
-      "SPK/PCK (e.g. de440s.bsp) for Sun/Moon third body; analytic series otherwise. " +
-      "NAIF does not send CORS headers: use a local file or a same-origin URL.",
+    note: "SPK/PCK, e.g. de440s.bsp (else analytic Sun/Moon). NAIF lacks CORS: use a file.",
   },
 };
 

@@ -1,9 +1,9 @@
 {
   "$schema": "../schema/project.schema.json",
-  "terramenta": 2,
+  "terramenta": 3,
   "name": "LEO Hohmann transfer",
   "description": "500 → 800 km Hohmann transfer against a coasting reference, Cowell-propagated with EGM2008 8×8, Harris-Priester drag, Sun/Moon and SRP. The timeline slows the clock around each burn. Reports plots altitude, SMA and eccentricity with a Δv budget; export CSV/CZML there, OEM/SPK from the Spacecraft tab.",
-  "ui": { "tab": "reports" },
+  "ui": { "tab": "analysis" },
   "frame": "eci",
   "clock": { "epoch": "2026-01-01T00:20:00Z", "timeScale": 60, "paused": false },
   "camera": { "lat": 20, "lon": -40, "altitudeKm": 30000 },

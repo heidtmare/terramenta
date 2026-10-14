@@ -1,25 +1,12 @@
 /**
- * The control panel: every feature the globe exposes, as something to click.
+ * Full panel: six tabs — Project, Layers (imagery, vector tiles, overlays,
+ * satellites), Spacecraft, Timeline, Analysis (plots, reports, porkchop,
+ * launch) and View (clock, frame, camera, globe chrome).
  *
- * The data flow only goes one way. A control sends a command and then forgets
- * about it — it never sets its own value from a click. The globe applies the
- * command, the next state snapshot comes back, and `sync` sets every control
- * from it. So the panel cannot drift out of step with the globe, and the
- * keyboard shortcuts still work with the panel open: press `P` and the pause
- * button changes with it, because both are drawn from the same snapshot.
- *
- * The one exception is a slider being dragged. A value overwritten mid-drag
- * fights the pointer, so a slider says so while it is being held and `sync`
- * leaves it alone until it is let go.
- *
- * The sections are dealt out into eight tabs — the project, the imagery under
- * everything, the data drawn over it, numerically propagated spacecraft, the
- * timeline of events, plots and reports, the view it is all seen from, and mission, which is two things stacked: a porkchop plot bound to nothing, since it depends on
- * nothing the globe is currently doing, and a launch list bound the same way
- * every other section here is. Switching tabs only hides panes; nothing is
- * torn down or rebuilt, so a control in a closed tab is still bound and still
- * current when you come
- * back to it.
+ * One-way data flow: controls send commands; `sync` sets every control from
+ * the next state snapshot, so the panel and keyboard shortcuts never drift.
+ * Held sliders are skipped until released. Hidden panes stay mounted and
+ * bound.
  */
 
 import * as globe from "./globe.js";
@@ -109,10 +96,7 @@ export function mountPanel(root, { tab, signal }) {
   const vectorToggle = toggle("Stream tiles", globe.setVectorTilesEnabled);
   bind(vectorToggle.node, (state) => vectorToggle.set(state.vectorTiles.enabled));
 
-  // The style is sent whole rather than a field at a time: the globe returns
-  // anything left out to its default, so a colour change alone would silently
-  // undo the width beside it. Declared as a function so the colour input and
-  // the fill toggle can both be built around it.
+  // Sent whole: omitted fields reset to their defaults.
   function sendVectorStyle() {
     const hex = vectorColor.value;
     globe.setVectorTileStyle({
@@ -120,8 +104,7 @@ export function mountPanel(root, { tab, signal }) {
       lineWidthPx: 1.4,
       pointColor: hex,
       pointSizePx: 5,
-      // A basemap's fills would hide the imagery under them, so the alpha stays
-      // low even when they are on — enough to tint a lake, not to hide it.
+      // Low alpha: tints, never hides, the imagery.
       fillColor: `${hex}${vectorFill.input.checked ? "33" : "00"}`,
     });
   }
@@ -158,28 +141,18 @@ export function mountPanel(root, { tab, signal }) {
     row("Colour", vectorColor),
     vectorFill.node,
     vectorToggle.node,
-    el(
-      "p",
-      { class: "detail" },
-      "Mapbox Vector Tiles, decoded and unprojected out of Web Mercator onto " +
-        "the globe. Nothing above 85° is in any tile, which is why the poles " +
-        "have no coastline.",
-    ),
+    el("p", { class: "detail" }, "MVT from Web Mercator; no data above 85°."),
   );
 
   // --- GeoJSON overlays ----------------------------------------------------
 
-  // Enough of a feature to be its own file; `bind` is handed over so its
-  // controls follow the same one-way rule as everything here.
   const overlays = mountOverlays(bind, signal);
 
   // --- Satellites ----------------------------------------------------------
 
-  // The other layer built on the same GeoArrow store and the same shader, and
-  // the only one whose geometry is computed rather than fetched.
   const ephemerides = mountEphemeris(bind);
 
-  // --- Sun and clock -------------------------------------------------------
+  // --- Clock ---------------------------------------------------------------
 
   const pauseToggle = toggle("Run the clock", (running) => globe.setSunPaused(!running));
   bind(pauseToggle.node, (state) => pauseToggle.set(!state.sun.paused));
@@ -196,7 +169,7 @@ export function mountPanel(root, { tab, signal }) {
   bind(rate.node, (state) => rate.set(state.sun.timeScale), rate.isHeld);
 
   const sun = section(
-    "Sun & clock",
+    "Clock",
     pauseToggle.node,
     shadedToggle.node,
     rate.node,
@@ -224,17 +197,15 @@ export function mountPanel(root, { tab, signal }) {
   bind(frameDetail, (state) => {
     frameDetail.textContent =
       state.frame.mode === "ecef"
-        ? "Earth-fixed: the ground is still and the stars turn."
-        : "Inertial: the stars are still and the Earth turns beneath.";
+        ? "Earth-fixed: the ground is still."
+        : "Inertial: the stars are still.";
   });
 
   const frame = section("Reference frame", frameChoice.node, frameDetail);
 
-  // --- Both frames at once -------------------------------------------------
+  // --- Frame overlay -------------------------------------------------------
 
-  // The section above is a choice between the two frames; this one draws both
-  // of them, so the rotation between them is on screen rather than implied.
-  const gncToggle = toggle("Draw both frames", globe.setGncEnabled);
+  const gncToggle = toggle("Draw overlay", globe.setGncEnabled);
   bind(gncToggle.node, (state) => gncToggle.set(state.gnc.enabled));
 
   const eciAxesToggle = toggle("Inertial triad (cyan)", globe.setGncEciAxes);
@@ -261,7 +232,7 @@ export function mountPanel(root, { tab, signal }) {
     graticuleStep.isHeld,
   );
 
-  const trackToggle = toggle("Satellite path in both frames", globe.setGncTrack);
+  const trackToggle = toggle("Followed track, both frames", globe.setGncTrack);
   bind(trackToggle.node, (state) => trackToggle.set(state.gnc.track));
 
   const trackOrbits = slider({
@@ -272,15 +243,11 @@ export function mountPanel(root, { tab, signal }) {
   });
   bind(trackOrbits.node, (state) => trackOrbits.set(state.gnc.trackOrbits), trackOrbits.isHeld);
 
-  // The rotation itself, in both of the forms flight software carries it in.
-  // Shown here rather than only in the readout because this is the section that
-  // draws it, and a number beside the picture is what makes the picture a
-  // measurement.
+  // ECI → ECEF rotation as GMST and quaternion.
   const gncAngle = el("p", { class: "detail" }, "—");
   bind(gncAngle, (state) => {
     gncAngle.textContent =
-      `GMST ${state.gnc.gmstDeg.toFixed(3)}° · the Earth turns ` +
-      `${(state.gnc.earthRateDegS * 3600).toFixed(3)}° per hour`;
+      `GMST ${state.gnc.gmstDeg.toFixed(3)}° · ${(state.gnc.earthRateDegS * 3600).toFixed(3)}°/h`;
   });
 
   const gncQuaternion = el("p", { class: "detail" }, "—");
@@ -293,15 +260,13 @@ export function mountPanel(root, { tab, signal }) {
   bind(gncFocus, (state) => {
     const focus = state.gnc.focus;
     gncFocus.textContent = focus
-      ? `${focus.name} · ${focus.speedEciKmS.toFixed(3)} km/s inertial, ` +
-        `${focus.speedEcefKmS.toFixed(3)} km/s over the ground · ` +
-        `${focus.altitudeKm.toFixed(0)} km up`
-      : "No satellite followed. Click one on the globe, and its orbit and its " +
-        "ground track are drawn at the same time.";
+      ? `${focus.name} · ${focus.speedEciKmS.toFixed(3)} km/s ECI · ` +
+        `${focus.speedEcefKmS.toFixed(3)} km/s ECEF · ${focus.altitudeKm.toFixed(0)} km`
+      : "No satellite followed; click one on the globe.";
   });
 
   const gnc = section(
-    "Both frames at once",
+    { title: "Frame overlay", open: false },
     gncToggle.node,
     eciAxesToggle.node,
     ecefAxesToggle.node,
@@ -313,15 +278,6 @@ export function mountPanel(root, { tab, signal }) {
     gncAngle,
     gncQuaternion,
     gncFocus,
-    el(
-      "p",
-      { class: "detail" },
-      "Cyan is fixed to the stars, amber to the ground; the arc between the two " +
-        "triads is the sidereal angle, and it is the whole difference between " +
-        "the frames. Run the clock fast and watch the satellite's cyan orbit " +
-        "stay a closed ellipse while the same object writes an amber ground " +
-        "track that shifts west every revolution.",
-    ),
   );
 
   // --- Camera --------------------------------------------------------------
@@ -352,8 +308,7 @@ export function mountPanel(root, { tab, signal }) {
       { class: "buttons" },
       button("Fly there", flyTo),
       button("Here", () => {
-        // Filling the boxes from the view is what makes the coordinate of a
-        // place you found by dragging recoverable.
+        // Fills the boxes from the view.
         if (!lastState) return;
         latInput.value = lastState.camera.center.lat.toFixed(4);
         lonInput.value = lastState.camera.center.lon.toFixed(4);
@@ -385,45 +340,24 @@ export function mountPanel(root, { tab, signal }) {
   bind(keyboardToggle.node, (state) => keyboardToggle.set(state.keyboard));
 
   const chrome = section(
-    "Globe chrome",
+    { title: "Globe chrome", open: false },
     hudToggle.node,
     helpToggle.node,
     keyboardToggle.node,
-    el(
-      "p",
-      { class: "detail" },
-      "The globe draws its own overlay and binds its own keys. An embedder can " +
-        "keep either, or switch both off and do it all itself — which is what " +
-        "this panel is.",
-    ),
   );
 
   // --- Tabs ----------------------------------------------------------------
 
-  // Imagery is the basemap under everything; the data layers are what is drawn
-  // over it, vector tiles included — they are decoded features, not pixels,
-  // and belong with the other two feature layers rather than with the raster
-  // imagery. What is left is how the scene is viewed rather than what is in it.
-  const mission = mountMission(bind, signal);
-  const spacecraft = mountSpacecraft(bind, signal);
-  const timelineSection = mountTimeline(bind);
-  const reports = mountReports(bind, signal);
-
-  const projectSection = mountProjectSection({ signal });
-
   const { strip, panes, select } = tabs([
-    { id: "project", label: "Project", panes: [projectSection] },
-    { id: "imagery", label: "Imagery", panes: [imagery] },
-    { id: "data", label: "Data", panes: [vectorTiles, overlays, ephemerides] },
-    { id: "spacecraft", label: "Spacecraft", panes: spacecraft },
-    { id: "timeline", label: "Timeline", panes: [timelineSection] },
-    { id: "reports", label: "Reports", panes: reports },
-    { id: "other", label: "Other", panes: [sun, frame, gnc, camera, chrome] },
-    { id: "mission", label: "Mission", panes: [mission] },
+    { id: "project", label: "Project", panes: [mountProjectSection({ signal })] },
+    { id: "layers", label: "Layers", panes: [imagery, vectorTiles, overlays, ephemerides] },
+    { id: "spacecraft", label: "Spacecraft", panes: mountSpacecraft(bind, signal) },
+    { id: "timeline", label: "Timeline", panes: [mountTimeline(bind)] },
+    { id: "analysis", label: "Analysis", panes: [...mountReports(bind, signal), ...mountMission(bind, signal)] },
+    { id: "view", label: "View", panes: [sun, frame, gnc, camera, chrome] },
   ]);
 
-  // The strip keeps its place while the pane below it scrolls, so the tabs are
-  // still reachable from the bottom of a long one.
+  // Strip stays put; the body scrolls.
   root.append(strip, el("div", { class: "panel-body" }, ...panes));
   if (tab) select(tab);
 
@@ -437,13 +371,7 @@ export function mountPanel(root, { tab, signal }) {
   };
 }
 
-/**
- * Splits the presets into WMS and WMTS groups.
- *
- * The same layers are offered over both protocols so they can be compared on
- * the same imagery, which only reads as deliberate if the list says which is
- * which rather than appearing to repeat itself.
- */
+/** Presets grouped by protocol (the same imagery is offered over WMS and WMTS). */
 function groupLayersByProtocol(layers) {
   const protocols = [...new Set(layers.map((layer) => layer.protocol))];
   return protocols.map((protocol) =>
