@@ -25,3 +25,5 @@ bytes = "1.6"
 sgp4 = "2.4.0"
 # NRLMSISE-00 (MIT). `drivers` embeds a 0.5 MB GFZ index record; space weather comes from `space_weather` instead.
 nrlmsise00 = { version = "0.2.0", default-features = false }
+# H3 grid for coverage (BSD-3-Clause), pure Rust.
+h3o = "0.11.0"

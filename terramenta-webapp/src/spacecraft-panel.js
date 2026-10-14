@@ -46,6 +46,7 @@ const INTEGRATORS = [
   ["rk4", "RK4 (fixed step)"],
 ];
 const INITIAL = [
+  ["elements", "Keplerian elements"],
   ["state", "GCRF state"],
   ["tle", "TLE"],
   ["omm", "OMM JSON"],
@@ -278,19 +279,39 @@ function mountEditor(getState) {
   const title = el("h3", { class: "editor-title" }, "New spacecraft");
   const name = text({ value: "Spacecraft" });
 
-  const initialKind = select(INITIAL, "state");
+  const initialKind = select(INITIAL, "elements");
   const epoch = text({ placeholder: "2026-01-01T00:00:00Z" });
   const position = vector(["x km", "y km", "z km"]);
   const velocity = vector(["vx km/s", "vy km/s", "vz km/s"]);
   const circular = number({ value: "500", title: "Altitude, km" });
   const inclination = number({ value: "51.6", title: "Inclination, °" });
+  const elements = Object.fromEntries(
+    [
+      ["smaKm", "Semi-major axis, km"],
+      ["eccentricity", "Eccentricity"],
+      ["inclinationDeg", "Inclination, °"],
+      ["raanDeg", "RAAN, °"],
+      ["argPerigeeDeg", "Argument of perigee, °"],
+      ["trueAnomalyDeg", "True anomaly, °"],
+    ].map(([key, label]) => [key, number({ title: label, placeholder: label })]),
+  );
   const tle = el("textarea", { class: "coordinate", rows: 3, spellcheck: false, placeholder: "Two-line element set" });
   const omm = el("textarea", { class: "coordinate", rows: 4, spellcheck: false, placeholder: "OMM JSON object" });
 
+  const epochRow = row("Epoch", epoch);
+  const elementsFields = el(
+    "div",
+    {},
+    row("a km", elements.smaKm),
+    row("e", elements.eccentricity),
+    row("i °", elements.inclinationDeg),
+    row("RAAN °", elements.raanDeg),
+    row("ω °", elements.argPerigeeDeg),
+    row("ν °", elements.trueAnomalyDeg),
+  );
   const stateFields = el(
     "div",
     {},
-    row("Epoch", epoch),
     row("Position", position.node),
     row("Velocity", velocity.node),
     el(
@@ -307,6 +328,8 @@ function mountEditor(getState) {
   const tleFields = el("div", {}, tle);
   const ommFields = el("div", {}, omm);
   const showInitial = () => {
+    epochRow.hidden = initialKind.value !== "state" && initialKind.value !== "elements";
+    elementsFields.hidden = initialKind.value !== "elements";
     stateFields.hidden = initialKind.value !== "state";
     tleFields.hidden = initialKind.value !== "tle";
     ommFields.hidden = initialKind.value !== "omm";
@@ -359,8 +382,10 @@ function mountEditor(getState) {
     editingDisplay = null;
     title.textContent = "New spacecraft";
     name.value = `Spacecraft ${globe.recordedSources().spacecraft.size + 1}`;
-    initialKind.value = "state";
+    initialKind.value = "elements";
     epoch.value = "";
+    const defaults = { smaKm: EARTH_RADIUS_KM + 500, eccentricity: 0, inclinationDeg: 51.6, raanDeg: 0, argPerigeeDeg: 0, trueAnomalyDeg: 0 };
+    for (const [key, input] of Object.entries(elements)) input.value = String(defaults[key]);
     tle.value = "";
     omm.value = "";
     start.value = "";
@@ -396,6 +421,10 @@ function mountEditor(getState) {
     } else if (initial.omm) {
       initialKind.value = "omm";
       omm.value = JSON.stringify(initial.omm, null, 2);
+    } else if (initial.elements) {
+      initialKind.value = "elements";
+      epoch.value = initial.epoch;
+      for (const [key, input] of Object.entries(elements)) input.value = String(initial.elements[key]);
     } else {
       initialKind.value = "state";
       epoch.value = initial.epoch;
@@ -451,6 +480,11 @@ function mountEditor(getState) {
         throw new Error(`OMM: not JSON (${caught.message})`);
       }
       propagation.initial = { omm: Array.isArray(parsed) ? parsed[0] : parsed };
+    } else if (initialKind.value === "elements") {
+      propagation.initial = {
+        epoch: epoch.value.trim(),
+        elements: Object.fromEntries(Object.entries(elements).map(([key, input]) => [key, numeric(input)])),
+      };
     } else {
       propagation.initial = {
         epoch: epoch.value.trim(),
@@ -519,6 +553,8 @@ function mountEditor(getState) {
     title,
     row("Name", name),
     row("Initial", initialKind),
+    epochRow,
+    elementsFields,
     stateFields,
     tleFields,
     ommFields,

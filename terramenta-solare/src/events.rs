@@ -155,7 +155,7 @@ pub fn maximize(
 
 // --- Ground stations ------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct GroundStation {
     pub name: String,
     /// Geodetic WGS-84, rad.
@@ -164,6 +164,9 @@ pub struct GroundStation {
     pub altitude_km: f64,
     /// Visibility mask, rad.
     pub min_elevation_rad: f64,
+    /// Horizon (terrain) mask: `(azimuth, elevation)`, rad, azimuth ascending in
+    /// `[0, 2π)`; linear in azimuth, wrapping. Empty: none.
+    pub horizon: Vec<(f64, f64)>,
 }
 
 /// Topocentric direction to a target.
@@ -178,6 +181,35 @@ pub struct LookAngles {
 impl GroundStation {
     pub fn position_itrf_km(&self) -> DVec3 {
         geodetic_to_ecef(self.latitude_rad, self.longitude_rad, self.altitude_km)
+    }
+
+    /// Visibility threshold toward `azimuth_rad`: the larger of `min_elevation_rad`
+    /// and the horizon mask.
+    pub fn min_elevation_at(&self, azimuth_rad: f64) -> f64 {
+        use std::f64::consts::TAU;
+        let mask = match self.horizon.as_slice() {
+            [] => return self.min_elevation_rad,
+            [(_, el)] => *el,
+            points => {
+                let az = azimuth_rad.rem_euclid(TAU);
+                let i = points.partition_point(|p| p.0 <= az);
+                let (a, b) = match i {
+                    0 => (
+                        (points[points.len() - 1].0 - TAU, points[points.len() - 1].1),
+                        points[0],
+                    ),
+                    i if i == points.len() => (points[i - 1], (points[0].0 + TAU, points[0].1)),
+                    i => (points[i - 1], points[i]),
+                };
+                let span = b.0 - a.0;
+                if span > 0.0 {
+                    a.1 + (b.1 - a.1) * (az - a.0) / span
+                } else {
+                    a.1.max(b.1)
+                }
+            }
+        };
+        mask.max(self.min_elevation_rad)
     }
 
     /// Look angles to `target` (ITRF, km), against the geodetic horizon.
@@ -211,7 +243,8 @@ pub struct Contact {
     pub max_elevation_rad: f64,
 }
 
-/// Passes of a target, position `itrf(epoch)` (km), over `station` on `[start, stop]`.
+/// Passes of a target, position `itrf(epoch)` (km), above `station`'s mask and
+/// horizon on `[start, stop]`.
 pub fn contacts(
     station: &GroundStation,
     itrf: &mut impl FnMut(Epoch) -> DVec3,
@@ -220,9 +253,11 @@ pub fn contacts(
     step_s: f64,
     tolerance_s: f64,
 ) -> Vec<Contact> {
-    let mut elevation = |e: Epoch| station.look_angles(itrf(e)).elevation_rad;
     let spans = intervals(
-        &mut |e| elevation(e) - station.min_elevation_rad,
+        &mut |e| {
+            let look = station.look_angles(itrf(e));
+            look.elevation_rad - station.min_elevation_at(look.azimuth_rad)
+        },
         start,
         stop,
         step_s,
@@ -231,6 +266,7 @@ pub fn contacts(
     spans
         .into_iter()
         .map(|(aos, los)| {
+            let mut elevation = |e: Epoch| station.look_angles(itrf(e)).elevation_rad;
             let (max_elevation_epoch, max_elevation_rad) =
                 maximize(&mut elevation, aos, los, tolerance_s);
             Contact {
@@ -423,6 +459,7 @@ mod tests {
             longitude_rad: 0.0,
             altitude_km: 0.0,
             min_elevation_rad: 0.0,
+            horizon: Vec::new(),
         };
         let overhead = station.look_angles(DVec3::new(WGS84_A_KM + 500.0, 0.0, 0.0));
         assert!((overhead.elevation_rad - FRAC_PI_2).abs() < 1e-12);
@@ -447,6 +484,7 @@ mod tests {
             longitude_rad: 0.0,
             altitude_km: 0.0,
             min_elevation_rad: 10f64.to_radians(),
+            horizon: Vec::new(),
         };
         // Overhead at t = 1000 s.
         let mut itrf = |e: Epoch| {
@@ -470,6 +508,70 @@ mod tests {
         assert!((pass.los.seconds_since(T0) - (1000.0 + half)).abs() < 1e-3);
         assert!((pass.max_elevation_epoch.seconds_since(T0) - 1000.0).abs() < 1e-2);
         assert!((pass.max_elevation_rad - FRAC_PI_2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn horizon_mask_interpolates_and_wraps() {
+        let d = f64::to_radians;
+        let mut station = GroundStation {
+            min_elevation_rad: d(5.0),
+            horizon: vec![(d(0.0), d(10.0)), (d(180.0), d(30.0))],
+            ..GroundStation::default()
+        };
+        for (az, el) in [
+            (0.0, 10.0),
+            (90.0, 20.0),
+            (180.0, 30.0),
+            (270.0, 20.0),
+            (-90.0, 20.0),
+        ] {
+            assert!(
+                (station.min_elevation_at(d(az)) - d(el)).abs() < 1e-12,
+                "{az}"
+            );
+        }
+        station.horizon = vec![(d(45.0), d(2.0))];
+        assert_eq!(station.min_elevation_at(1.0), d(5.0));
+    }
+
+    /// The pass of [`equatorial_pass_matches_geometry`] rises over a 30° western ridge
+    /// and sets against the 10° mask.
+    #[test]
+    fn horizon_mask_delays_acquisition() {
+        let radius = WGS84_A_KM + 700.0;
+        let n = (GM_EARTH_KM3_S2 / radius.powi(3)).sqrt();
+        let station = GroundStation {
+            min_elevation_rad: 10f64.to_radians(),
+            horizon: vec![
+                (90f64.to_radians(), 0.0),
+                (270f64.to_radians(), 30f64.to_radians()),
+            ],
+            ..GroundStation::default()
+        };
+        let mut itrf = |e: Epoch| {
+            let u = n * (e.seconds_since(T0) - 1000.0);
+            DVec3::new(radius * u.cos(), radius * u.sin(), 0.0)
+        };
+        let found = contacts(
+            &station,
+            &mut itrf,
+            T0,
+            T0.advanced_by_seconds(3000.0),
+            30.0,
+            1e-6,
+        );
+        let half = |e: f64| ((WGS84_A_KM * e.cos() / radius).acos() - e) / n;
+        assert_eq!(found.len(), 1);
+        let aos = found[0].aos.seconds_since(T0);
+        let los = found[0].los.seconds_since(T0);
+        assert!(
+            (aos - (1000.0 - half(30f64.to_radians()))).abs() < 1e-3,
+            "{aos}"
+        );
+        assert!(
+            (los - (1000.0 + half(10f64.to_radians()))).abs() < 1e-3,
+            "{los}"
+        );
     }
 
     #[test]

@@ -7,8 +7,11 @@
  *   station? | target?, sensors?, stepS?, axes?}`.
  * - Pointing: `{body: [x, y, z], to}`; `to` a `DIRECTIONS` key or a GCRF vector.
  *   `primary` is exact; `secondary` as close as the primary allows.
- * - Sensor: `{label?, body, to, color?, draw?}`; its angle to `to` is sampled
- *   and, unless `draw: false`, its boresight drawn.
+ * - Sensor: `{label?, body, to?, color?, draw?, fov?}`; its angle to `to` is
+ *   sampled and, unless `draw: false`, its boresight drawn. `fov`:
+ *   `{halfAngleDeg}` (cone) or `{halfXDeg, halfYDeg, reference?}` (rectangle,
+ *   width along body `reference`); its footprint is drawn and `coverage.js`
+ *   counts access through it.
  * - `target` direction: ground station `station` (by id) or site `target`.
  *
  * `syncAttitudes()` (every state) re-samples a profile when it, its spacecraft
@@ -132,9 +135,12 @@ export function attitudeOptions(profile, { aem = false } = {}) {
   if (profile.spin) options.spin = profile.spin;
   const site = siteOf(profile);
   if (site) options.target = site;
-  options.sensors = (profile.sensors ?? []).map(({ body, to }) => ({ body, to }));
+  options.sensors = angledSensors(profile).map(({ body, to }) => ({ body, to }));
   return options;
 }
+
+/** `profile`'s sensors with a direction: the ones `globe.attitude` reports angles for, in order. */
+export const angledSensors = (profile) => (profile.sensors ?? []).filter((sensor) => sensor.to !== undefined);
 
 /**
  * Samples and draws every profile whose spacecraft, profile or station changed
@@ -164,7 +170,11 @@ export function syncAttitudes() {
         axes: profile.axes ?? true,
         sensors: (profile.sensors ?? [])
           .filter((sensor) => sensor.draw !== false)
-          .map((sensor) => ({ body: sensor.body, color: sensor.color ?? SENSOR_COLOR })),
+          .map((sensor) => ({
+            body: sensor.body,
+            color: sensor.color ?? SENSOR_COLOR,
+            ...(sensor.fov ? { fov: sensor.fov } : {}),
+          })),
       });
       drawn.add(id);
     } catch (error) {
@@ -208,6 +218,12 @@ export function axisName(vector) {
   const nonzero = vector.map((value, index) => [value, index]).filter(([value]) => value !== 0);
   if (nonzero.length === 1) return `${nonzero[0][0] > 0 ? "+" : "−"}${AXIS_NAMES[nonzero[0][1]]}`;
   return `[${vector.join(", ")}]`;
+}
+
+/** `"cone 20°"`, `"20° × 5°"`; `""` without a field of view. */
+export function fovName(fov) {
+  if (!fov) return "";
+  return fov.halfAngleDeg !== undefined ? `cone ${fov.halfAngleDeg}°` : `${fov.halfXDeg}° × ${fov.halfYDeg}°`;
 }
 
 /** `"Nadir"`, or `"[x, y, z]"` for a GCRF vector. */

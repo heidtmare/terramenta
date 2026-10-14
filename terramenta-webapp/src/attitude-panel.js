@@ -87,6 +87,7 @@ function profileCard(profile, editor) {
     { class: "layer report" },
     el("div", { class: "layer-head" }, el("span", { class: "mission-title", title: id }, profile.label ?? name)),
     el("p", { class: "detail" }, `${profile.label ? `${name} · ` : ""}${attitude.lawName(profile)}`),
+    ...fovLine(profile),
     el(
       "div",
       { class: "buttons" },
@@ -117,7 +118,7 @@ function profileCard(profile, editor) {
     .join(" · ");
   if (result.undefined) status.classList.add("error");
 
-  const sensors = (profile.sensors ?? []).map((sensor, index) => ({
+  const sensors = attitude.angledSensors(profile).map((sensor, index) => ({
     label: sensor.label ?? `${attitude.axisName(sensor.body)} → ${attitude.directionName(sensor.to)}`,
     color: sensor.color ?? attitude.SENSOR_COLOR,
     values: result.sensorAnglesDeg[index],
@@ -156,6 +157,14 @@ function profileCard(profile, editor) {
     ),
   );
   return { node, chart };
+}
+
+/** `["FOV Camera cone 20° · …"]` paragraph, or none. */
+function fovLine(profile) {
+  const fovs = (profile.sensors ?? [])
+    .filter((sensor) => sensor.fov)
+    .map((sensor) => `${sensor.label ?? attitude.axisName(sensor.body)} ${attitude.fovName(sensor.fov)}`);
+  return fovs.length ? [el("p", { class: "detail" }, `FOV ${fovs.join(" · ")}`)] : [];
 }
 
 /** Min (with its time) and max of the finite values. */
@@ -380,37 +389,79 @@ function mountEditor() {
 
   function sensorRow(sensor = {}) {
     const label = text({ placeholder: "Name", value: sensor.label ?? "" });
-    const aim = pointing({ body: sensor.body ?? [0, 0, 1], to: sensor.to ?? "sun" });
+    const aim = pointing({ body: sensor.body ?? [0, 0, 1], to: "body" in sensor ? sensor.to : "sun" }, { optional: true });
     const color = el("input", { class: "swatch", type: "color", value: (sensor.color ?? attitude.SENSOR_COLOR).slice(0, 7) });
-    const draw = toggle("Draw boresight", () => {});
+    const draw = toggle("Draw", () => {});
     draw.set(sensor.draw ?? true);
+    const fov = sensor.fov ?? {};
+    const kind = select(
+      [
+        ["none", "None"],
+        ["cone", "Cone"],
+        ["rectangle", "Rectangle"],
+      ],
+      fov.halfAngleDeg !== undefined ? "cone" : fov.halfXDeg !== undefined ? "rectangle" : "none",
+    );
+    const half = number({ min: "0", max: "180", placeholder: "Half-angle °", value: fov.halfAngleDeg ?? "" });
+    const halfX = number({ min: "0", max: "90", placeholder: "Half-width °", value: fov.halfXDeg ?? "" });
+    const halfY = number({ min: "0", max: "90", placeholder: "Half-height °", value: fov.halfYDeg ?? "" });
+    const reference = axisSelect(fov.reference ?? [1, 0, 0]);
+    const cone = el("span", { class: "pair" }, half);
+    const rectangle = el("span", { class: "pair" }, halfX, "×", halfY, "width along", reference);
+    const showKind = () => {
+      cone.hidden = kind.value !== "cone";
+      rectangle.hidden = kind.value !== "rectangle";
+    };
+    kind.onchange = showKind;
+    showKind();
     return {
-      fields: [row("Name", label), row("Angle", aim.node), row("Colour", color), draw.node],
+      fields: [
+        row("Name", label),
+        row("Axis", aim.node),
+        row("FOV", el("span", { class: "pair" }, kind, cone, rectangle)),
+        row("Colour", color),
+        draw.node,
+      ],
       value: () => {
-        const out = { ...aim.value(), color: color.value };
+        const { body, to } = aim.value();
+        const out = { body };
+        if (to !== undefined) out.to = to;
+        out.color = color.value;
         if (label.value.trim()) out.label = label.value.trim();
         if (!draw.input.checked) out.draw = false;
+        if (kind.value === "cone") out.fov = { halfAngleDeg: Number(half.value) };
+        if (kind.value === "rectangle") {
+          out.fov = { halfXDeg: Number(halfX.value), halfYDeg: Number(halfY.value), reference: axisValue(reference) };
+        }
         return out;
       },
     };
   }
 }
 
-/** Body axis + direction selects: `{node, set({body, to}), value()}`. */
-function pointing({ body, to }) {
+/**
+ * Body axis + direction selects: `{node, set({body, to}), value()}`. `optional`:
+ * a "no angle" choice, `to` undefined.
+ */
+function pointing({ body, to }, { optional = false } = {}) {
   const axis = axisSelect(body);
   const direction = el("select", { class: "select" });
   const set = (value) => {
     setAxis(axis, value.body);
     const options = Object.entries(attitude.DIRECTIONS);
+    if (optional) options.unshift(["", "No angle"]);
     if (Array.isArray(value.to)) options.push([JSON.stringify(value.to), attitude.directionName(value.to)]);
-    setOptions(direction, options, Array.isArray(value.to) ? JSON.stringify(value.to) : value.to);
+    setOptions(direction, options, Array.isArray(value.to) ? JSON.stringify(value.to) : (value.to ?? ""));
   };
   set({ body, to });
+  const read = () => {
+    if (direction.value === "") return undefined;
+    return direction.value.startsWith("[") ? JSON.parse(direction.value) : direction.value;
+  };
   return {
     node: el("span", { class: "pair" }, axis, "→", direction),
     set,
-    value: () => ({ body: axisValue(axis), to: direction.value.startsWith("[") ? JSON.parse(direction.value) : direction.value }),
+    value: () => ({ body: axisValue(axis), to: read() }),
   };
 }
 

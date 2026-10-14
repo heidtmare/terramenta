@@ -1,6 +1,6 @@
 /**
  * Full panel: six tabs — Project, Layers (imagery, vector tiles, overlays,
- * satellites), Spacecraft, Timeline, Analysis (plots, reports, porkchop,
+ * satellites), Spacecraft, Timeline, Analysis (plots, reports, events, coverage, porkchop,
  * launch) and View (clock, frame, camera, globe chrome).
  *
  * One-way data flow: controls send commands; `sync` sets every control from
@@ -12,6 +12,7 @@
 import * as globe from "./globe.js";
 import { el, row, section, tabs } from "./dom.js";
 import { mountEphemeris } from "./ephemeris.js";
+import { mountCoverage } from "./coverage-panel.js";
 import { mountEvents } from "./events-panel.js";
 import { altitude, timeScale } from "./format.js";
 import { mountMission } from "./mission.js";
@@ -354,7 +355,7 @@ export function mountPanel(root, { tab, signal }) {
     { id: "layers", label: "Layers", panes: [imagery, vectorTiles, overlays, ephemerides] },
     { id: "spacecraft", label: "Spacecraft", panes: mountSpacecraft(bind, signal) },
     { id: "timeline", label: "Timeline", panes: [mountTimeline(bind)] },
-    { id: "analysis", label: "Analysis", panes: [...mountReports(bind, signal), mountEvents(bind, signal), ...mountMission(bind, signal)] },
+    { id: "analysis", label: "Analysis", panes: [...mountReports(bind, signal), mountEvents(bind, signal), mountCoverage(bind, signal), ...mountMission(bind, signal)] },
     { id: "view", label: "View", panes: [sun, frame, gnc, camera, chrome] },
   ]);
 

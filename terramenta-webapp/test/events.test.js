@@ -6,7 +6,10 @@ import {
   eventOptions,
   eventTimeline,
   eventsSection,
+  formatHorizon,
+  horizonProblem,
   openEvents,
+  parseHorizon,
   removeStation,
   setEventOptions,
   spacecraftEvents,
@@ -28,7 +31,7 @@ const PROPAGATION = {
 };
 const STATIONS = [
   { id: "wallops", label: "Wallops", latDeg: 37.94, lonDeg: -75.46, minElevationDeg: 5 },
-  { id: "svalbard", latDeg: 78.23, lonDeg: 15.41 },
+  { id: "svalbard", latDeg: 78.23, lonDeg: 15.41, horizon: [[0, 2], [180, 8]] },
 ];
 
 let calls;
@@ -86,8 +89,8 @@ test("searches pass stations and options, cache until an edit", () => {
   assert.equal(searches.length, 1);
   assert.deepEqual(searches[0][2], {
     stations: [
-      { id: "wallops", latDeg: 37.94, lonDeg: -75.46, altKm: 0, minElevationDeg: 5 },
-      { id: "svalbard", latDeg: 78.23, lonDeg: 15.41, altKm: 0, minElevationDeg: 0 },
+      { id: "wallops", latDeg: 37.94, lonDeg: -75.46, altKm: 0, minElevationDeg: 5, horizon: [] },
+      { id: "svalbard", latDeg: 78.23, lonDeg: 15.41, altKm: 0, minElevationDeg: 0, horizon: [[0, 2], [180, 8]] },
     ],
     eclipses: true,
     apsides: true,
@@ -204,3 +207,16 @@ function sceneState(overlays) {
     keyboard: true,
   };
 }
+
+test("horizon masks parse, format and validate", () => {
+  assert.deepEqual(parseHorizon("0:5, 90:12.5; 180 20\n270/3"), [[0, 5], [90, 12.5], [180, 20], [270, 3]]);
+  assert.equal(formatHorizon([[0, 5], [90, 12.5]]), "0:5, 90:12.5");
+  assert.throws(() => parseHorizon("0:5, north:3"), /"north:3" is not azimuth:elevation/);
+  assert.equal(horizonProblem([[0, 5], [90, 3]]), null);
+  assert.match(horizonProblem([[90, 5], [0, 3]]), /ascend/);
+  assert.match(horizonProblem([[360, 5]]), /\[0, 360\)/);
+  const project = (horizon) => v({ groundStations: [{ id: "s", latDeg: 0, lonDeg: 0, horizon }] });
+  assert.doesNotThrow(() => parseProject(project([[10, 1], [20, 2]])));
+  assert.throws(() => parseProject(project([[20, 1], [10, 2]])), /groundStations\[0\]\.horizon: azimuths must ascend/);
+  assert.throws(() => parseProject(project([[20]])), /groundStations\[0\]\.horizon\[0\]: expected \[azimuthDeg, elevationDeg\]/);
+});

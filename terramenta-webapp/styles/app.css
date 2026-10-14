@@ -1228,3 +1228,27 @@ textarea.coordinate {
   flex: 1 1 0;
   min-width: 0;
 }
+
+.pair .coordinate {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.pair[hidden] {
+  display: none;
+}
+
+.ramp-legend {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+  font-size: 0.75rem;
+  color: var(--ink-dim);
+}
+
+.ramp-legend .ramp {
+  flex: 1 1 auto;
+  height: 0.5rem;
+  border-radius: 2px;
+}

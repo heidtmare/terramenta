@@ -7,14 +7,15 @@
 
 use std::sync::{Arc, LazyLock, RwLock};
 
-use bevy::math::{DQuat, DVec3};
+use bevy::math::{DMat3, DQuat, DVec3};
 use serde::{Deserialize, Serialize};
 use terramenta_solare::attitude::{self, AlignConstrain, Direction, Geometry, Law, Profile, Spin};
 use terramenta_solare::bodies::{GM_MOON_KM3_S2, GM_SUN_KM3_S2};
 use terramenta_solare::ccsds::{
     Aem, AemMetadata, AemSegment, Header, Oem, OemMetadata, OemSegment, TimeSystem,
 };
-use terramenta_solare::earth::EarthModel;
+use terramenta_solare::coverage::{self, Coverage, FieldOfView, Grid, Observer, Region};
+use terramenta_solare::earth::{EarthModel, TerrestrialTransform};
 use terramenta_solare::eop::{EopTable, FinalsKind};
 use terramenta_solare::events::{self, GroundStation, OrbitEventKind, Shadow};
 use terramenta_solare::force::{
@@ -24,6 +25,7 @@ use terramenta_solare::force::{
 use terramenta_solare::frame::Relative;
 use terramenta_solare::interpolate::{Interpolation, SampledEphemeris};
 use terramenta_solare::maneuver::{FiniteBurn, ImpulsiveManeuver, LocalFrame};
+use terramenta_solare::orbit::OrbitalElements;
 use terramenta_solare::propagate::{BodyOrientation, EarthOrientation, Integrator, Method};
 use terramenta_solare::space_weather::SpaceWeather;
 use terramenta_solare::spacecraft::{Propagation, Spacecraft};
@@ -171,6 +173,62 @@ pub enum Initial {
         #[serde(rename = "velocityKmS")]
         velocity_km_s: [f64; 3],
     },
+    /// Osculating Keplerian elements, GCRF, EGM2008 GM.
+    Elements {
+        epoch: String,
+        elements: ElementsOptions,
+    },
+}
+
+impl Initial {
+    /// Epoch of a numerical initial state; `None` for TLE/OMM.
+    fn epoch(&self) -> Option<&str> {
+        match self {
+            Self::State { epoch, .. } | Self::Elements { epoch, .. } => Some(epoch),
+            Self::Tle { .. } | Self::Omm { .. } => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ElementsOptions {
+    pub sma_km: f64,
+    pub eccentricity: f64,
+    pub inclination_deg: f64,
+    pub raan_deg: f64,
+    pub arg_perigee_deg: f64,
+    pub true_anomaly_deg: f64,
+}
+
+impl ElementsOptions {
+    fn state(&self) -> Result<StateVector, String> {
+        let angles = [
+            self.inclination_deg,
+            self.raan_deg,
+            self.arg_perigee_deg,
+            self.true_anomaly_deg,
+        ];
+        if !(self.sma_km.is_finite() && angles.iter().all(|a| a.is_finite())) {
+            return Err("elements: values must be finite".into());
+        }
+        if !(0.0..1.0).contains(&self.eccentricity) {
+            return Err("elements: need 0 ≤ eccentricity < 1".into());
+        }
+        if self.sma_km * (1.0 - self.eccentricity) <= EARTH_RADIUS_KM {
+            return Err("elements: perigee below the surface".into());
+        }
+        Ok(OrbitalElements {
+            semi_major_axis_km: self.sma_km,
+            eccentricity: self.eccentricity,
+            inclination_rad: self.inclination_deg.to_radians(),
+            raan_rad: self.raan_deg.to_radians(),
+            arg_periapsis_rad: self.arg_perigee_deg.to_radians(),
+            mean_anomaly_at_epoch: 0.0,
+            epoch_seconds: 0.0,
+        }
+        .state_at_true_anomaly(EGM2008_GM_KM3_S2, self.true_anomaly_deg.to_radians()))
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -515,6 +573,12 @@ pub fn propagate(req: &PropagationRequest) -> Result<Propagated, String> {
             numerical()?,
         )
         .with_vehicle(req.vehicle.resolve()),
+        Initial::Elements { epoch: e, elements } => Spacecraft::new(
+            "",
+            SpacecraftState::new(epoch(e)?, elements.state()?, mass),
+            numerical()?,
+        )
+        .with_vehicle(req.vehicle.resolve()),
     };
     let start = req
         .start
@@ -536,7 +600,7 @@ pub fn propagate(req: &PropagationRequest) -> Result<Propagated, String> {
     // SGP4 carries TLE/OMM to `start`; a state is numerical from its own epoch so
     // maneuvers between it and `start` apply.
     sc.step_to(start).map_err(|e| e.to_string())?;
-    if !matches!(req.initial, Initial::State { .. }) {
+    if req.initial.epoch().is_none() {
         sc.vehicle = req.vehicle.resolve();
         sc.set_propagation(numerical()?);
     }
@@ -671,6 +735,38 @@ pub struct StationOptions {
     pub alt_km: f64,
     #[serde(default)]
     pub min_elevation_deg: f64,
+    /// Horizon mask `[azimuthDeg, elevationDeg]`, azimuth ascending in `[0, 360)`.
+    #[serde(default)]
+    pub horizon: Vec<[f64; 2]>,
+}
+
+impl StationOptions {
+    fn station(&self) -> Result<GroundStation, String> {
+        let bad = |what: &str| Err(format!("station {:?}: bad {what}", self.id));
+        if !(-90.0..=90.0).contains(&self.lat_deg) || !self.lon_deg.is_finite() {
+            return bad("latitude/longitude");
+        }
+        let ascending = self.horizon.windows(2).all(|w| w[0][0] < w[1][0]);
+        let in_range = self
+            .horizon
+            .iter()
+            .all(|&[az, el]| (0.0..360.0).contains(&az) && (-90.0..=90.0).contains(&el));
+        if !(ascending && in_range) {
+            return bad("horizon (azimuth ascending in [0, 360), elevation in [-90, 90])");
+        }
+        Ok(GroundStation {
+            name: self.id.clone(),
+            latitude_rad: self.lat_deg.to_radians(),
+            longitude_rad: self.lon_deg.to_radians(),
+            altitude_km: self.alt_km,
+            min_elevation_rad: self.min_elevation_deg.to_radians(),
+            horizon: self
+                .horizon
+                .iter()
+                .map(|&[az, el]| (az.to_radians(), el.to_radians()))
+                .collect(),
+        })
+    }
 }
 
 /// Event times are Unix seconds (UTC).
@@ -716,6 +812,36 @@ const ORIENTATION_GRID_S: f64 = 600.0;
 /// Bracketing samples cap per search.
 const MAX_EVENT_SAMPLES: f64 = 1e6;
 
+/// GCRF → ITRF: full Earth orientation on an [`ORIENTATION_GRID_S`] grid from `start`,
+/// Earth rotation exact in between.
+struct Terrestrial {
+    orientation: EarthOrientation,
+    start: Epoch,
+    anchors: std::collections::HashMap<i64, TerrestrialTransform>,
+}
+
+impl Terrestrial {
+    fn new(env: &Environment, start: Epoch) -> Self {
+        Self {
+            orientation: EarthOrientation::new(env.eop.clone(), EarthModel::Iau2006Cio),
+            start,
+            anchors: std::collections::HashMap::new(),
+        }
+    }
+
+    fn rotation(&mut self, e: Epoch) -> DMat3 {
+        let t = e.seconds_since(self.start);
+        let k = (t / ORIENTATION_GRID_S).floor() as i64;
+        let (orientation, start) = (&self.orientation, self.start);
+        let anchor = *self.anchors.entry(k).or_insert_with(|| {
+            orientation.transform(start.advanced_by_seconds(k as f64 * ORIENTATION_GRID_S))
+        });
+        anchor
+            .advanced_by(t - k as f64 * ORIENTATION_GRID_S)
+            .rotation()
+    }
+}
+
 /// Contacts, eclipses (Earth, conical), apsides and nodes (GCRF equator) over the
 /// propagated span. Interpolates the propagated states (Hermite 7), so the propagation
 /// step bounds accuracy.
@@ -736,30 +862,10 @@ pub fn find_events(propagated: &Propagated, req: &EventRequest) -> Result<Events
     let mut out = Events::default();
 
     if !req.stations.is_empty() {
-        let orientation = EarthOrientation::new(env.eop.clone(), EarthModel::Iau2006Cio);
-        let mut anchors = std::collections::HashMap::new();
-        let mut itrf = |e: Epoch| {
-            let t = e.seconds_since(start);
-            let k = (t / ORIENTATION_GRID_S).floor() as i64;
-            let anchor = *anchors.entry(k).or_insert_with(|| {
-                orientation.transform(start.advanced_by_seconds(k as f64 * ORIENTATION_GRID_S))
-            });
-            anchor
-                .advanced_by(t - k as f64 * ORIENTATION_GRID_S)
-                .rotation()
-                * ephemeris.position_at(e)
-        };
+        let mut earth = Terrestrial::new(&env, start);
+        let mut itrf = |e: Epoch| earth.rotation(e) * ephemeris.position_at(e);
         for s in &req.stations {
-            if !(-90.0..=90.0).contains(&s.lat_deg) || !s.lon_deg.is_finite() {
-                return Err(format!("station {:?}: bad latitude/longitude", s.id));
-            }
-            let station = GroundStation {
-                name: s.id.clone(),
-                latitude_rad: s.lat_deg.to_radians(),
-                longitude_rad: s.lon_deg.to_radians(),
-                altitude_km: s.alt_km,
-                min_elevation_rad: s.min_elevation_deg.to_radians(),
-            };
+            let station = s.station()?;
             out.contacts.extend(
                 events::contacts(&station, &mut itrf, start, stop, step, EVENT_TOLERANCE_S)
                     .into_iter()
@@ -1112,7 +1218,7 @@ pub fn target(req: &PropagationRequest, target: &TargetRequest) -> Result<Target
                 .iter()
                 .flatten()
                 .max_by(|a, b| a.seconds_since(**b).total_cmp(&0.0));
-            if let (Some(latest), Initial::State { epoch: e, .. }) = (latest, &r.initial) {
+            if let (Some(latest), Some(e)) = (latest, r.initial.epoch()) {
                 let start = epoch(r.start.as_deref().unwrap_or(e))?;
                 let stop = match (&r.stop, r.duration_s) {
                     (Some(s), _) => Some(epoch(s)?),
@@ -1378,20 +1484,14 @@ fn profile(att: &AttitudeRequest, start: Epoch) -> Result<Profile, String> {
     Ok(Profile { law, spin })
 }
 
-/// Samples `att` over the propagated span every `stepS` (and at its end). Sun from
-/// [`sun_and_moon`]; the target site through full Earth orientation.
-pub fn attitude(propagated: &Propagated, att: &AttitudeRequest) -> Result<AttitudeSamples, String> {
-    let states = propagated.ordered_states();
-    let (Some(&(start, _)), Some(&(stop, _))) = (states.first(), states.last()) else {
-        return Ok(AttitudeSamples::default());
-    };
-    let span = stop.seconds_since(start);
-    let step = att.step_s;
-    if step.is_nan() || step <= 0.0 || span / step > MAX_SAMPLES as f64 {
-        return Err(format!(
-            "stepS must be positive and yield ≤ {MAX_SAMPLES} samples"
-        ));
-    }
+/// An [`AttitudeRequest`]'s law, target site (ITRF, km) and sensors, validated.
+struct Pointing {
+    profile: Profile,
+    site: Option<DVec3>,
+    sensors: Vec<(DVec3, Direction)>,
+}
+
+fn pointing(att: &AttitudeRequest, start: Epoch) -> Result<Pointing, String> {
     let profile = profile(att, start)?;
     let uses_target = |d: Direction| d == Direction::Target;
     let wants_target = match profile.law {
@@ -1412,11 +1512,10 @@ pub fn attitude(propagated: &Propagated, att: &AttitudeRequest) -> Result<Attitu
     let site = match &att.target {
         Some(t) if (-90.0..=90.0).contains(&t.lat_deg) && t.lon_deg.is_finite() => Some(
             GroundStation {
-                name: String::new(),
                 latitude_rad: t.lat_deg.to_radians(),
                 longitude_rad: t.lon_deg.to_radians(),
                 altitude_km: t.alt_km,
-                min_elevation_rad: 0.0,
+                ..GroundStation::default()
             }
             .position_itrf_km(),
         ),
@@ -1426,12 +1525,51 @@ pub fn attitude(propagated: &Propagated, att: &AttitudeRequest) -> Result<Attitu
         }
         None => None,
     };
+    Ok(Pointing {
+        profile,
+        site,
+        sensors,
+    })
+}
+
+impl Pointing {
+    fn geometry(
+        &self,
+        e: Epoch,
+        s: &StateVector,
+        sun: &dyn Ephemeris,
+        earth: &mut Terrestrial,
+    ) -> Geometry {
+        Geometry {
+            position_km: s.position_km,
+            velocity_km_s: s.velocity_km_s,
+            sun_km: sun.position_at(e),
+            target_km: self.site.map(|itrf| earth.rotation(e).transpose() * itrf),
+        }
+    }
+}
+
+/// Samples `att` over the propagated span every `stepS` (and at its end). Sun from
+/// [`sun_and_moon`]; the target site through full Earth orientation.
+pub fn attitude(propagated: &Propagated, att: &AttitudeRequest) -> Result<AttitudeSamples, String> {
+    let states = propagated.ordered_states();
+    let (Some(&(start, _)), Some(&(stop, _))) = (states.first(), states.last()) else {
+        return Ok(AttitudeSamples::default());
+    };
+    let span = stop.seconds_since(start);
+    let step = att.step_s;
+    if step.is_nan() || step <= 0.0 || span / step > MAX_SAMPLES as f64 {
+        return Err(format!(
+            "stepS must be positive and yield ≤ {MAX_SAMPLES} samples"
+        ));
+    }
+    let pointing = pointing(att, start)?;
+    let sensors = &pointing.sensors;
 
     let ephemeris = SampledEphemeris::new(states, Interpolation::default());
     let env = environment();
     let (sun, _) = sun_and_moon(&env);
-    let orientation = EarthOrientation::new(env.eop.clone(), EarthModel::Iau2006Cio);
-    let mut anchors = std::collections::HashMap::new();
+    let mut earth = Terrestrial::new(&env, start);
     let mut teme_grid = terramenta_solare::earth::TemeGrid::new(|e| {
         env.eop.as_ref().map(|t| t.at(e)).unwrap_or_default()
     });
@@ -1446,24 +1584,8 @@ pub fn attitude(propagated: &Propagated, att: &AttitudeRequest) -> Result<Attitu
         let t = (i as f64 * step).min(span);
         let e = start.advanced_by_seconds(t);
         let s = ephemeris.state_at(e);
-        let target_km = site.map(|itrf| {
-            let k = (t / ORIENTATION_GRID_S).floor() as i64;
-            let anchor = *anchors.entry(k).or_insert_with(|| {
-                orientation.transform(start.advanced_by_seconds(k as f64 * ORIENTATION_GRID_S))
-            });
-            anchor
-                .advanced_by(t - k as f64 * ORIENTATION_GRID_S)
-                .rotation()
-                .transpose()
-                * itrf
-        });
-        let g = Geometry {
-            position_km: s.position_km,
-            velocity_km_s: s.velocity_km_s,
-            sun_km: sun.position_at(e),
-            target_km,
-        };
-        let Some(q) = profile.attitude(e, &g) else {
+        let g = pointing.geometry(e, &s, sun.as_ref(), &mut earth);
+        let Some(q) = pointing.profile.attitude(e, &g) else {
             out.undefined += 1;
             continue;
         };
@@ -1483,7 +1605,7 @@ pub fn attitude(propagated: &Propagated, att: &AttitudeRequest) -> Result<Attitu
             euler.y.to_degrees(),
             euler.z.to_degrees(),
         ]);
-        for (angles, &(body, to)) in out.sensor_angles_deg.iter_mut().zip(&sensors) {
+        for (angles, &(body, to)) in out.sensor_angles_deg.iter_mut().zip(sensors) {
             angles.push(to.resolve(&g).map_or(f64::NAN, |d| {
                 attitude::off_axis_angle(q, body, d).to_degrees()
             }));
@@ -1518,6 +1640,286 @@ pub fn attitude(propagated: &Propagated, att: &AttitudeRequest) -> Result<Attitu
         );
     }
     Ok(out)
+}
+
+// --- Coverage -------------------------------------------------------------------------
+
+/// Cell cap per coverage grid.
+pub const MAX_COVERAGE_CELLS: usize = 200_000;
+
+/// `coverage` options.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CoverageRequest {
+    pub spacecraft: Vec<CoverageObserver>,
+    /// H3 resolution, 0–15.
+    #[serde(default = "default_resolution")]
+    pub resolution: u8,
+    /// `[west, south, east, north]`, degrees; default the globe. `west > east` crosses
+    /// the antimeridian.
+    pub bounds: Option<[f64; 4]>,
+    #[serde(default)]
+    pub min_elevation_deg: f64,
+    #[serde(default = "default_coverage_step")]
+    pub step_s: f64,
+    /// UTC ISO 8601; default the spans all spacecraft share.
+    pub start: Option<String>,
+    pub stop: Option<String>,
+    /// Cell outlines in the result.
+    #[serde(default)]
+    pub boundaries: bool,
+}
+
+fn default_resolution() -> u8 {
+    3
+}
+
+fn default_coverage_step() -> f64 {
+    60.0
+}
+
+/// A spacecraft and, for sensor access, its pointing and fields of view.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CoverageObserver {
+    pub propagation: PropagationRequest,
+    /// Pointing law as `attitude` takes it; its `sensors`, `stepS`, `aem` unused.
+    pub attitude: Option<AttitudeRequest>,
+    /// Empty: line of sight above the minimum elevation.
+    #[serde(default)]
+    pub sensors: Vec<FovOptions>,
+}
+
+/// A field of view along body axis `body`: `halfAngleDeg` (cone) or `halfXDeg` and
+/// `halfYDeg` (rectangle, sensor x toward `reference`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FovOptions {
+    pub body: [f64; 3],
+    pub reference: Option<[f64; 3]>,
+    pub half_angle_deg: Option<f64>,
+    pub half_x_deg: Option<f64>,
+    pub half_y_deg: Option<f64>,
+}
+
+impl FovOptions {
+    pub fn sensor(&self) -> Result<coverage::Sensor, String> {
+        let fov = match (self.half_angle_deg, self.half_x_deg, self.half_y_deg) {
+            (Some(a), None, None) => FieldOfView::Cone {
+                half_angle_rad: a.to_radians(),
+            },
+            (None, Some(x), Some(y)) => FieldOfView::Rectangle {
+                half_x_rad: x.to_radians(),
+                half_y_rad: y.to_radians(),
+            },
+            _ => return Err("fov: give halfAngleDeg, or halfXDeg and halfYDeg".into()),
+        };
+        coverage::Sensor::new(
+            DVec3::from_array(self.body),
+            self.reference.map(DVec3::from_array),
+            fov,
+        )
+        .ok_or_else(|| {
+            "fov: body non-zero, reference not along it, cone half-angle in (0, 180), \
+             rectangle half-angles in (0, 90)"
+                .into()
+        })
+    }
+}
+
+/// Coverage of a grid over a common span. Times Unix seconds (UTC); gaps and first
+/// access seconds, resolved to one step.
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CoverageResult {
+    pub start: f64,
+    pub stop: f64,
+    pub step_s: f64,
+    pub samples: usize,
+    pub resolution: u8,
+    pub cells: Vec<CellInfo>,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CellInfo {
+    /// H3 index, hex.
+    pub id: String,
+    pub lat_deg: f64,
+    pub lon_deg: f64,
+    pub fraction: f64,
+    pub accesses: u32,
+    pub max_gap_s: f64,
+    pub mean_gap_s: Option<f64>,
+    pub first_access_s: Option<f64>,
+    /// `[lonDeg, latDeg]` ring, open.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub boundary: Option<Vec<[f64; 2]>>,
+}
+
+/// Samples every spacecraft every `stepS` over the span they share and accumulates
+/// access to the grid's cell centres.
+pub fn coverage(req: &CoverageRequest) -> Result<CoverageResult, String> {
+    if req.spacecraft.is_empty() {
+        return Err("coverage needs a spacecraft".into());
+    }
+    let resolution = coverage::h3o::Resolution::try_from(req.resolution)
+        .map_err(|_| format!("resolution {} not in 0–15", req.resolution))?;
+    let region = match req.bounds {
+        None => None,
+        Some([west, south, east, north]) => {
+            if !(-90.0..=90.0).contains(&south) || !(south..=90.0).contains(&north) {
+                return Err("bounds: need -90 ≤ south ≤ north ≤ 90".into());
+            }
+            if !(west.is_finite() && east.is_finite()) {
+                return Err("bounds: west and east must be finite".into());
+            }
+            Some(Region {
+                west: west.to_radians(),
+                south: south.to_radians(),
+                east: east.to_radians(),
+                north: north.to_radians(),
+            })
+        }
+    };
+    if !(-90.0..90.0).contains(&req.min_elevation_deg) {
+        return Err("minElevationDeg must be in [-90, 90)".into());
+    }
+
+    struct Craft {
+        ephemeris: SampledEphemeris,
+        pointing: Option<Pointing>,
+        sensors: Vec<coverage::Sensor>,
+    }
+    let mut crafts = Vec::new();
+    let (mut start, mut stop) = (None::<Epoch>, None::<Epoch>);
+    for (i, o) in req.spacecraft.iter().enumerate() {
+        let what = |e: String| format!("spacecraft[{i}]: {e}");
+        let states = propagate(&o.propagation).map_err(what)?.ordered_states();
+        let (Some(&(first, _)), Some(&(last, _))) = (states.first(), states.last()) else {
+            return Err(what("no states".into()));
+        };
+        start = Some(start.map_or(first, |s| {
+            if first.seconds_since(s) > 0.0 {
+                first
+            } else {
+                s
+            }
+        }));
+        stop = Some(stop.map_or(last, |s| if last.seconds_since(s) < 0.0 { last } else { s }));
+        let sensors = o
+            .sensors
+            .iter()
+            .map(FovOptions::sensor)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(what)?;
+        let pointing = match (&o.attitude, sensors.is_empty()) {
+            (_, true) => None,
+            (Some(att), false) => Some(pointing(att, first).map_err(what)?),
+            (None, false) => return Err(what("sensors need an attitude".into())),
+        };
+        crafts.push(Craft {
+            ephemeris: SampledEphemeris::new(states, Interpolation::default()),
+            pointing,
+            sensors,
+        });
+    }
+    let (mut start, mut stop) = (start.expect("spacecraft"), stop.expect("spacecraft"));
+    if let Some(s) = &req.start {
+        let s = epoch(s)?;
+        if s.seconds_since(start) > 0.0 {
+            start = s;
+        }
+    }
+    if let Some(s) = &req.stop {
+        let s = epoch(s)?;
+        if s.seconds_since(stop) < 0.0 {
+            stop = s;
+        }
+    }
+    let span = stop.seconds_since(start);
+    if span.is_nan() || span < 0.0 {
+        return Err("spacecraft spans do not overlap the window".into());
+    }
+    let step = req.step_s;
+    if step.is_nan() || step <= 0.0 || (span / step) * crafts.len() as f64 > MAX_SAMPLES as f64 {
+        return Err(format!(
+            "stepS must be positive and yield ≤ {MAX_SAMPLES} samples over all spacecraft"
+        ));
+    }
+
+    let grid = Grid::new(resolution, region, MAX_COVERAGE_CELLS)?;
+    let mut cover = Coverage::new(grid, req.min_elevation_deg.to_radians());
+    let env = environment();
+    let (sun, _) = sun_and_moon(&env);
+    let mut earth = Terrestrial::new(&env, start);
+    let count = (span / step).ceil() as usize;
+    let mut observers = Vec::with_capacity(crafts.len());
+    for i in 0..=count {
+        let t = (i as f64 * step).min(span);
+        let e = start.advanced_by_seconds(t);
+        let to_itrf = earth.rotation(e);
+        let to_itrf_q = DQuat::from_mat3(&to_itrf);
+        observers.clear();
+        for c in &crafts {
+            let s = c.ephemeris.state_at(e);
+            let body_to_itrf = match &c.pointing {
+                None => DQuat::IDENTITY,
+                Some(p) => {
+                    let g = p.geometry(e, &s, sun.as_ref(), &mut earth);
+                    match p.profile.attitude(e, &g) {
+                        Some(q) => (to_itrf_q * q).normalize(),
+                        None => continue,
+                    }
+                }
+            };
+            observers.push(Observer {
+                position_itrf_km: to_itrf * s.position_km,
+                body_to_itrf,
+                sensors: &c.sensors,
+            });
+        }
+        cover.sample(t, &observers);
+        if t >= span {
+            break;
+        }
+    }
+
+    let samples = cover.samples();
+    let cells = cover
+        .cells()
+        .into_iter()
+        .zip(&cover.grid.cells)
+        .map(|(c, &cell)| {
+            let centre = coverage::h3o::LatLng::from(cell);
+            // Degrees to 1e-5 (≈ 1 m), fractions to 1e-6: a smaller result for JavaScript.
+            let deg = |x: f64| (x * 1e5).round() / 1e5;
+            CellInfo {
+                id: cell.to_string(),
+                lat_deg: deg(centre.lat()),
+                lon_deg: deg(centre.lng()),
+                fraction: (c.fraction * 1e6).round() / 1e6,
+                accesses: c.accesses,
+                max_gap_s: c.max_gap_s,
+                mean_gap_s: c.mean_gap_s,
+                first_access_s: c.first_access_s,
+                boundary: req.boundaries.then(|| {
+                    cell.boundary()
+                        .iter()
+                        .map(|v| [deg(v.lng()), deg(v.lat())])
+                        .collect()
+                }),
+            }
+        })
+        .collect();
+    Ok(CoverageResult {
+        start: start.to_unix_seconds(),
+        stop: stop.to_unix_seconds(),
+        step_s: step,
+        samples,
+        resolution: req.resolution,
+        cells,
+    })
 }
 
 #[cfg(test)]
@@ -1870,5 +2272,163 @@ mod tests {
         // ~0.36° precession since J2000 (GMST is of date) is ~5° off-nadir at 500 km.
         assert!(off[0] < 8.0 && off.last().unwrap() > &30.0, "{off:?}");
         assert_eq!(s.teme.len(), s.times.len());
+    }
+
+    #[test]
+    fn elements_initial_state_matches_its_orbit() {
+        let req = request(
+            r#"{ "initial": { "epoch": "2026-01-01T00:00:00Z",
+                   "elements": { "smaKm": 7000, "eccentricity": 0.01, "inclinationDeg": 98,
+                                 "raanDeg": 30, "argPerigeeDeg": 90, "trueAnomalyDeg": 0 } },
+                 "durationS": 60, "stepS": 60,
+                 "forces": { "gravity": [0, 0], "thirdBody": false, "srp": false, "drag": "none" } }"#,
+        );
+        let out = propagate(&req).unwrap();
+        let s = &out.states[0];
+        // Perigee at the ascending node + 90°: the northernmost point of the orbit.
+        assert!((s.position_km.length() - 6930.0).abs() < 1e-6);
+        assert!((s.position_km.z / s.position_km.length() - 98f64.to_radians().sin()).abs() < 1e-9);
+        assert!((quantity("smaKm", s) - 7000.0).abs() < 1e-6);
+        assert!((quantity("inclinationDeg", s) - 98.0).abs() < 1e-9);
+        let low = r#"{ "initial": { "epoch": "2026-01-01T00:00:00Z",
+                   "elements": { "smaKm": 6500, "eccentricity": 0.1, "inclinationDeg": 0,
+                                 "raanDeg": 0, "argPerigeeDeg": 0, "trueAnomalyDeg": 0 } },
+                 "durationS": 60 }"#;
+        assert!(propagate(&request(low)).err().unwrap().contains("perigee"));
+    }
+
+    #[test]
+    fn a_horizon_mask_shortens_contacts() {
+        let req = request(
+            r#"{ "initial": { "epoch": "2024-03-01T00:00:00Z",
+                   "elements": { "smaKm": 6878.137, "eccentricity": 0, "inclinationDeg": 51.6,
+                                 "raanDeg": 0, "argPerigeeDeg": 0, "trueAnomalyDeg": 0 } },
+                 "durationS": 86400, "stepS": 60, "forces": { "gravity": [2, 0] } }"#,
+        );
+        let out = propagate(&req).unwrap();
+        let search = |horizon: &str| {
+            let events: EventRequest = serde_json::from_str(&format!(
+                r#"{{ "stations": [{{ "id": "w", "latDeg": 37.94, "lonDeg": -75.46,
+                                      "minElevationDeg": 5, "horizon": {horizon} }}] }}"#
+            ))
+            .unwrap();
+            find_events(&out, &events)
+        };
+        let open = search("[]").unwrap().contacts;
+        let masked = search("[[0, 5], [90, 5], [180, 25], [270, 5]]")
+            .unwrap()
+            .contacts;
+        let total = |c: &[ContactInfo]| c.iter().map(|c| c.los - c.aos).sum::<f64>();
+        assert!(!masked.is_empty() && masked.len() <= open.len());
+        assert!(
+            total(&masked) < 0.95 * total(&open),
+            "{} {}",
+            total(&masked),
+            total(&open)
+        );
+        assert!(search("[[90, 5], [0, 5]]").unwrap_err().contains("horizon"));
+    }
+
+    #[test]
+    fn coverage_of_two_satellites() {
+        let craft = |raan: f64, sensors: &str| {
+            format!(
+                r#"{{ "propagation": {{ "initial": {{ "epoch": "2026-01-01T00:00:00Z",
+                     "elements": {{ "smaKm": 7078.137, "eccentricity": 0, "inclinationDeg": 97.5,
+                                    "raanDeg": {raan}, "argPerigeeDeg": 0, "trueAnomalyDeg": 0 }} }},
+                     "durationS": 21600, "stepS": 60,
+                     "forces": {{ "gravity": [2, 0], "thirdBody": false, "srp": false, "drag": "none" }} }},
+                   "attitude": {{ "primary": {{ "body": [0, 0, 1], "to": "nadir" }},
+                                  "secondary": {{ "body": [1, 0, 0], "to": "velocity" }} }},
+                   "sensors": {sensors} }}"#
+            )
+        };
+        let run = |json: String| coverage(&serde_json::from_str::<CoverageRequest>(&json).unwrap());
+        let horizon = run(format!(
+            r#"{{ "spacecraft": [{}, {}], "resolution": 1, "minElevationDeg": 10, "stepS": 120,
+                 "boundaries": true }}"#,
+            craft(0.0, "[]"),
+            craft(90.0, "[]")
+        ))
+        .unwrap();
+        assert_eq!(horizon.cells.len(), 842);
+        assert_eq!(horizon.samples, 181);
+        assert!((horizon.stop - horizon.start - 21600.0).abs() < 1e-6);
+        let seen = horizon.cells.iter().filter(|c| c.fraction > 0.0).count();
+        assert!(seen > 700, "{seen}");
+        let pole = horizon
+            .cells
+            .iter()
+            .max_by(|a, b| a.lat_deg.total_cmp(&b.lat_deg))
+            .unwrap();
+        // Near-polar, both over the pole together: an access each orbit (99 min).
+        assert!(
+            pole.accesses >= 3 && pole.mean_gap_s.unwrap() < 5940.0,
+            "{pole:?}"
+        );
+        assert!(
+            horizon
+                .cells
+                .iter()
+                .all(|c| c.boundary.as_ref().is_some_and(|b| b.len() >= 5))
+        );
+
+        let cone = r#"[{ "body": [0, 0, 1], "halfAngleDeg": 30 }]"#;
+        let imaged = run(format!(
+            r#"{{ "spacecraft": [{}], "resolution": 2, "stepS": 60,
+                 "bounds": [-30, 30, 40, 70] }}"#,
+            craft(0.0, cone)
+        ))
+        .unwrap();
+        assert!(imaged.cells.iter().all(|c| c.boundary.is_none()));
+        assert!(
+            (100..400).contains(&imaged.cells.len()),
+            "{}",
+            imaged.cells.len()
+        );
+        let fraction =
+            |cells: &[CellInfo]| cells.iter().map(|c| c.fraction).sum::<f64>() / cells.len() as f64;
+        let wide = run(format!(
+            r#"{{ "spacecraft": [{}], "resolution": 2, "stepS": 60, "bounds": [-30, 30, 40, 70] }}"#,
+            craft(0.0, "[]")
+        ))
+        .unwrap();
+        assert!(fraction(&imaged.cells) > 0.0);
+        assert!(fraction(&imaged.cells) < 0.5 * fraction(&wide.cells));
+
+        for (json, message) in [
+            (r#"{ "spacecraft": [] }"#.to_string(), "needs a spacecraft"),
+            (
+                format!(
+                    r#"{{ "spacecraft": [{}], "resolution": 16 }}"#,
+                    craft(0.0, "[]")
+                ),
+                "resolution",
+            ),
+            (
+                format!(
+                    r#"{{ "spacecraft": [{}], "resolution": 4 }}"#,
+                    craft(0.0, "[]")
+                ),
+                "cells",
+            ),
+            (
+                format!(
+                    r#"{{ "spacecraft": [{}], "bounds": [0, 10, 10, 0] }}"#,
+                    craft(0.0, "[]")
+                ),
+                "bounds",
+            ),
+            (
+                format!(
+                    r#"{{ "spacecraft": [{}] }}"#,
+                    craft(0.0, r#"[{ "body": [0, 0, 1] }]"#)
+                ),
+                "halfAngleDeg",
+            ),
+        ] {
+            let err = run(json).unwrap_err();
+            assert!(err.contains(message), "{err}");
+        }
     }
 }

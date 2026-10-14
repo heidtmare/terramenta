@@ -129,6 +129,7 @@ const UNTRACKED = new Set([
   "attitude",
   "showAttitude",
   "hideAttitude",
+  "coverage",
 ]);
 
 let changeListener = null;
@@ -709,11 +710,22 @@ export const attitude = (propagation, options) => required().attitude(propagatio
 
 /**
  * Draws the last `attitude` result on ephemeris layer `id`: `{axes?, sensors:
- * [{body, color}]}`. `false` if there is no result.
+ * [{body, color, fov?}]}`, `fov` drawing a footprint. `false` if there is no
+ * result or the options are bad.
  */
 export const showAttitude = (id, options) => required().showAttitude(id, options);
 
 export const hideAttitude = (id) => required().hideAttitude(id);
+
+/**
+ * Access coverage of an H3 grid: `{spacecraft: [{propagation, attitude?,
+ * sensors?}], resolution?, bounds?, minElevationDeg?, stepS?, start?, stop?,
+ * boundaries?}` → `{start, stop, stepS, samples, resolution, cells: [{id,
+ * latDeg, lonDeg, fraction, accesses, maxGapS, meanGapS, firstAccessS,
+ * boundary?}]}`. Synchronous; throws on bad input.
+ * Full option list: `terramenta-globe/src/wasm.rs`, `coverage`.
+ */
+export const coverage = (options) => required().coverage(options);
 
 /**
  * Propagates `propagation` (`propagate` options; `kvn` ignored) and puts the

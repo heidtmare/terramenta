@@ -2,7 +2,9 @@
  * Project `groundStations` and `events`, held between open and save like
  * `analysis.js`, and the event searches they drive.
  *
- * - Station: `{id, label?, latDeg, lonDeg, altKm?, minElevationDeg?, color?}`.
+ * - Station: `{id, label?, latDeg, lonDeg, altKm?, minElevationDeg?, horizon?,
+ *   color?}`; `horizon` a terrain mask `[[azimuthDeg, elevationDeg], …]`,
+ *   azimuth ascending in `[0, 360)`.
  * - Events: `{eclipses?, apsides?, nodes?, stepS?}`; contacts with every
  *   station are always searched. Defaults in `EVENT_DEFAULTS`.
  *
@@ -97,9 +99,37 @@ export function eventsErrors(project) {
   project.groundStations?.forEach((station, index) => {
     if (seen.has(station.id)) errors.push(`groundStations[${index}].id: duplicate "${station.id}"`);
     seen.add(station.id);
+    const problem = horizonProblem(station.horizon ?? []);
+    if (problem) errors.push(`groundStations[${index}].horizon: ${problem}`);
   });
   return errors;
 }
+
+/** Why `horizon` is not a valid mask, or `null`. */
+export function horizonProblem(horizon) {
+  if (horizon.some(([az, el]) => !(az >= 0 && az < 360) || !(Math.abs(el) <= 90))) {
+    return "azimuth in [0, 360), elevation within ±90°";
+  }
+  if (horizon.some(([az], index) => index && !(az > horizon[index - 1][0]))) return "azimuths must ascend";
+  return null;
+}
+
+/** `"0:5, 90:12.5"` → `[[0, 5], [90, 12.5]]`; throws on a malformed pair. */
+export function parseHorizon(text) {
+  return text
+    .split(/[,;\n]+/)
+    .map((pair) => pair.trim())
+    .filter(Boolean)
+    .map((pair) => {
+      const values = pair.split(/[:\s/]+/).map(Number);
+      if (values.length !== 2 || values.some((value) => !Number.isFinite(value))) {
+        throw new Error(`Horizon: "${pair}" is not azimuth:elevation`);
+      }
+      return values;
+    });
+}
+
+export const formatHorizon = (horizon) => (horizon ?? []).map(([az, el]) => `${az}:${el}`).join(", ");
 
 // --- Searching -----------------------------------------------------------------
 
@@ -117,12 +147,13 @@ export function spacecraftEvents(id, entry = globe.recordedSources().spacecraft.
     data = globe.findEvents(
       { ...entry.propagation, kvn: false },
       {
-        stations: stations.map(({ id, latDeg, lonDeg, altKm, minElevationDeg }) => ({
+        stations: stations.map(({ id, latDeg, lonDeg, altKm, minElevationDeg, horizon }) => ({
           id,
           latDeg,
           lonDeg,
           altKm: altKm ?? 0,
           minElevationDeg: minElevationDeg ?? 0,
+          horizon: horizon ?? [],
         })),
         eclipses,
         apsides,
@@ -194,6 +225,7 @@ function drawStations() {
         title: station.label ?? station.id,
         id: station.id,
         "min elevation": `${station.minElevationDeg ?? 0}°`,
+        ...(station.horizon?.length ? { horizon: formatHorizon(station.horizon) } : {}),
         "marker-color": station.color ?? STATION_COLOR,
       },
     }));

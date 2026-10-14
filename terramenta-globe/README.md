@@ -110,7 +110,8 @@ from a real failure.
 | `findEvents(propagation, options)` | Ground-station contacts, Earth eclipses, apsides, nodes over a propagation |
 | `target(propagation, options)` | Differential correction of a propagation's burns to meet orbit goals |
 | `attitude(propagation, options)` | Attitude under a pointing law over a propagation: quaternions, LVLH Euler angles, sensor angles, AEM |
-| `showAttitude(id, options)` / `hideAttitude(id)` | Draw the last `attitude` result on ephemeris layer `id`: body axes, sensor boresights |
+| `showAttitude(id, options)` / `hideAttitude(id)` | Draw the last `attitude` result on ephemeris layer `id`: body axes, sensor boresights, field-of-view footprints |
+| `coverage(options)` | Access coverage of an H3 grid by spacecraft, line of sight or through sensor fields of view: per-cell fraction, accesses, gaps |
 | `loadKernel(bytes)` `loadEop(text)` `loadSpaceWeather(text)` `propagationEnvironment()` | Propagation data |
 | `setPickingEnabled(bool)` `pinFeature(layer, index)` `clearPinnedFeature()` | Overlay feature picking |
 | `pinSatellite(layer, noradId)` `clearPinnedSatellite()` | Satellite picking |
@@ -474,8 +475,10 @@ globe.pinSatellite("stations", 25544);
 ## Numerical propagation
 
 [`numerical.rs`](src/numerical.rs) maps `propagate` options onto a
-`terramenta_solare::spacecraft::Spacecraft`: initial state from TLE, OMM or a GCRF
-state vector (SGP4 carries it to `start`), then Cowell with EGM2008 (≤ 20×20),
+`terramenta_solare::spacecraft::Spacecraft`: initial state from TLE, OMM, a GCRF
+state vector, or osculating Keplerian `elements` (`smaKm`, `eccentricity`,
+`inclinationDeg`, `raanDeg`, `argPerigeeDeg`, `trueAnomalyDeg`; GCRF, EGM2008 GM)
+(SGP4 carries TLE/OMM to `start`), then Cowell with EGM2008 (≤ 20×20),
 Sun/Moon, SRP, drag (`exponential` | `harrisPriester` | `nrlmsise00`), relativity,
 impulsive and finite burns. Output is a GCRF/UTC OEM, which `addEphemeris` draws
 as tabulated motion.
@@ -497,7 +500,8 @@ const spk = globe.propagateSpk({ ...sameOptions, naifId: -100900 }); // Uint8Arr
 
 ```js
 const { contacts, eclipses, orbit } = globe.findEvents(sameOptions, {
-  stations: [{ id: "wallops", latDeg: 37.94, lonDeg: -75.46, minElevationDeg: 5 }],
+  stations: [{ id: "wallops", latDeg: 37.94, lonDeg: -75.46, minElevationDeg: 5,
+               horizon: [[0, 5], [90, 12], [180, 8], [270, 5]] }],  // terrain, [az°, el°]
   eclipses: true, apsides: false, nodes: false, stepS: 30,
 });
 // contacts: [{ station, aos, los, maxElevationAt, maxElevationDeg }], Unix seconds
@@ -506,8 +510,9 @@ const { contacts, eclipses, orbit } = globe.findEvents(sameOptions, {
 
 - `findEvents` re-runs the propagation, then brackets each event function on a
   `stepS` grid and refines by Brent's method (1 ms); shorter spans can be
-  missed. Contacts use the geodetic horizon and loaded EOP; eclipses are Earth
-  conical shadow. No light time or refraction.
+  missed. Contacts use the geodetic horizon and loaded EOP, above the larger of
+  `minElevationDeg` and the `horizon` mask (linear in azimuth, wrapping);
+  eclipses are Earth conical shadow. No light time or refraction.
 
 ```js
 const { converged, values, goals, maneuvers, finiteBurns } = globe.target(sameOptions, {
@@ -539,7 +544,8 @@ const { times, quaternions, eulerDeg, sensorAnglesDeg, aem } = globe.attitude(sa
   sensors: [{ body: [0, 0, 1], to: "nadir" }],
   stepS: 30, aem: true,
 });
-globe.showAttitude("demo", { axes: true, sensors: [{ body: [0, 0, 1], color: "#ffcc33" }] });
+globe.showAttitude("demo", { axes: true, sensors: [{ body: [0, 0, 1], color: "#ffcc33",
+                                                     fov: { halfAngleDeg: 20 } }] });
 ```
 
 - `attitude` samples `terramenta_solare::attitude` every `stepS` over the
@@ -552,7 +558,29 @@ globe.showAttitude("demo", { axes: true, sensors: [{ body: [0, 0, 1], color: "#f
   counted. AEM: `ICRF` → `SC_BODY_1`, `A2B`, scalar last.
 - [`attitude.rs`](src/attitude.rs) draws tracks (body → TEME, slerped at the
   sim clock) at every drawn object of the layer: X red, Y green, Z blue, sized
-  to the camera distance; sensors as rays to the surface. Cleared by `Reset`.
+  to the camera distance; sensors as rays to the surface. A sensor `fov`
+  (`{ halfAngleDeg }` or `{ halfXDeg, halfYDeg, reference? }`) adds its
+  footprint on the globe sphere, rays past the limb on the limb, and four cone
+  edges. Cleared by `Reset`.
+
+```js
+const { start, stop, samples, cells } = globe.coverage({
+  spacecraft: [
+    { propagation: sameOptions },                       // line of sight
+    { propagation: other, attitude: { primary, secondary },
+      sensors: [{ body: [0, 0, 1], halfAngleDeg: 20 }] },
+  ],
+  resolution: 3, bounds: [-12, 35, 32, 62], minElevationDeg: 10, stepS: 60, boundaries: true,
+});
+// cells: [{ id (H3), latDeg, lonDeg, fraction, accesses, maxGapS, meanGapS, firstAccessS, boundary }]
+```
+
+- `coverage` propagates every spacecraft, samples them every `stepS` over the
+  span they share and accumulates `terramenta_solare::coverage` over H3 cells
+  in `bounds` (default the globe; ≤ 200 000 cells). A cell is covered when its
+  centre is above `minElevationDeg` and, for a spacecraft with `sensors`,
+  inside one of their fields of view under its `attitude` law. Gaps resolve to
+  one step. Degrees in the result are rounded to 1e-5.
 
 - Without a kernel, Sun/Moon come from analytic series (Moon ≤ 0.1°).
 - Without EOP, Earth orientation uses zero polar motion and UT1 = UTC.
@@ -775,12 +803,12 @@ src/
   geojson.rs       GeoJSON parsing and flattening
   simplestyle.rs   simplestyle-spec 1.1.0
   omm.rs           OMM → SGP4 propagators; OEM → tabulated motion
-  numerical.rs     propagate/propagateSpk/findEvents/target/attitude requests; kernel, EOP, space weather
+  numerical.rs     propagate/propagateSpk/findEvents/target/attitude/coverage requests; kernel, EOP, space weather
   tessellate.rs    Ear clipping, holes, antimeridian
   picking.rs       Overlay hit-testing
   overlays.rs      Overlay layers, geojson:// source, refresh, meshes
   ephemeris.rs     Satellite layers, omm:// source, propagation, arcs
-  attitude.rs      Body axes and sensor boresights on ephemeris layers
+  attitude.rs      Body axes, sensor boresights and footprints on ephemeris layers
   placemark.rs     Subsolar/sublunar icons
   view.rs          Globe/heliocentric view state and transition
   heliocentric.rs  Heliocentric bodies, spacecraft meshes, camera
