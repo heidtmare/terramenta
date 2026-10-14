@@ -126,6 +126,9 @@ const UNTRACKED = new Set([
   "propagateSpk",
   "findEvents",
   "target",
+  "attitude",
+  "showAttitude",
+  "hideAttitude",
 ]);
 
 let changeListener = null;
@@ -693,6 +696,24 @@ export const findEvents = (propagation, options) => required().findEvents(propag
  * Full option list: `terramenta-globe/src/wasm.rs`, `target`.
  */
 export const target = (propagation, options) => required().target(propagation, options);
+
+/**
+ * Attitude of `propagation` (`propagate` options) under a pointing law:
+ * `{times, quaternions, eulerDeg, sensorAnglesDeg, undefined, aem?}`; times
+ * Unix seconds, quaternions body → GCRF `[x, y, z, w]`, Euler 3-2-1 `[roll,
+ * pitch, yaw]` from LVLH. `options`: `{quaternion | primary + secondary,
+ * spin?, target?, sensors?, stepS?, aem?}`. Throws on bad input.
+ * Full option list: `terramenta-globe/src/wasm.rs`, `attitude`.
+ */
+export const attitude = (propagation, options) => required().attitude(propagation, options);
+
+/**
+ * Draws the last `attitude` result on ephemeris layer `id`: `{axes?, sensors:
+ * [{body, color}]}`. `false` if there is no result.
+ */
+export const showAttitude = (id, options) => required().showAttitude(id, options);
+
+export const hideAttitude = (id) => required().hideAttitude(id);
 
 /**
  * Propagates `propagation` (`propagate` options; `kvn` ignored) and puts the

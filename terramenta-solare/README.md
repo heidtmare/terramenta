@@ -37,9 +37,10 @@ this example).*
 | [`moon`](src/moon.rs) | Analytic geocentric Moon (Montenbruck & Gill), EME2000; third body without kernels. |
 | [`maneuver`](src/maneuver.rs) | `ImpulsiveManeuver` (rocket-equation mass), `FiniteBurn` (thrust, Isp, ṁ; cut-off at dry mass), `LocalFrame::{Inertial, Vnb, Rsw, Lvlh}`. |
 | [`targeting`](src/targeting.rs) | `solve`: Newton differential correction, forward-difference Jacobian, minimum-norm / least-squares steps, per-variable step cap, backtracking. |
+| [`attitude`](src/attitude.rs) | `Profile`: `AlignConstrain` (TRIAD, primary exact, secondary constrained) or inertial `DQuat`, optional body-axis `Spin`. `Direction`: nadir, zenith, ±velocity, ±orbit normal, ±Sun, target, inertial. `lvlh_euler_321`, `off_axis_angle`, `slerp`. Quaternions body → inertial. |
 | [`events`](src/events.rs) | Grid + Brent root finding on scalar event functions; `GroundStation` look angles and `contacts`, conical `eclipses`, apsides/nodes (`orbit_events`). |
 | [`interpolate`](src/interpolate.rs) | `SampledEphemeris`: Lagrange / Hermite interpolation of tabulated states; implements `Ephemeris`. |
-| [`ccsds`](src/ccsds.rs) | OEM and OPM (CCSDS 502.0-B-3, KVN) read/write. UTC/TAI/TT/TDB/GPS; UTC leap seconds as `:60`. |
+| [`ccsds`](src/ccsds.rs) | OEM and OPM (CCSDS 502.0-B-3, KVN) read/write; quaternion AEM (504.0-B-1, KVN) read/write, `B2A` and scalar-first normalised on read. UTC/TAI/TT/TDB/GPS; UTC leap seconds as `:60`. |
 | [`spk`](src/spk.rs) | `write_spk`: little-endian DAF/SPK, Type 13 (Hermite) and Type 9 (Lagrange) segments, chained summary records. Epochs in SPICE ET. |
 | [`tle`](src/tle.rs) | `Sgp4Ephemeris`: TLE/OMM via [`sgp4`](https://docs.rs/sgp4) (AFSPC/WGS-72 mode), TEME or GCRF output. |
 | [`orbit`](src/orbit.rs) | `OrbitalElements`: state vector ↔ classical elements, two-body propagation (`state_at`). |
