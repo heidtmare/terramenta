@@ -32,8 +32,8 @@ import { PLACES } from "./places.js";
 import { mountProjectSection } from "./project-panel.js";
 import { button, choice, slider, toggle } from "./widgets.js";
 
-/** `project`/`source` as `loadRequestedProject` returns them; `tab` is the tab opened first. */
-export function mountPanel(root, { project, source, tab }) {
+/** `tab`: the tab opened first; `signal` aborts when the project closes. */
+export function mountPanel(root, { tab, signal }) {
   const limits = globe.limits();
   const layers = globe.layers();
   const vectorTileLayers = globe.vectorLayers();
@@ -168,7 +168,7 @@ export function mountPanel(root, { project, source, tab }) {
 
   // Enough of a feature to be its own file; `bind` is handed over so its
   // controls follow the same one-way rule as everything here.
-  const overlays = mountOverlays(bind);
+  const overlays = mountOverlays(bind, signal);
 
   // --- Satellites ----------------------------------------------------------
 
@@ -403,7 +403,7 @@ export function mountPanel(root, { project, source, tab }) {
   // imagery. What is left is how the scene is viewed rather than what is in it.
   const mission = mountMission(bind);
 
-  const projectSection = mountProjectSection(bind, project, source);
+  const projectSection = mountProjectSection({ signal });
 
   const { strip, panes, select } = tabs([
     { id: "project", label: "Project", panes: [projectSection] },

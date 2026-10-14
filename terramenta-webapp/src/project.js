@@ -3,9 +3,10 @@
  *
  * A project is the full initial scene — layers, missions, clock, camera, UI
  * layout and an optional director. Every project, bundled or user-supplied,
- * loads the same way: `?project=<url>` (or `?project=session` for a local file
- * stashed in `sessionStorage`), then a page load onto a fresh globe. Format:
- * README, "Project files".
+ * loads the same way: parsed here, then applied onto a reset globe by
+ * `workspace.js`. `?project=<url>` (or `?project=session` for a local file
+ * stashed in `sessionStorage`) names the open project, so a reload reopens it.
+ * Format: README, "Project files".
  *
  * Relative URLs (project path and layer `url`s) resolve against the app root,
  * not the project file.
@@ -21,7 +22,7 @@ export const PROJECT_EXTENSION = ".terramenta.json";
 export const MANIFEST_URL = "projects/manifest.json";
 
 const SESSION_KEY = "terramenta.project";
-const SESSION_SOURCE = "session";
+export const SESSION_SOURCE = "session";
 
 /** Loaded with no `?project=`. */
 export const EMPTY_PROJECT = { terramenta: PROJECT_VERSION, name: "Untitled" };
@@ -43,31 +44,75 @@ export class ProjectError extends Error {
 }
 
 // --- Loading -----------------------------------------------------------------
+// Loaders resolve to `{project, source, param}`: `source` is what the UI shows
+// (path or file name, `null` if unsaved), `param` the `?project=` value that
+// reopens it (`null`: none).
 
 /** `?project=` value, or `null`. */
 export function projectParam() {
   return new URLSearchParams(location.search).get("project");
 }
 
-/** Fetches and parses the project named by `?project=`; `EMPTY_PROJECT` if none. */
+/** Sets or clears `?project=` without navigating. */
+export function setProjectParam(param) {
+  const params = new URLSearchParams(location.search);
+  if (param) params.set("project", param);
+  else params.delete("project");
+  const query = params.toString();
+  history.replaceState(history.state, "", `${location.pathname}${query ? `?${query}` : ""}`);
+}
+
+/** The project named by `?project=`; the empty project if none. */
 export async function loadRequestedProject() {
   const param = projectParam();
-  if (!param) return { project: parseProject(EMPTY_PROJECT), source: null };
+  if (!param) return emptyProject();
   if (param === SESSION_SOURCE) {
     const stashed = readSession();
     if (!stashed) throw new ProjectError(["No local project in this session — open the file again."]);
-    return { project: parseProject(JSON.parse(stashed.text)), source: stashed.name };
+    return projectFromText(stashed.text, stashed.name);
   }
-  const url = resolveUrl(param);
-  const response = await fetch(url);
-  if (!response.ok) throw new ProjectError([`${param}: HTTP ${response.status}`]);
+  return fetchProject(param);
+}
+
+export function emptyProject() {
+  return { project: parseProject(structuredClone(EMPTY_PROJECT)), source: null, param: null };
+}
+
+/** Fetches a project by URL (relative to the app root, or absolute). */
+export async function fetchProject(url) {
+  const response = await fetch(resolveUrl(url));
+  if (!response.ok) throw new ProjectError([`${url}: HTTP ${response.status}`]);
+  return projectFromText(await response.text(), url, url);
+}
+
+/** Reads a local file; reopened on reload from `sessionStorage`. */
+export async function readProjectFile(file) {
+  return projectFromText(await file.text(), file.name);
+}
+
+/**
+ * Parses project text. `param` omitted: a local project, stashed in
+ * `sessionStorage` once opened (`stashProject`).
+ */
+export function projectFromText(text, name, param = SESSION_SOURCE) {
   let json;
   try {
-    json = await response.json();
+    json = JSON.parse(text);
   } catch (error) {
-    throw new ProjectError([`${param}: not JSON (${error.message})`]);
+    throw new ProjectError([`${name}: not JSON (${error.message})`]);
   }
-  return { project: parseProject(json), source: param };
+  return { project: parseProject(json), source: name, param, text };
+}
+
+/** Stashes a local project so `?project=session` reopens it. Best effort. */
+export function stashProject({ source, text }) {
+  try {
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify({ name: source, text }));
+    return true;
+  } catch (error) {
+    console.warn(`Project: cannot stash ${source} in sessionStorage`, error);
+    return false;
+  }
 }
 
 /** Bundled project list; `[]` if the manifest is missing. */
@@ -78,37 +123,6 @@ export async function loadManifest() {
   } catch {
     return [];
   }
-}
-
-/** Reloads onto a project by URL (relative to the app root, or absolute). */
-export function openProjectUrl(url) {
-  const params = new URLSearchParams(location.search);
-  params.set("project", url);
-  location.assign(`${location.pathname}?${params}`);
-}
-
-/** Validates a local file, stashes it, reloads onto it. Throws `ProjectError` if invalid. */
-export async function openProjectFile(file) {
-  const text = await file.text();
-  let json;
-  try {
-    json = JSON.parse(text);
-  } catch (error) {
-    throw new ProjectError([`${file.name}: not JSON (${error.message})`]);
-  }
-  parseProject(json);
-  try {
-    sessionStorage.setItem(SESSION_KEY, JSON.stringify({ name: file.name, text }));
-  } catch (error) {
-    throw new ProjectError([`${file.name}: cannot stash in sessionStorage (${error.message})`]);
-  }
-  if (projectParam() === SESSION_SOURCE) location.reload();
-  else openProjectUrl(SESSION_SOURCE);
-}
-
-/** Reloads with no project. */
-export function openEmptyProject() {
-  location.assign(location.pathname);
 }
 
 function readSession() {
@@ -436,8 +450,9 @@ function validator(errors) {
 // --- Applying ----------------------------------------------------------------
 
 /**
- * Queues the project's scene onto the globe. Call between `globe.load()` and
- * `globe.start()`; pass `startOptions(project)` to `start`.
+ * Queues the project's scene onto the globe: before `globe.start()` (pass
+ * `startOptions(project)` to `start`), or after `globe.reset()`. Only keys the
+ * project sets are sent; everything else keeps the fresh-globe default.
  */
 export function applyProject(project) {
   if (project.hud?.visible !== undefined) globe.setHudVisible(project.hud.visible);

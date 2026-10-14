@@ -50,6 +50,7 @@ export async function load() {
     const module = await import(MODULE_URL);
     await module.default();
     wasm = module;
+    track(module);
   }
   return wasm;
 }
@@ -77,7 +78,94 @@ export async function start(canvasSelector, { view } = {}) {
 
 function required() {
   if (!wasm) throw new Error("The globe has not been loaded yet — await load() first.");
-  return wasm;
+  return tracked ?? wasm;
+}
+
+// --- Change tracking ---------------------------------------------------------
+// Every call through `required()` that alters what a saved project would hold
+// notifies `onSceneChange`, unless made inside `quietly`. Camera moves, view
+// switches, pins, refreshes and queries do not count: they are not saved, or
+// (camera) are not worth an unsaved-changes prompt.
+
+const UNTRACKED = new Set([
+  "layers",
+  "vectorLayers",
+  "limits",
+  "onState",
+  "start",
+  "reset",
+  "lookAt",
+  "setAltitude",
+  "orbitBy",
+  "zoomBy",
+  "resetView",
+  "setView",
+  "toggleView",
+  "refreshOverlay",
+  "refreshEphemeris",
+  "ephemerisObjects",
+  "ephemerisGeometry",
+  "overlayGeometry",
+  "pinFeature",
+  "clearPinnedFeature",
+  "pinSatellite",
+  "clearPinnedSatellite",
+  "pinPlacemark",
+  "clearPinnedPlacemark",
+  "setHelpVisible",
+  "loadKernel",
+  "loadEop",
+  "loadSpaceWeather",
+  "propagationEnvironment",
+  "propagate",
+  "propagateSpk",
+]);
+
+let changeListener = null;
+let quietDepth = 0;
+let tracked = null;
+
+function track(module) {
+  tracked = new Proxy(module, {
+    get(target, key) {
+      const value = target[key];
+      if (typeof value !== "function" || UNTRACKED.has(key)) return value;
+      return (...args) => {
+        const result = value(...args);
+        if (quietDepth === 0) changeListener?.(key);
+        return result;
+      };
+    },
+  });
+}
+
+/** `callback(command)` after each scene-changing command not made `quietly`. */
+export function onSceneChange(callback) {
+  changeListener = callback;
+}
+
+/** Runs `fn` without reporting scene changes (project application, directors). */
+export function quietly(fn) {
+  quietDepth++;
+  try {
+    return fn();
+  } finally {
+    quietDepth--;
+  }
+}
+
+/**
+ * Restores a freshly started globe — layers, missions, pins removed; settings,
+ * cameras and clock at startup values; globe view — and forgets the recorded
+ * sources. Queued like any command.
+ */
+export function reset() {
+  sources.overlays.clear();
+  sources.ephemerides.clear();
+  sources.missions.clear();
+  sources.selected.clear();
+  sources.camera = null;
+  return required().reset();
 }
 
 // --- Sources -----------------------------------------------------------------

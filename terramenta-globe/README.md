@@ -77,6 +77,7 @@ from a real failure.
 | Function | Purpose |
 | --- | --- |
 | `layers()` `vectorLayers()` `limits()` | Imagery and vector tile presets; control ranges |
+| `reset()` | Fresh-globe state: every overlay, ephemeris and mission removed, pins cleared, settings/cameras/clock at startup values, globe view |
 | `lookAt(lat, lon, altitudeKm?)` | Point the camera straight down at a coordinate |
 | `setAltitude(km)` `zoomBy(exp)` `orbitBy(yawDeg, pitchDeg)` `resetView()` | Camera movement |
 | `setFrame("ecef" \| "eci")` `toggleFrame()` | Reference frame of the globe scene |

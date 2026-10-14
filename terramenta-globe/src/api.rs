@@ -320,6 +320,12 @@ pub enum GlobeCommand {
     /// Whether the globe's own keyboard shortcuts are live. An embedder that
     /// binds its own keys turns these off so the two do not both fire.
     SetKeyboardEnabled(bool),
+
+    /// Back to a freshly started globe: every overlay, ephemeris and mission
+    /// removed, pins cleared, every setting and both cameras at their startup
+    /// values, clock at now, globe view. Lets an embedder switch scenes
+    /// without restarting the module.
+    Reset,
 }
 
 /// Commands waiting to be applied.
@@ -1055,6 +1061,32 @@ fn apply_commands(
             GlobeCommand::SetHudVisible(visible) => hud.visible = visible,
             GlobeCommand::SetHelpVisible(visible) => hud.help_visible = visible,
             GlobeCommand::SetKeyboardEnabled(enabled) => input.keyboard = enabled,
+
+            GlobeCommand::Reset => {
+                overlays.reset();
+                ephemerides.reset();
+                missions.reset();
+                *placemarks = PlacemarkSettings::default();
+                *gnc = GncSettings::default();
+                *hud = HudSettings::default();
+                *input = GlobeInput::default();
+                *clock = SimClock::default();
+                sun.shaded = true;
+                imagery.select_preset(0);
+                imagery.enabled = true;
+                vector_tiles.reset();
+                set_frame(&mut frame, &mut realigned, FrameMode::default());
+                frame.sync_rotation(clock.unix_seconds);
+                if let Some(camera) = camera.as_mut() {
+                    camera.reset();
+                }
+                if let Some(mut helio) = helio.iter_mut().next() {
+                    *helio = HeliocentricCamera::default();
+                }
+                if *view != ViewState::Globe {
+                    view_requests.write(RequestViewChange(ViewMode::Globe));
+                }
+            }
         }
     }
 }

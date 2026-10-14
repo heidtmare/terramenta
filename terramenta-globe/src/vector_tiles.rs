@@ -193,6 +193,8 @@ pub struct VectorTileSettings {
     pub presets: Vec<VectorTileLayer>,
     pub preset_index: usize,
     pub enabled: bool,
+    /// `presets` and `enabled` as built, before any restyle.
+    initial: (Vec<VectorTileLayer>, bool),
 }
 
 impl VectorTileSettings {
@@ -233,6 +235,14 @@ impl VectorTileSettings {
 
     pub fn cycle_preset(&mut self) {
         self.select_preset(self.preset_index + 1);
+    }
+
+    /// Restores the presets, their styles and the switch as built.
+    pub fn reset(&mut self) {
+        let (presets, enabled) = self.initial.clone();
+        self.presets = presets;
+        self.enabled = enabled;
+        self.select_preset(0);
     }
 
     pub fn cycle_preset_back(&mut self) {
@@ -597,6 +607,10 @@ impl Plugin for VectorTileSourcePlugin {
             presets: self.presets.clone(),
             preset_index: 0,
             enabled: self.enabled && !self.presets.is_empty(),
+            initial: (
+                self.presets.clone(),
+                self.enabled && !self.presets.is_empty(),
+            ),
         });
     }
 }

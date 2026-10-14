@@ -34,7 +34,9 @@ import { button, setUnlessFocused, toggle } from "./widgets.js";
  * looking exactly like the first.
  */
 const PALETTE = ["#ff9e3d", "#7fd4ff", "#ffe066", "#ff7aa2", "#9df08a"];
-let added = 0;
+
+/** Next palette colour: by how many overlays the open project has. */
+const nextColor = () => PALETTE[globe.recordedSources().overlays.size % PALETTE.length];
 
 /** Nothing sensible polls faster than this, and the globe clamps it anyway. */
 const MIN_REFRESH_SECONDS = 5;
@@ -46,7 +48,7 @@ function addFeed({ id, url, label, refreshSeconds = null, options = {} }) {
     url,
     label: label ?? labelForUrl(url),
     refreshSeconds,
-    ...paint(PALETTE[added++ % PALETTE.length], fillAlpha),
+    ...paint(nextColor(), fillAlpha),
     ...rest,
   });
 }
@@ -72,9 +74,10 @@ function paint(hex, fillAlpha = "3a") {
  * Builds the overlay section.
  *
  * `bind(node, sync)` is the panel's own registration: it is what arranges for
- * `sync` to be called with every state snapshot.
+ * `sync` to be called with every state snapshot. `signal` aborts when the
+ * project closes, stopping file refreshes.
  */
-export function mountOverlays(bind) {
+export function mountOverlays(bind, signal) {
   /** Local files, by layer id, so they can be re-read when a refresh is due. */
   const files = new Map();
 
@@ -124,25 +127,29 @@ export function mountOverlays(bind) {
     files.set(id, {
       file,
       periodSeconds: existing?.periodSeconds ?? period(),
-      color: existing?.color ?? PALETTE[added++ % PALETTE.length],
+      color: existing?.color ?? nextColor(),
       since: performance.now(),
     });
     await sendFile(id);
   };
 
   /** Re-reads a file and hands the globe its text, replacing the layer. */
-  const sendFile = async (id) => {
+  const sendFile = async (id, quiet = false) => {
     const entry = files.get(id);
     if (!entry) return;
     try {
       const text = await entry.file.text();
+      if (signal?.aborted) return;
       entry.since = performance.now();
-      globe.addOverlay(id, {
-        text,
-        label: entry.file.name,
-        // Kept, so a re-read does not repaint a layer the user has recoloured.
-        ...paint(entry.color),
-      });
+      const add = () =>
+        globe.addOverlay(id, {
+          text,
+          label: entry.file.name,
+          // Kept, so a re-read does not repaint a layer the user has recoloured.
+          ...paint(entry.color),
+        });
+      if (quiet) globe.quietly(add);
+      else add();
     } catch (error) {
       // The file moved or was replaced since it was picked. Nothing to do but
       // stop asking for it.
@@ -153,13 +160,15 @@ export function mountOverlays(bind) {
 
   // One timer for every file, rather than one each: they are all doing the same
   // thing at second resolution, and a single tick is easier to reason about.
-  setInterval(() => {
+  // Re-reads are not edits, so they do not mark the project unsaved.
+  const timer = setInterval(() => {
     const now = performance.now();
     for (const [id, entry] of files) {
       if (!entry.periodSeconds) continue;
-      if (now - entry.since >= entry.periodSeconds * 1000) sendFile(id);
+      if (now - entry.since >= entry.periodSeconds * 1000) sendFile(id, true);
     }
   }, 1000);
+  signal?.addEventListener("abort", () => clearInterval(timer));
 
   const adding = el(
     "div",
