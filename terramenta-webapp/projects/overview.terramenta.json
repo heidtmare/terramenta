@@ -1,5 +1,6 @@
 {
-  "terramenta": 1,
+  "$schema": "../schema/project.schema.json",
+  "terramenta": 2,
   "name": "Overview",
   "description": "GeoJSON geometry tour, extruded solid, live USGS earthquakes, Celestrak crewed stations.",
   "ui": { "tab": "data" },

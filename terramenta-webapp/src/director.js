@@ -2,8 +2,10 @@
  * Directors: scripted view/clock control driven by the state stream, selected
  * by a project's `director.type`.
  *
- * Each entry: `validate(config, {missionIds})` → error strings (paths relative
- * to `director`), and `create(config)` → `(state) => void`.
+ * Each entry: `validate(config, {missionIds})` → reference errors (paths
+ * relative to `director`), and `create(config)` → `(state) => void`. Fields are
+ * typed in `schema/project.schema.json` (`$defs/<type>`, listed in
+ * `$defs/director`).
  */
 
 import * as globe from "./globe.js";
@@ -24,21 +26,7 @@ const missionFlight = {
   defaults: { launchLeadSeconds: 3_600, departureTimeScale: 600, departureDoublingSeconds: 2 },
 
   validate(config, { missionIds }) {
-    const errors = [];
-    if (typeof config.mission !== "string") errors.push("mission: expected a mission id");
-    else if (!missionIds.has(config.mission)) errors.push(`mission: no mission "${config.mission}"`);
-    for (const key of Object.keys(this.defaults)) {
-      const value = config[key];
-      if (value !== undefined && !(Number.isFinite(value) && value > 0)) {
-        errors.push(`${key}: expected a positive number`);
-      }
-    }
-    for (const key of Object.keys(config)) {
-      if (key !== "type" && key !== "mission" && !(key in this.defaults)) {
-        console.warn(`Project: unknown key director.${key}`);
-      }
-    }
-    return errors;
+    return missionIds.has(config.mission) ? [] : [`mission: no mission "${config.mission}"`];
   },
 
   create(config) {

@@ -6,7 +6,7 @@
  * loads the same way: parsed here, then applied onto a reset globe by
  * `workspace.js`. `?project=<url>` (or `?project=session` for a local file
  * stashed in `sessionStorage`) names the open project, so a reload reopens it.
- * Format: README, "Project files".
+ * Format: `schema/project.schema.json`; README, "Project files".
  *
  * Relative URLs (project path and layer `url`s) resolve against the app root,
  * not the project file.
@@ -14,8 +14,11 @@
 
 import * as globe from "./globe.js";
 import { DIRECTORS } from "./director.js";
+import { validate } from "./schema.js";
+import SCHEMA from "../schema/project.schema.json" with { type: "json" };
 
-export const PROJECT_VERSION = 1;
+/** Format version written; older ones are upgraded on load (`migrateProject`). */
+export const PROJECT_VERSION = 2;
 export const PROJECT_EXTENSION = ".terramenta.json";
 
 /** Bundled projects: `[{file, name, description}]`, paths relative to `projects/`. */
@@ -26,15 +29,6 @@ export const SESSION_SOURCE = "session";
 
 /** Loaded with no `?project=`. */
 export const EMPTY_PROJECT = { terramenta: PROJECT_VERSION, name: "Untitled" };
-
-const PANELS = ["full", "flight"];
-const TABS = ["project", "imagery", "data", "other", "mission"];
-const VIEWS = ["globe", "heliocentric"];
-const FRAMES = ["ecef", "eci"];
-const ANCHORS = ["sun", "earth", "mars", "barycenter"];
-const TRAIL_PATHS = ["track", "orbit"];
-const ALTITUDE_MODES = ["relativeToSurface", "clampToSurface"];
-const STYLE_FIELDS = ["pointColor", "pointSizePx", "lineColor", "lineWidthPx", "fillColor"];
 
 export class ProjectError extends Error {
   constructor(errors) {
@@ -148,303 +142,100 @@ function portableUrl(url) {
 // --- Validation --------------------------------------------------------------
 
 /**
- * Validates and normalises a parsed project. Throws `ProjectError` listing
- * every problem. Unknown keys warn, not fail.
+ * Upgrades, validates and returns a parsed project. Throws `ProjectError`
+ * listing every problem. Structure is checked against `SCHEMA`; ids and
+ * references here. Unknown keys go to `warn`, not fail.
  */
-export function parseProject(json) {
+export function parseProject(json, { warn = (message) => console.warn(`Project: ${message}`) } = {}) {
+  const project = migrateProject(json, warn);
+  const errors = validate(SCHEMA, project, { warn: (path) => warn(`unknown key ${path}`) });
+  // References assume the structure holds.
+  if (!errors.length) errors.push(...referenceErrors(project));
+  if (errors.length) throw new ProjectError(errors);
+  return project;
+}
+
+/**
+ * Brings an older format version up to `PROJECT_VERSION`; returns a copy.
+ * `MIGRATIONS[n]` rewrites version `n` into `n + 1` in place.
+ */
+export function migrateProject(json, warn = () => {}) {
+  if (json === null || typeof json !== "object" || Array.isArray(json)) return json;
+  const version = json.terramenta;
+  if (!Number.isInteger(version) || version < 1) {
+    throw new ProjectError([`terramenta: expected a format version 1–${PROJECT_VERSION}, got ${JSON.stringify(version)}`]);
+  }
+  if (version > PROJECT_VERSION) {
+    throw new ProjectError([
+      `terramenta: format version ${version} is newer than this build reads (${PROJECT_VERSION})`,
+    ]);
+  }
+  if (version === PROJECT_VERSION) return json;
+  const project = structuredClone(json);
+  for (let from = version; from < PROJECT_VERSION; from++) {
+    MIGRATIONS[from](project);
+    project.terramenta = from + 1;
+  }
+  warn(`upgraded from format version ${version} to ${PROJECT_VERSION}; saving writes ${PROJECT_VERSION}`);
+  return project;
+}
+
+const MIGRATIONS = {
+  /** 1 → 2: `picking` moves under `overlays`, where the state stream reports it. */
+  1(project) {
+    if (project.picking !== undefined) {
+      project.overlays = { ...project.overlays, picking: project.picking };
+      delete project.picking;
+    }
+  },
+};
+
+/** Ids, uniqueness and cross-references; `project` already matches `SCHEMA`. */
+function referenceErrors(project) {
   const errors = [];
-  const v = validator(errors);
+  const ids = (path, entries = []) => {
+    const seen = new Set();
+    entries.forEach((entry, index) => {
+      if (seen.has(entry.id)) errors.push(`${path}[${index}].id: duplicate "${entry.id}"`);
+      seen.add(entry.id);
+    });
+    return seen;
+  };
+  const overlayIds = ids("overlays.layers", project.overlays?.layers);
+  const ephemerisIds = ids("ephemerides.layers", project.ephemerides?.layers);
+  const missionIds = ids("missions", project.missions);
 
-  if (!v.object("", json)) throw new ProjectError(errors);
-  if (json.terramenta !== PROJECT_VERSION) {
-    errors.push(
-      `terramenta: expected format version ${PROJECT_VERSION}, got ${JSON.stringify(json.terramenta)}`,
-    );
-  }
-  v.keys("", json, [
-    "$schema",
-    "terramenta",
-    "name",
-    "description",
-    "ui",
-    "view",
-    "frame",
-    "clock",
-    "camera",
-    "imagery",
-    "vectorTiles",
-    "overlays",
-    "ephemerides",
-    "missions",
-    "placemarks",
-    "picking",
-    "gnc",
-    "hud",
-    "keyboard",
-    "director",
-  ]);
-  v.string("name", json.name);
-  v.string("description", json.description);
-  v.oneOf("view", json.view, VIEWS);
-  v.oneOf("frame", json.frame, FRAMES);
-  v.bool("picking", json.picking);
-  v.bool("keyboard", json.keyboard);
-
-  if (v.object("ui", json.ui, true)) {
-    v.keys("ui", json.ui, ["panel", "tab", "readout", "collapsed"]);
-    v.oneOf("ui.panel", json.ui.panel, PANELS);
-    v.oneOf("ui.tab", json.ui.tab, TABS);
-    v.bool("ui.readout", json.ui.readout);
-    v.bool("ui.collapsed", json.ui.collapsed);
-  }
-
-  if (v.object("clock", json.clock, true)) {
-    const clock = json.clock;
-    v.keys("clock", clock, ["epoch", "timeScale", "paused", "shaded"]);
-    if (clock.epoch !== undefined && clock.epoch !== "now" && !Number.isFinite(Date.parse(clock.epoch))) {
-      errors.push(`clock.epoch: expected ISO 8601 UTC or "now", got ${JSON.stringify(clock.epoch)}`);
-    }
-    v.number("clock.timeScale", clock.timeScale);
-    v.bool("clock.paused", clock.paused);
-    v.bool("clock.shaded", clock.shaded);
-  }
-
-  if (v.object("camera", json.camera, true)) {
-    const camera = json.camera;
-    v.keys("camera", camera, ["lat", "lon", "altitudeKm", "follow", "anchor"]);
-    v.number("camera.lat", camera.lat);
-    v.number("camera.lon", camera.lon);
-    v.number("camera.altitudeKm", camera.altitudeKm);
-    if ((camera.lat === undefined) !== (camera.lon === undefined)) {
-      errors.push("camera: lat and lon go together");
-    }
-    v.string("camera.follow", camera.follow);
-    v.oneOf("camera.anchor", camera.anchor, ANCHORS);
-    if (camera.follow !== undefined && camera.anchor !== undefined) {
-      errors.push("camera: follow and anchor are exclusive");
-    }
-  }
-
-  for (const key of ["imagery", "vectorTiles"]) {
-    if (!v.object(key, json[key], true)) continue;
-    v.keys(key, json[key], key === "imagery" ? ["enabled", "layer"] : ["enabled", "layer", "style"]);
-    v.bool(`${key}.enabled`, json[key].enabled);
-    const layer = json[key].layer;
-    if (layer !== undefined && typeof layer !== "string" && !Number.isInteger(layer)) {
-      errors.push(`${key}.layer: expected a preset label or index`);
-    }
-  }
-  if (json.vectorTiles && v.object("vectorTiles.style", json.vectorTiles.style, true)) {
-    v.style("vectorTiles.style", json.vectorTiles.style, true);
-  }
-
-  if (v.object("placemarks", json.placemarks, true)) {
-    v.keys("placemarks", json.placemarks, ["enabled"]);
-    v.bool("placemarks.enabled", json.placemarks.enabled);
-  }
-
-  if (v.object("hud", json.hud, true)) {
-    v.keys("hud", json.hud, ["visible", "help"]);
-    v.bool("hud.visible", json.hud.visible);
-    v.bool("hud.help", json.hud.help);
-  }
-
-  if (v.object("gnc", json.gnc, true)) {
-    const gnc = json.gnc;
-    v.keys("gnc", gnc, [
-      "enabled",
-      "eciAxes",
-      "ecefAxes",
-      "graticule",
-      "graticuleStepDeg",
-      "sidereal",
-      "track",
-      "trackOrbits",
-      "focus",
-    ]);
-    for (const key of ["enabled", "eciAxes", "ecefAxes", "graticule", "sidereal", "track"]) {
-      v.bool(`gnc.${key}`, gnc[key]);
-    }
-    v.number("gnc.graticuleStepDeg", gnc.graticuleStepDeg);
-    v.number("gnc.trackOrbits", gnc.trackOrbits);
-    if (v.object("gnc.focus", gnc.focus, true)) {
-      v.string("gnc.focus.layer", gnc.focus.layer, true);
-      v.integer("gnc.focus.noradId", gnc.focus.noradId, true);
-    }
-  }
-
-  const overlayIds = layerSection(v, "overlays", json.overlays, (path, layer) => {
-    v.keys(path, layer, [
-      "id",
-      "url",
-      "text",
-      "label",
-      "refreshSeconds",
-      "visible",
-      "simpleStyle",
-      "altitudeMode",
-      "altitudeScale",
-      "extrude",
-      ...STYLE_FIELDS,
-    ]);
-    v.bool(`${path}.simpleStyle`, layer.simpleStyle);
-    v.oneOf(`${path}.altitudeMode`, layer.altitudeMode, ALTITUDE_MODES);
-    v.number(`${path}.altitudeScale`, layer.altitudeScale);
-    v.bool(`${path}.extrude`, layer.extrude);
-    v.style(path, layer);
-  });
-
-  layerSection(v, "ephemerides", json.ephemerides, (path, layer) => {
-    v.keys(path, layer, [
-      "id",
-      "url",
-      "text",
-      "label",
-      "refreshSeconds",
-      "visible",
-      "select",
-      "trails",
-      "leadingOrbits",
-      "trailingOrbits",
-      "trailSamples",
-      "trailPath",
-      ...STYLE_FIELDS,
-    ]);
-    if (layer.select !== undefined && layer.select !== null) {
-      if (!Array.isArray(layer.select) || !layer.select.every(Number.isInteger)) {
-        errors.push(`${path}.select: expected an array of NORAD ids`);
+  for (const key of ["overlays", "ephemerides"]) {
+    project[key]?.layers?.forEach((layer, index) => {
+      if ((layer.url === undefined) === (layer.text === undefined)) {
+        errors.push(`${key}.layers[${index}]: exactly one of url and text`);
       }
-    }
-    v.bool(`${path}.trails`, layer.trails);
-    v.number(`${path}.leadingOrbits`, layer.leadingOrbits);
-    v.number(`${path}.trailingOrbits`, layer.trailingOrbits);
-    v.integer(`${path}.trailSamples`, layer.trailSamples);
-    v.oneOf(`${path}.trailPath`, layer.trailPath, TRAIL_PATHS);
-    v.style(path, layer);
-  });
-
-  const missionIds = new Set();
-  if (v.array("missions", json.missions, true)) {
-    json.missions.forEach((mission, index) => {
-      const path = `missions[${index}]`;
-      if (!v.object(path, mission)) return;
-      v.keys(path, mission, [
-        "id",
-        "origin",
-        "destination",
-        "departureSearchDays",
-        "arrivalSearchStartDays",
-        "arrivalSearchEndDays",
-        "searchSteps",
-        "parkingAltitudeKm",
-      ]);
-      if (v.string(`${path}.id`, mission.id, true)) {
-        if (missionIds.has(mission.id)) errors.push(`${path}.id: duplicate "${mission.id}"`);
-        missionIds.add(mission.id);
-      }
-      v.string(`${path}.origin`, mission.origin);
-      v.string(`${path}.destination`, mission.destination);
-      v.number(`${path}.departureSearchDays`, mission.departureSearchDays);
-      v.number(`${path}.arrivalSearchStartDays`, mission.arrivalSearchStartDays);
-      v.number(`${path}.arrivalSearchEndDays`, mission.arrivalSearchEndDays);
-      v.integer(`${path}.searchSteps`, mission.searchSteps);
-      v.number(`${path}.parkingAltitudeKm`, mission.parkingAltitudeKm);
     });
   }
 
-  if (json.camera?.follow !== undefined && !missionIds.has(json.camera.follow)) {
-    errors.push(`camera.follow: no mission "${json.camera.follow}"`);
+  const camera = project.camera ?? {};
+  if ((camera.lat === undefined) !== (camera.lon === undefined)) errors.push("camera: lat and lon go together");
+  if (camera.follow !== undefined && camera.anchor !== undefined) {
+    errors.push("camera: follow and anchor are exclusive");
   }
-  if (json.gnc?.focus && overlayIds.has(json.gnc.focus.layer)) {
-    errors.push("gnc.focus.layer: names an overlay, expected an ephemeris layer");
-  }
-
-  if (v.object("director", json.director, true)) {
-    const director = DIRECTORS[json.director.type];
-    if (!director) {
-      errors.push(
-        `director.type: expected one of ${Object.keys(DIRECTORS).join(", ")}, ` +
-          `got ${JSON.stringify(json.director.type)}`,
-      );
-    } else {
-      errors.push(...director.validate(json.director, { missionIds }).map((e) => `director.${e}`));
-    }
+  if (camera.follow !== undefined && !missionIds.has(camera.follow)) {
+    errors.push(`camera.follow: no mission "${camera.follow}"`);
   }
 
-  if (errors.length) throw new ProjectError(errors);
-  return json;
-}
+  const focus = project.gnc?.focus;
+  if (focus && !ephemerisIds.has(focus.layer)) {
+    errors.push(
+      overlayIds.has(focus.layer)
+        ? "gnc.focus.layer: names an overlay, expected an ephemeris layer"
+        : `gnc.focus.layer: no ephemeris layer "${focus.layer}"`,
+    );
+  }
 
-/** Validates `{enabled, layers: [...]}`; returns the layer ids. */
-function layerSection(v, key, section, checkLayer) {
-  const ids = new Set();
-  if (!v.object(key, section, true)) return ids;
-  v.keys(key, section, ["enabled", "layers"]);
-  v.bool(`${key}.enabled`, section.enabled);
-  if (!v.array(`${key}.layers`, section.layers, true)) return ids;
-  section.layers.forEach((layer, index) => {
-    const path = `${key}.layers[${index}]`;
-    if (!v.object(path, layer)) return;
-    if (v.string(`${path}.id`, layer.id, true)) {
-      if (ids.has(layer.id)) v.errors.push(`${path}.id: duplicate "${layer.id}"`);
-      ids.add(layer.id);
-    }
-    if ((layer.url === undefined) === (layer.text === undefined)) {
-      v.errors.push(`${path}: exactly one of url and text`);
-    }
-    v.string(`${path}.url`, layer.url);
-    v.string(`${path}.text`, layer.text);
-    v.string(`${path}.label`, layer.label);
-    if (layer.refreshSeconds !== null) v.number(`${path}.refreshSeconds`, layer.refreshSeconds);
-    v.bool(`${path}.visible`, layer.visible);
-    checkLayer(path, layer);
-  });
-  return ids;
-}
-
-/** Type checks that push `path: message` and return whether the value passed. */
-function validator(errors) {
-  const fail = (path, expected, value) => {
-    errors.push(`${path || "(root)"}: expected ${expected}, got ${JSON.stringify(value)}`);
-    return false;
-  };
-  const optional = (value, required) => value === undefined && !required;
-  const v = {
-    errors,
-    object: (path, value, optionalValue = false) =>
-      value === undefined && optionalValue
-        ? false
-        : (value !== null && typeof value === "object" && !Array.isArray(value)) ||
-          fail(path, "an object", value),
-    array: (path, value, optionalValue = false) =>
-      value === undefined && optionalValue ? false : Array.isArray(value) || fail(path, "an array", value),
-    string: (path, value, required = false) =>
-      optional(value, required) ? false : typeof value === "string" || fail(path, "a string", value),
-    bool: (path, value) => optional(value) || typeof value === "boolean" || fail(path, "a boolean", value),
-    number: (path, value, required = false) =>
-      optional(value, required) || Number.isFinite(value) || fail(path, "a number", value),
-    integer: (path, value, required = false) =>
-      optional(value, required) || Number.isInteger(value) || fail(path, "an integer", value),
-    oneOf: (path, value, allowed) =>
-      optional(value) || allowed.includes(value) || fail(path, `one of ${allowed.join(", ")}`, value),
-    style(path, value, strict = false) {
-      if (strict) v.keys(path, value, STYLE_FIELDS);
-      for (const key of ["pointColor", "lineColor", "fillColor"]) {
-        const color = value[key];
-        if (color !== undefined && !/^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(color)) {
-          fail(`${path}.${key}`, "a hex colour", color);
-        }
-      }
-      v.number(`${path}.pointSizePx`, value.pointSizePx);
-      v.number(`${path}.lineWidthPx`, value.lineWidthPx);
-    },
-    keys(path, value, allowed) {
-      for (const key of Object.keys(value)) {
-        if (!allowed.includes(key)) console.warn(`Project: unknown key ${path ? `${path}.` : ""}${key}`);
-      }
-    },
-  };
-  return v;
+  if (project.director) {
+    const director = DIRECTORS[project.director.type];
+    errors.push(...director.validate(project.director, { missionIds }).map((error) => `director.${error}`));
+  }
+  return errors;
 }
 
 // --- Applying ----------------------------------------------------------------
@@ -474,7 +265,7 @@ export function applyProject(project) {
   if (project.overlays?.enabled !== undefined) globe.setOverlaysEnabled(project.overlays.enabled);
   if (project.ephemerides?.enabled !== undefined) globe.setEphemeridesEnabled(project.ephemerides.enabled);
   if (project.placemarks?.enabled !== undefined) globe.setPlacemarksEnabled(project.placemarks.enabled);
-  if (project.picking !== undefined) globe.setPickingEnabled(project.picking);
+  if (project.overlays?.picking !== undefined) globe.setPickingEnabled(project.overlays.picking);
 
   const gnc = project.gnc ?? {};
   const gncSetters = {
@@ -587,6 +378,7 @@ export function captureProject(state, base = {}) {
 
   project.overlays = {
     enabled: state.overlays.enabled,
+    picking: state.overlays.picking,
     layers: state.overlays.layers.map((layer) => {
       const recorded = sources.overlays.get(layer.id) ?? {};
       return {
@@ -637,7 +429,6 @@ export function captureProject(state, base = {}) {
   }));
 
   project.placemarks = { enabled: state.placemarks.enabled };
-  project.picking = state.overlays.picking;
 
   const gnc = state.gnc;
   project.gnc = {

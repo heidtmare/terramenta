@@ -1,0 +1,240 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Terramenta project",
+  "description": "*.terramenta.json, format version 2. Omitted fields keep fresh-globe defaults. Relative URLs resolve against the app root. Cross-references (ids, mission names) are checked by src/project.js.",
+  "type": "object",
+  "required": ["terramenta"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "terramenta": { "const": 2, "description": "Format version." },
+    "name": { "type": "string" },
+    "description": { "type": "string" },
+    "ui": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "panel": { "enum": ["full", "flight"] },
+        "tab": { "enum": ["project", "imagery", "data", "other", "mission"] },
+        "readout": { "type": "boolean" },
+        "collapsed": { "type": "boolean" }
+      }
+    },
+    "view": { "enum": ["globe", "heliocentric"] },
+    "frame": { "enum": ["ecef", "eci"] },
+    "clock": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "epoch": { "anyOf": [{ "const": "now" }, { "type": "string", "format": "date-time" }] },
+        "timeScale": { "type": "number" },
+        "paused": { "type": "boolean" },
+        "shaded": { "type": "boolean" }
+      }
+    },
+    "camera": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "lat and lon go together; follow and anchor are exclusive.",
+      "properties": {
+        "lat": { "type": "number", "minimum": -90, "maximum": 90 },
+        "lon": { "type": "number" },
+        "altitudeKm": { "type": "number", "exclusiveMinimum": 0 },
+        "follow": { "type": "string", "description": "Mission id." },
+        "anchor": { "enum": ["sun", "earth", "mars", "barycenter"] }
+      }
+    },
+    "imagery": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "layer": { "$ref": "#/$defs/preset" }
+      }
+    },
+    "vectorTiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "layer": { "$ref": "#/$defs/preset" },
+        "style": { "$ref": "#/$defs/style" }
+      }
+    },
+    "overlays": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "picking": { "type": "boolean" },
+        "layers": { "type": "array", "items": { "$ref": "#/$defs/overlayLayer" } }
+      }
+    },
+    "ephemerides": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "layers": { "type": "array", "items": { "$ref": "#/$defs/ephemerisLayer" } }
+      }
+    },
+    "missions": { "type": "array", "items": { "$ref": "#/$defs/mission" } },
+    "placemarks": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "enabled": { "type": "boolean" } }
+    },
+    "gnc": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "eciAxes": { "type": "boolean" },
+        "ecefAxes": { "type": "boolean" },
+        "graticule": { "type": "boolean" },
+        "graticuleStepDeg": { "type": "number", "exclusiveMinimum": 0 },
+        "sidereal": { "type": "boolean" },
+        "track": { "type": "boolean" },
+        "trackOrbits": { "type": "number", "minimum": 0 },
+        "focus": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["layer", "noradId"],
+          "properties": {
+            "layer": { "type": "string", "description": "Ephemeris layer id." },
+            "noradId": { "type": "integer" }
+          }
+        }
+      }
+    },
+    "hud": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "visible": { "type": "boolean" },
+        "help": { "type": "boolean" }
+      }
+    },
+    "keyboard": { "type": "boolean" },
+    "director": { "$ref": "#/$defs/director" }
+  },
+  "$defs": {
+    "color": {
+      "title": "a hex colour (#rgb, #rgba, #rrggbb, #rrggbbaa)",
+      "type": "string",
+      "pattern": "^#([0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$"
+    },
+    "preset": {
+      "description": "Preset label or index.",
+      "anyOf": [{ "type": "string" }, { "type": "integer", "minimum": 0 }]
+    },
+    "style": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pointColor": { "$ref": "#/$defs/color" },
+        "pointSizePx": { "type": "number", "minimum": 0 },
+        "lineColor": { "$ref": "#/$defs/color" },
+        "lineWidthPx": { "type": "number", "minimum": 0 },
+        "fillColor": { "$ref": "#/$defs/color" }
+      }
+    },
+    "refreshSeconds": {
+      "description": "Re-fetch period; null: never.",
+      "type": ["number", "null"],
+      "minimum": 0
+    },
+    "overlayLayer": {
+      "description": "GeoJSON. Exactly one of url and text.",
+      "type": "object",
+      "required": ["id"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "url": { "type": "string" },
+        "text": { "type": "string" },
+        "label": { "type": "string" },
+        "refreshSeconds": { "$ref": "#/$defs/refreshSeconds" },
+        "visible": { "type": "boolean" },
+        "simpleStyle": { "type": "boolean" },
+        "altitudeMode": { "enum": ["relativeToSurface", "clampToSurface"] },
+        "altitudeScale": { "type": "number" },
+        "extrude": { "type": "boolean" },
+        "pointColor": { "$ref": "#/$defs/color" },
+        "pointSizePx": { "type": "number", "minimum": 0 },
+        "lineColor": { "$ref": "#/$defs/color" },
+        "lineWidthPx": { "type": "number", "minimum": 0 },
+        "fillColor": { "$ref": "#/$defs/color" }
+      }
+    },
+    "ephemerisLayer": {
+      "description": "OMM JSON or KVN OEM. Exactly one of url and text.",
+      "type": "object",
+      "required": ["id"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "url": { "type": "string" },
+        "text": { "type": "string" },
+        "label": { "type": "string" },
+        "refreshSeconds": { "$ref": "#/$defs/refreshSeconds" },
+        "visible": { "type": "boolean" },
+        "select": {
+          "description": "NORAD ids drawn; null or omitted: all.",
+          "type": ["array", "null"],
+          "items": { "type": "integer" }
+        },
+        "trails": { "type": "boolean" },
+        "leadingOrbits": { "type": "number", "minimum": 0 },
+        "trailingOrbits": { "type": "number", "minimum": 0 },
+        "trailSamples": { "type": "integer", "minimum": 0 },
+        "trailPath": { "enum": ["track", "orbit"] },
+        "pointColor": { "$ref": "#/$defs/color" },
+        "pointSizePx": { "type": "number", "minimum": 0 },
+        "lineColor": { "$ref": "#/$defs/color" },
+        "lineWidthPx": { "type": "number", "minimum": 0 },
+        "fillColor": { "$ref": "#/$defs/color" }
+      }
+    },
+    "mission": {
+      "type": "object",
+      "required": ["id"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "origin": { "type": "string" },
+        "destination": { "type": "string" },
+        "departureSearchDays": { "type": "number", "exclusiveMinimum": 0 },
+        "arrivalSearchStartDays": { "type": "number", "minimum": 0 },
+        "arrivalSearchEndDays": { "type": "number", "exclusiveMinimum": 0 },
+        "searchSteps": { "type": "integer", "minimum": 1 },
+        "parkingAltitudeKm": { "type": "number", "minimum": 0 }
+      }
+    },
+    "director": {
+      "description": "Scripted clock/view control; see src/director.js.",
+      "type": "object",
+      "required": ["type"],
+      "properties": { "type": { "enum": ["missionFlight"] } },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "missionFlight" } } },
+          "then": { "$ref": "#/$defs/missionFlight" }
+        }
+      ]
+    },
+    "missionFlight": {
+      "description": "Flies the camera and clock through one mission.",
+      "type": "object",
+      "required": ["mission"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "missionFlight" },
+        "mission": { "type": "string", "description": "Mission id." },
+        "launchLeadSeconds": { "type": "number", "exclusiveMinimum": 0 },
+        "departureTimeScale": { "type": "number", "exclusiveMinimum": 0 },
+        "departureDoublingSeconds": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    }
+  }
+}

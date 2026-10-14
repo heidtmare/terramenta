@@ -49,10 +49,15 @@ export async function load() {
   if (!wasm) {
     const module = await import(MODULE_URL);
     await module.default();
-    wasm = module;
-    track(module);
+    attach(module);
   }
   return wasm;
+}
+
+/** Uses `module` as the globe without loading the wasm build; for tests. */
+export function attach(module) {
+  wasm = module;
+  track(module);
 }
 
 /**
