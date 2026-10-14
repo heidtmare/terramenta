@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Terramenta project",
-  "description": "*.terramenta.json, format version 2. Omitted fields keep fresh-globe defaults. Relative URLs resolve against the app root. Cross-references (ids, mission names, stop/durationS) are checked by src/project.js.",
+  "description": "*.terramenta.json, format version 3. Omitted fields keep fresh-globe defaults. Relative URLs resolve against the app root. Cross-references (ids, mission names, stop/durationS) are checked by src/project.js.",
   "type": "object",
   "required": ["terramenta"],
   "additionalProperties": false,
@@ -135,7 +135,23 @@
     "keyboard": { "type": "boolean" },
     "director": { "$ref": "#/$defs/director" },
     "timeline": { "$ref": "#/$defs/timeline" },
-    "analysis": { "$ref": "#/$defs/analysis" }
+    "analysis": { "$ref": "#/$defs/analysis" },
+    "groundStations": {
+      "description": "Sites contacts are searched from; see src/events.js.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/groundStation" }
+    },
+    "events": {
+      "description": "Event searches per spacecraft; contacts with every ground station always. See src/events.js.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "eclipses": { "type": "boolean", "description": "Earth umbra/penumbra (conical); default true." },
+        "apsides": { "type": "boolean", "description": "Default false." },
+        "nodes": { "type": "boolean", "description": "GCRF equator crossings; default false." },
+        "stepS": { "type": "number", "exclusiveMinimum": 0, "description": "Bracketing grid, s; spans shorter than this may be missed. Default 30." }
+      }
+    }
   },
   "$defs": {
     "color": {
@@ -230,8 +246,22 @@
         "parkingAltitudeKm": { "type": "number", "minimum": 0 }
       }
     },
+    "groundStation": {
+      "type": "object",
+      "required": ["id", "latDeg", "lonDeg"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$", "title": "letters, digits, - and _" },
+        "label": { "type": "string" },
+        "latDeg": { "type": "number", "minimum": -90, "maximum": 90, "description": "Geodetic, WGS 84." },
+        "lonDeg": { "type": "number", "minimum": -180, "maximum": 360 },
+        "altKm": { "type": "number", "description": "Above the ellipsoid; default 0." },
+        "minElevationDeg": { "type": "number", "minimum": -90, "maximum": 90, "description": "Mask; default 0." },
+        "color": { "$ref": "#/$defs/color" }
+      }
+    },
     "analysis": {
-      "description": "Saved plots (Reports tab) and porkchop studies (Mission tab); see src/analysis.js.",
+      "description": "Saved plots and porkchop studies (Analysis tab); see src/analysis.js.",
       "type": "object",
       "additionalProperties": false,
       "properties": {

@@ -36,6 +36,7 @@ this example).*
 | [`space_weather`](src/space_weather.rs) | `SpaceWeather`: CelesTrak `SW-All.csv` (observed, daily and monthly prediction) or constant; NRLMSISE-00 drivers. |
 | [`moon`](src/moon.rs) | Analytic geocentric Moon (Montenbruck & Gill), EME2000; third body without kernels. |
 | [`maneuver`](src/maneuver.rs) | `ImpulsiveManeuver` (rocket-equation mass), `FiniteBurn` (thrust, Isp, ṁ; cut-off at dry mass), `LocalFrame::{Inertial, Vnb, Rsw, Lvlh}`. |
+| [`events`](src/events.rs) | Grid + Brent root finding on scalar event functions; `GroundStation` look angles and `contacts`, conical `eclipses`, apsides/nodes (`orbit_events`). |
 | [`interpolate`](src/interpolate.rs) | `SampledEphemeris`: Lagrange / Hermite interpolation of tabulated states; implements `Ephemeris`. |
 | [`ccsds`](src/ccsds.rs) | OEM and OPM (CCSDS 502.0-B-3, KVN) read/write. UTC/TAI/TT/TDB/GPS; UTC leap seconds as `:60`. |
 | [`spk`](src/spk.rs) | `write_spk`: little-endian DAF/SPK, Type 13 (Hermite) and Type 9 (Lagrange) segments, chained summary records. Epochs in SPICE ET. |

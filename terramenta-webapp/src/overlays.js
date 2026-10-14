@@ -21,6 +21,7 @@
 
 import * as globe from "./globe.js";
 import { el, row, section } from "./dom.js";
+import { STATION_LAYER } from "./events.js";
 import { CATALOGUE, DEFAULT_FEED } from "./feeds.js";
 import { duration } from "./format.js";
 import { button, setUnlessFocused, toggle } from "./widgets.js";
@@ -205,7 +206,7 @@ export function mountOverlays(bind, signal) {
   const rows = new Map();
 
   bind(list, (state) => {
-    const layers = state.overlays.layers;
+    const layers = state.overlays.layers.filter((layer) => layer.id !== STATION_LAYER);
 
     // Rows are kept and updated rather than rebuilt, so a colour picker or a
     // period being edited is not torn out from under the pointer.

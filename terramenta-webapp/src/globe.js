@@ -124,6 +124,7 @@ const UNTRACKED = new Set([
   "propagationEnvironment",
   "propagate",
   "propagateSpk",
+  "findEvents",
 ]);
 
 let changeListener = null;
@@ -670,6 +671,16 @@ export const addPropagated = (id, options) => required().addPropagated(id, optio
 
 /** As `propagate`, returning a Type 13 SPK `Uint8Array` (`naifId`, default -100900). */
 export const propagateSpk = (options) => required().propagateSpk(options);
+
+/**
+ * Propagates `propagation` (`propagate` options) and searches it for events:
+ * `{contacts: [{station, aos, los, maxElevationAt, maxElevationDeg}],
+ * eclipses: [{kind: "penumbra" | "umbra", start, stop}], orbit: [{kind, at}]}`,
+ * Unix seconds. `options`: `{stations: [{id, latDeg, lonDeg, altKm,
+ * minElevationDeg}], eclipses, apsides, nodes, stepS}`. Throws on bad input.
+ * Full option list: `terramenta-globe/src/wasm.rs`, `findEvents`.
+ */
+export const findEvents = (propagation, options) => required().findEvents(propagation, options);
 
 /**
  * Propagates `propagation` (`propagate` options; `kvn` ignored) and puts the

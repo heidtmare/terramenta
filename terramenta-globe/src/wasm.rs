@@ -1134,6 +1134,37 @@ pub fn propagate_spk(options: JsValue) -> Result<Vec<u8>, JsError> {
     out.to_spk().map_err(|e| JsError::new(&e))
 }
 
+/// Propagates `propagation` (as [`propagate`]) and searches the result for events.
+///
+/// ```js
+/// const { contacts, eclipses, orbit } = findEvents(propagation, {
+///   stations: [{ id: "wallops", latDeg: 37.94, lonDeg: -75.46, altKm: 0.01,
+///                minElevationDeg: 5 }],
+///   eclipses: true,          // Earth shadow, conical
+///   apsides: true, nodes: true,
+///   stepS: 30,               // bracketing grid; shorter spans may be missed
+/// });
+/// // contacts: [{ station, aos, los, maxElevationAt, maxElevationDeg }]
+/// // eclipses: [{ kind: "penumbra" | "umbra", start, stop }]  (penumbra includes umbra)
+/// // orbit:    [{ kind: "periapsis" | "apoapsis" | "ascendingNode" | "descendingNode", at }]
+/// ```
+///
+/// Times are Unix seconds (UTC); spans open at either end are clipped to the propagation.
+#[wasm_bindgen(js_name = findEvents)]
+pub fn find_events(propagation: JsValue, options: JsValue) -> Result<JsValue, JsError> {
+    let request = propagation_request(&propagation)?;
+    let events: crate::numerical::EventRequest = if options.is_undefined() || options.is_null() {
+        serde_json::from_str("{}").expect("empty request")
+    } else {
+        let json = js_sys::JSON::stringify(&options)
+            .map_err(|_| JsError::new("options are not JSON-serialisable"))?;
+        serde_json::from_str(&String::from(json)).map_err(|e| JsError::new(&e.to_string()))?
+    };
+    let out = crate::numerical::propagate(&request).map_err(|e| JsError::new(&e))?;
+    let found = crate::numerical::find_events(&out, &events).map_err(|e| JsError::new(&e))?;
+    Ok(to_js(&found))
+}
+
 fn propagation_request(options: &JsValue) -> Result<crate::numerical::PropagationRequest, JsError> {
     let json = js_sys::JSON::stringify(options)
         .map_err(|_| JsError::new("options are not JSON-serialisable"))?;

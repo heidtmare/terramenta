@@ -1026,6 +1026,11 @@ textarea.coordinate {
   background: #7ef0c8;
 }
 
+.timeline-marker.event {
+  background: #a6ff6b;
+  opacity: 0.6;
+}
+
 .timeline-cursor {
   position: absolute;
   top: -0.2rem;
@@ -1180,4 +1185,28 @@ textarea.coordinate {
 .table-wrap {
   max-width: 100%;
   overflow-x: auto;
+}
+
+/* --- Events ----------------------------------------------------------------- */
+
+.station-dot {
+  flex: 0 0 auto;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+}
+
+.events-table {
+  max-height: 14rem;
+  overflow-y: auto;
+}
+
+.report-table tr.pick {
+  cursor: pointer;
+}
+
+.report-table tr.pick:hover td,
+.report-table tr.pick:hover th {
+  color: var(--ink);
+  background: var(--surface-raised);
 }

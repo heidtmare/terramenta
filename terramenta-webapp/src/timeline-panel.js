@@ -3,7 +3,9 @@
  * clock against them. Click the strip or Go to jump; Previous/Next step
  * between events. Project events are added at the clock (or relative to
  * another event) with actions taken from the current scene, and removed;
- * scene and director events are read-only.
+ * scene and director events are read-only. Searched events (`events.js`) are
+ * listed only with "Searched events" on (remembered, default off); they can
+ * always be anchored to.
  */
 
 import { el, row, section } from "./dom.js";
@@ -14,11 +16,21 @@ import { button, toggle } from "./widgets.js";
 
 /** Within this many seconds of the clock, an event is "now" for Previous/Next. */
 const NEAR_S = 0.5;
+const SEARCHED_KEY = "terramenta.timeline.searched";
 
 export function mountTimeline(bind) {
   let lastState = null;
   let resolved = [];
+  let everything = [];
   let signature = "";
+  let showSearched = readFlag(SEARCHED_KEY);
+
+  const searched = toggle("Searched events", (value) => {
+    showSearched = value;
+    writeFlag(SEARCHED_KEY, value);
+    signature = "";
+  });
+  searched.set(showSearched);
 
   const directed = toggle("Directed: apply event actions", timeline.setDirected);
   bind(directed.node, () => directed.set(timeline.isDirected()));
@@ -57,12 +69,15 @@ export function mountTimeline(bind) {
 
   const list = el("div", { class: "layers" });
   const rows = [];
-  const editor = mountEditor(() => lastState, () => resolved);
+  const editor = mountEditor(() => lastState, () => everything);
 
   bind(list, (state) => {
     lastState = state;
-    resolved = timeline.timelineEvents(state);
-    const next = JSON.stringify(resolved.map((event) => [event.id, event.unixSeconds, event.label]));
+    everything = timeline.timelineEvents(state);
+    const hasSearched = everything.some((event) => event.source === "event");
+    searched.node.hidden = !hasSearched;
+    resolved = showSearched ? everything : everything.filter((event) => event.source !== "event");
+    const next = JSON.stringify([showSearched, ...everything.map((event) => [event.id, event.unixSeconds, event.label])]);
     if (next !== signature) {
       signature = next;
       rebuild();
@@ -126,6 +141,7 @@ export function mountTimeline(bind) {
   return section(
     "Timeline",
     directed.node,
+    searched.node,
     el("div", { class: "buttons" }, button("Previous", () => step(-1)), button("Next", () => step(1))),
     status,
     strip,
@@ -159,6 +175,23 @@ function eventRow(event) {
 function relative(seconds) {
   if (Math.abs(seconds) < NEAR_S) return "now";
   return seconds > 0 ? `in ${duration(seconds)}` : `${duration(-seconds)} ago`;
+}
+
+function readFlag(key) {
+  try {
+    return localStorage.getItem(key) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeFlag(key, value) {
+  try {
+    if (value) localStorage.setItem(key, "1");
+    else localStorage.removeItem(key);
+  } catch {
+    // Storage blocked: the toggle still works, it just isn't remembered.
+  }
 }
 
 /** `rate 10× · ramp ×2/2 s · pause · heliocentric · …` */
