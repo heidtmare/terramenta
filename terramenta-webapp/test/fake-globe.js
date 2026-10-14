@@ -70,6 +70,30 @@ export function attachFake({ objects = {} } = {}) {
         ...(options.aem ? { aem: "CCSDS_AEM_VERS = 1.0\n" } : {}),
       };
     },
+    /** Two cells per resolution step; the first covered when any spacecraft is given. Throws with no spacecraft. */
+    coverage: ({ spacecraft = [], resolution = 3, stepS = 60, boundaries }) => {
+      if (!spacecraft.length) throw new Error("coverage needs a spacecraft");
+      const t0 = Date.parse("2026-01-01T00:00:00Z") / 1000;
+      const cell = (id, lonDeg, fraction) => ({
+        id,
+        latDeg: 0,
+        lonDeg,
+        fraction,
+        accesses: fraction ? 2 : 0,
+        maxGapS: fraction ? 1800 : 3600,
+        meanGapS: fraction ? 1200 : null,
+        firstAccessS: fraction ? 600 : null,
+        ...(boundaries ? { boundary: [[lonDeg - 1, -1], [lonDeg + 1, -1], [lonDeg + 1, 1], [lonDeg - 1, 1]] } : {}),
+      });
+      return {
+        start: t0,
+        stop: t0 + 3600,
+        stepS,
+        samples: Math.floor(3600 / stepS) + 1,
+        resolution,
+        cells: [cell("8a", 10, 0.25), cell("8b", 20, 0)],
+      };
+    },
   };
   const module = new Proxy(
     {},
@@ -93,5 +117,5 @@ export const commands = (calls) =>
   calls
     .map(([name]) => name)
     .filter(
-      (name) => !(name in { layers: 0, vectorLayers: 0, limits: 0, ephemerisObjects: 0, propagationEnvironment: 0, findEvents: 0, target: 0, attitude: 0 }),
+      (name) => !(name in { layers: 0, vectorLayers: 0, limits: 0, ephemerisObjects: 0, propagationEnvironment: 0, findEvents: 0, target: 0, attitude: 0, coverage: 0 }),
     );

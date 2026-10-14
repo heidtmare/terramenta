@@ -1210,7 +1210,8 @@ pub fn target(propagation: JsValue, options: JsValue) -> Result<JsValue, JsError
 /// });
 /// // to: nadir zenith velocity antiVelocity orbitNormal antiOrbitNormal sun antiSun target
 /// //     or a GCRF vector [x, y, z]
-/// showAttitude("sat", { axes: true, sensors: [{ body: [0, 0, 1], color: "#ffcc00" }] });
+/// showAttitude("sat", { axes: true, sensors: [{ body: [0, 0, 1], color: "#ffcc00",
+///                                              fov: { halfAngleDeg: 15 } }] });
 /// ```
 ///
 /// Quaternions body → GCRF `[x, y, z, w]`; `eulerDeg` 3-2-1 `[roll, pitch, yaw]` from LVLH;
@@ -1252,12 +1253,24 @@ fn yes() -> bool {
 struct SensorDrawOptions {
     body: [f64; 3],
     color: Option<String>,
+    /// As `coverage`'s sensors: `halfAngleDeg`, or `halfXDeg` + `halfYDeg` (+ `reference`).
+    fov: Option<FovDrawOptions>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FovDrawOptions {
+    reference: Option<[f64; 3]>,
+    half_angle_deg: Option<f64>,
+    half_x_deg: Option<f64>,
+    half_y_deg: Option<f64>,
 }
 
 /// Draws the last [`attitude`] result on ephemeris layer `id`: body axes (X red, Y green,
-/// Z blue) unless `axes: false`, and `sensors` as boresights to the surface. Replaces any
-/// earlier drawing for `id`. `false` if `attitude` failed or never ran, or the options
-/// are bad.
+/// Z blue) unless `axes: false`, and `sensors` as boresights to the surface; a sensor
+/// with `fov` (`{ halfAngleDeg }` or `{ halfXDeg, halfYDeg, reference? }`) also draws its
+/// footprint. Replaces any earlier drawing for `id`. `false` if `attitude` failed or
+/// never ran, or the options are bad.
 #[wasm_bindgen(js_name = showAttitude)]
 pub fn show_attitude(id: String, options: JsValue) -> bool {
     let Some(samples) = ATTITUDE.with_borrow(Clone::clone) else {
@@ -1269,7 +1282,22 @@ pub fn show_attitude(id: String, options: JsValue) -> bool {
     let sensors = options
         .sensors
         .iter()
-        .filter_map(|s| {
+        .map(|s| {
+            let fov = s
+                .fov
+                .as_ref()
+                .map(|f| {
+                    crate::numerical::FovOptions {
+                        body: s.body,
+                        reference: f.reference,
+                        half_angle_deg: f.half_angle_deg,
+                        half_x_deg: f.half_x_deg,
+                        half_y_deg: f.half_y_deg,
+                    }
+                    .sensor()
+                })
+                .transpose()
+                .ok()?;
             Some(crate::attitude::Sensor {
                 body: bevy::math::DVec3::from_array(s.body).try_normalize()?,
                 color: s
@@ -1277,9 +1305,13 @@ pub fn show_attitude(id: String, options: JsValue) -> bool {
                     .as_deref()
                     .and_then(|hex| bevy::color::Srgba::hex(hex).ok())
                     .unwrap_or(bevy::color::Srgba::rgb(1.0, 0.8, 0.2)),
+                fov,
             })
         })
-        .collect();
+        .collect::<Option<Vec<_>>>();
+    let Some(sensors) = sensors else {
+        return false;
+    };
     crate::attitude::set(
         id,
         crate::attitude::Track {
@@ -1289,6 +1321,39 @@ pub fn show_attitude(id: String, options: JsValue) -> bool {
         },
     );
     true
+}
+
+/// Access coverage of an H3 grid by one or more spacecraft, sampled every `stepS` over
+/// the span they share.
+///
+/// ```js
+/// const { start, stop, stepS, samples, resolution, cells } = coverage({
+///   spacecraft: [
+///     { propagation },                                   // line of sight only
+///     { propagation, attitude: { primary: …, secondary: … },
+///       sensors: [{ body: [0, 0, 1], halfAngleDeg: 20 },  // cone
+///                 { body: [0, 0, 1], halfXDeg: 10, halfYDeg: 2, reference: [1, 0, 0] }] },
+///   ],
+///   resolution: 3,                     // H3, 0–15
+///   bounds: [-15, 35, 35, 65],         // [west, south, east, north]°; default the globe
+///   minElevationDeg: 10, stepS: 60,
+///   start, stop,                       // optional UTC, inside the shared span
+///   boundaries: true,                  // cell outlines
+/// });
+/// // cells: [{ id, latDeg, lonDeg, fraction, accesses, maxGapS, meanGapS, firstAccessS,
+/// //           boundary: [[lonDeg, latDeg], …] }]
+/// ```
+///
+/// Synchronous. A cell is covered when its centre is in view; statistics resolve to one
+/// step. At most 200 000 cells.
+#[wasm_bindgen]
+pub fn coverage(options: JsValue) -> Result<JsValue, JsError> {
+    let json = js_sys::JSON::stringify(&options)
+        .map_err(|_| JsError::new("options are not JSON-serialisable"))?;
+    let request: crate::numerical::CoverageRequest =
+        serde_json::from_str(&String::from(json)).map_err(|e| JsError::new(&e.to_string()))?;
+    let out = crate::numerical::coverage(&request).map_err(|e| JsError::new(&e))?;
+    Ok(to_js(&out))
 }
 
 /// Stops drawing attitude on `id`; `false` if none was drawn.

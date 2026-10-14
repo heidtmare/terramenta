@@ -4,8 +4,9 @@
 //! [`crate::omm`] holds tabulated motion in), slerped at the sim clock and drawn at
 //! every object the layer drew this frame: X red, Y green, Z blue, a fixed fraction of
 //! the camera distance long, so they hold their size on screen. A sensor is a ray along
-//! its body axis to the globe surface, or four axis lengths when it misses. Outside a
-//! track's span nothing is drawn.
+//! its body axis to the globe surface, or four axis lengths when it misses; one with a
+//! field of view also draws its footprint outline on the globe sphere (rays past the
+//! limb land on it) and four edges of its cone. Outside a track's span nothing is drawn.
 //!
 //! Tracks live in a process-wide table keyed by layer id, set from the JavaScript API.
 //! A track whose layer is gone, hidden or off draws nothing.
@@ -37,12 +38,20 @@ const AXIS_COLORS: [Srgba; 3] = [
     Srgba::rgb(0.4, 0.6, 1.0),
 ];
 
-/// A body axis drawn as a boresight.
+/// A body axis drawn as a boresight, and its field of view.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Sensor {
     pub body: DVec3,
     pub color: Srgba,
+    pub fov: Option<terramenta_solare::coverage::Sensor>,
 }
+
+/// Footprint outline rays.
+const FOOTPRINT_RAYS: usize = 48;
+/// Segments per outline edge, laid on the sphere.
+const FOOTPRINT_SUBDIVISIONS: usize = 4;
+/// Outline radius: over the highest imagery tile, as the GNC surface lines.
+const FOOTPRINT_RADIUS: f32 = crate::tiles::MAX_TILE_RADIUS + GLOBE_RADIUS * 3.0e-4;
 
 /// Sampled attitude of one layer.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -218,10 +227,61 @@ fn paths(
                 let direction = world(q * sensor.body).normalize_or_zero();
                 let reach = surface_hit(at, direction).unwrap_or(MISS_LENGTH * length);
                 paths.push(line(direction, reach, sensor.color, SENSOR_WIDTH_PX));
+                if let Some(fov) = &sensor.fov {
+                    let ground: Vec<Vec3> = fov
+                        .boundary(FOOTPRINT_RAYS)
+                        .into_iter()
+                        .map(|d| surface_point(at, world(q * d).normalize_or_zero()))
+                        .collect();
+                    let paint = Some(Paint {
+                        color: sensor.color,
+                        size_px: SENSOR_WIDTH_PX,
+                    });
+                    for corner in ground.iter().step_by(ground.len() / 4) {
+                        paths.push(WorldPath {
+                            points: vec![at, *corner],
+                            paint,
+                        });
+                    }
+                    paths.push(WorldPath {
+                        points: outline(&ground),
+                        paint,
+                    });
+                }
             }
         }
     }
     paths
+}
+
+/// Where unit `direction` from `from` (outside) meets the globe sphere, or the limb
+/// point in the plane of the ray and the centre when it misses.
+fn surface_point(from: Vec3, direction: Vec3) -> Vec3 {
+    if let Some(t) = surface_hit(from, direction) {
+        return from + direction * t;
+    }
+    let r = from.length();
+    let up = from / r;
+    let side = (direction - up * direction.dot(up))
+        .try_normalize()
+        .unwrap_or_else(|| up.any_orthonormal_vector());
+    let k = (GLOBE_RADIUS / r).min(1.0);
+    (up * k + side * (1.0 - k * k).sqrt()) * GLOBE_RADIUS
+}
+
+/// Closed ring through `ground`, each edge subdivided along the sphere and lifted.
+fn outline(ground: &[Vec3]) -> Vec<Vec3> {
+    let radius = FOOTPRINT_RADIUS;
+    let mut points = Vec::with_capacity(ground.len() * FOOTPRINT_SUBDIVISIONS + 1);
+    for (i, &a) in ground.iter().enumerate() {
+        let b = ground[(i + 1) % ground.len()];
+        for k in 0..FOOTPRINT_SUBDIVISIONS {
+            let s = k as f32 / FOOTPRINT_SUBDIVISIONS as f32;
+            points.push(a.lerp(b, s).normalize_or_zero() * radius);
+        }
+    }
+    points.extend(points.first().copied());
+    points
 }
 
 /// Distance along unit `direction` from `from` to the globe sphere, if it is hit ahead.
@@ -262,6 +322,23 @@ mod tests {
         assert!((surface_hit(from, -Vec3::Z).unwrap() - 1.0).abs() < 1e-6);
         assert!(surface_hit(from, Vec3::Z).is_none());
         assert!(surface_hit(from, Vec3::X).is_none());
+    }
+
+    #[test]
+    fn footprints_lie_on_the_sphere() {
+        let from = Vec3::new(0.0, 0.0, 2.0);
+        assert!((surface_point(from, -Vec3::Z) - Vec3::Z).length() < 1e-6);
+        // Past the limb: tangent, so perpendicular to the line of sight.
+        let limb = surface_point(from, Vec3::X);
+        assert!((limb.length() - 1.0).abs() < 1e-6);
+        assert!((from - limb).dot(limb).abs() < 1e-5);
+        let ring = outline(&[Vec3::X, Vec3::Y, Vec3::Z]);
+        assert_eq!(ring.len(), 3 * FOOTPRINT_SUBDIVISIONS + 1);
+        assert_eq!(ring.first(), ring.last());
+        assert!(
+            ring.iter()
+                .all(|p| (p.length() - FOOTPRINT_RADIUS).abs() < 1e-5)
+        );
     }
 
     #[test]

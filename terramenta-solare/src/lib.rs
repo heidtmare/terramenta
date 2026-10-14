@@ -25,6 +25,7 @@
 pub mod attitude;
 pub mod bodies;
 pub mod ccsds;
+pub mod coverage;
 pub mod departure;
 pub mod earth;
 pub mod ecliptic;

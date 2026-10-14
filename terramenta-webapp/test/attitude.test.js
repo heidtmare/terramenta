@@ -6,6 +6,7 @@ import {
   attitudeResult,
   attitudesSection,
   axisName,
+  fovName,
   lawName,
   onResult,
   openAttitudes,
@@ -167,4 +168,17 @@ test("names", () => {
     "Inertial [0, 0, 0.7071, 0.7071] · spin 2°/s about +Z",
   );
   assert.equal(lawName({ ...NADIR, secondary: { body: [1, 0, 0], to: [0, 0, 1] } }), "+Z → Nadir, +X → GCRF [0, 0, 1]");
+});
+
+test("sensors without a direction are drawn with their footprint, not sampled", () => {
+  globe.addSpacecraft("sat", PROPAGATION, {});
+  const imager = { label: "Imager", body: [0, 0, 1], fov: { halfXDeg: 10, halfYDeg: 2, reference: [1, 0, 0] } };
+  setAttitude({ ...UNSITED, sensors: [imager, { body: [0, 1, 0], to: "sun" }] });
+  syncAttitudes();
+  const [[, , options]] = named("attitude");
+  assert.deepEqual(options.sensors, [{ body: [0, 1, 0], to: "sun" }]);
+  assert.deepEqual(named("showAttitude")[0][2].sensors[0], { body: [0, 0, 1], color: "#ffcc33", fov: imager.fov });
+  assert.equal(attitudeResult("sat").result.sensorAnglesDeg.length, 1);
+  assert.equal(fovName(imager.fov), "10° × 2°");
+  assert.equal(fovName({ halfAngleDeg: 20 }), "cone 20°");
 });

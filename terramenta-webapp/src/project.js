@@ -3,7 +3,7 @@
  *
  * A project is the full initial scene — layers, spacecraft, missions, clock,
  * camera, UI layout — plus its timeline, an optional director, and saved
- * analysis (plots, porkchop studies), ground stations, event searches,
+ * analysis (plots, porkchop and coverage studies), ground stations, event searches,
  * targeting problems and attitude profiles. Every
  * project, bundled or user-supplied, loads the same way: parsed here, then
  * applied onto a reset globe by `workspace.js`. `?project=<url>` (or
@@ -18,6 +18,7 @@
 import * as globe from "./globe.js";
 import { analysisErrors, analysisSection } from "./analysis.js";
 import { attitudesErrors, attitudesSection } from "./attitude.js";
+import { COVERAGE_LAYER, coverageErrors, coverageStudies } from "./coverage.js";
 import { DIRECTORS } from "./director.js";
 import { applyEnvironment, recordedEnvironment } from "./environment.js";
 import { STATION_LAYER, eventsErrors, eventsSection } from "./events.js";
@@ -264,10 +265,12 @@ function referenceErrors(project) {
   const layerIds = new Set([...ephemerisIds, ...spacecraftIds]);
   errors.push(...timelineErrors(project, { missionIds, layerIds }).map((error) => `timeline.${error}`));
   errors.push(...analysisErrors(project, { spacecraftIds }).map((error) => `analysis.${error}`));
+  errors.push(...coverageErrors(project, { spacecraftIds }).map((error) => `analysis.${error}`));
   errors.push(...eventsErrors(project));
   errors.push(...targetsErrors(project));
   errors.push(...attitudesErrors(project));
   if (overlayIds.has(STATION_LAYER)) errors.push(`overlays.layers: id "${STATION_LAYER}" is reserved for ground stations`);
+  if (overlayIds.has(COVERAGE_LAYER)) errors.push(`overlays.layers: id "${COVERAGE_LAYER}" is reserved for coverage`);
   return errors;
 }
 
@@ -434,7 +437,7 @@ export function captureProject(state, base = {}) {
   project.overlays = {
     enabled: state.overlays.enabled,
     picking: state.overlays.picking,
-    layers: state.overlays.layers.filter((layer) => layer.id !== STATION_LAYER).map((layer) => {
+    layers: state.overlays.layers.filter((layer) => layer.id !== STATION_LAYER && layer.id !== COVERAGE_LAYER).map((layer) => {
       const recorded = sources.overlays.get(layer.id) ?? {};
       return {
         id: layer.id,
@@ -524,8 +527,10 @@ export function captureProject(state, base = {}) {
     layerIds: new Set([...project.ephemerides.layers.map((layer) => layer.id), ...sources.spacecraft.keys()]),
   });
   if (timeline) project.timeline = timeline;
-  const analysis = analysisSection({ spacecraftIds: new Set(sources.spacecraft.keys()) });
-  if (analysis) project.analysis = analysis;
+  const analysis = analysisSection({ spacecraftIds: new Set(sources.spacecraft.keys()) }) ?? {};
+  const coverage = coverageStudies({ spacecraftIds: new Set(sources.spacecraft.keys()) });
+  if (coverage.length) analysis.coverage = coverage;
+  if (Object.keys(analysis).length) project.analysis = analysis;
   Object.assign(project, targetsSection({ spacecraftIds: new Set(sources.spacecraft.keys()) }));
   Object.assign(project, attitudesSection({ spacecraftIds: new Set(sources.spacecraft.keys()) }));
   return project;

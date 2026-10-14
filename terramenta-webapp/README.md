@@ -78,15 +78,15 @@ Relative URLs resolve against the app root (the directory holding
 | `overlays` | `{enabled, picking, layers: [{id, ...addOverlay options}]}` | One of `url`/`text` per layer |
 | `ephemerides` | `{enabled, layers: [{id, ...addEphemeris options}]}` | OMM JSON or KVN OEM |
 | `environment` | `{eop, spaceWeather, kernel}` | URLs; see [Spacecraft](#spacecraft) |
-| `spacecraft` | `[{id, ...addEphemeris display options, propagation}]` | `propagation`: `propagate` options; one of `stop`/`durationS`. Id unique across `ephemerides` |
+| `spacecraft` | `[{id, ...addEphemeris display options, propagation}]` | `propagation`: `propagate` options; one of `stop`/`durationS`; `initial` a TLE, OMM, GCRF state or `{epoch, elements}`. Id unique across `ephemerides` |
 | `missions` | `[{id, ...addMission options}]` | |
 | `placemarks.enabled`, `keyboard` | bool | |
 | `gnc` | `{enabled, eciAxes, ecefAxes, graticule, graticuleStepDeg, sidereal, track, trackOrbits, focus: {layer, noradId}}` | |
 | `hud` | `{visible, help}` | Globe's built-in HUD (off unless set) |
 | `director` | `{type, ...}` | Timeline preset; see [Directors](#directors) |
 | `timeline` | `{directed, skipTo, events: [{id, label, at, actions}]}` | See [Timeline](#timeline) |
-| `analysis` | `{plots: [{id, label, quantity, spacecraft}], porkchops: [{id, label, origin, destination, departure, arrival, retrograde, steps}]}` | See [Reports](#reports) |
-| `groundStations` | `[{id, label, latDeg, lonDeg, altKm, minElevationDeg, color}]` | See [Events](#events). Overlay id `ground-stations` is reserved |
+| `analysis` | `{plots: [{id, label, quantity, spacecraft}], porkchops: [{id, label, origin, destination, departure, arrival, retrograde, steps}], coverage: [{id, label, spacecraft, access, minElevationDeg, resolution, bounds, stepS, metric, show}]}` | See [Reports](#reports), [Coverage](#coverage). Overlay id `coverage` is reserved |
+| `groundStations` | `[{id, label, latDeg, lonDeg, altKm, minElevationDeg, horizon, color}]` | See [Events](#events). Overlay id `ground-stations` is reserved |
 | `events` | `{eclipses, apsides, nodes, stepS}` | See [Events](#events) |
 | `targets` | `[{id, label, spacecraft, variables, goals, maxIterations}]` | See [Targeting](#targeting) |
 | `attitudes` | `[{spacecraft, label, quaternion \| primary + secondary, spin, station \| target, sensors, stepS, axes}]` | See [Attitude](#attitude) |
@@ -96,7 +96,7 @@ what [`globe.js`](src/globe.js) recorded from `add*` calls (inline text,
 mission search options, explicit satellite selections, camera lock). `ui`,
 `description` and `director` carry over from the loaded project; the timeline,
 analysis, ground stations and event options are saved as edited, minus events whose references no longer hold
-and plot spacecraft no longer in the scene. Not saved: per-satellite trail
+and plot and coverage spacecraft no longer in the scene. Not saved: per-satellite trail
 toggles, local-file overlay refresh timers, unsaved porkchop inputs.
 
 ### Workspace
@@ -123,6 +123,7 @@ Listed in [`projects/manifest.json`](projects/manifest.json).
 | [`ground-contacts`](projects/ground-contacts.terramenta.json) | 700 km SSO for a day over five ground stations; contacts, eclipses, nodes; timeline slows the clock for `polar.aos.svalbard.1` |
 | [`targeted-transfer`](projects/targeted-transfer.terramenta.json) | Rough first-guess burns, solved on the Spacecraft tab: Hohmann Δv and second-burn epoch for a circular 800 km orbit; 20 N finite-burn duration for a 150 km SMA raise |
 | [`attitude-modes`](projects/attitude-modes.terramenta.json) | Three pointing laws over six hours: LVLH observer with a star-tracker sun angle, SSO tracking Svalbard with its array sun-constrained, 6°/s inertial spinner; body axes and boresights on the globe |
+| [`coverage-study`](projects/coverage-study.terramenta.json) | Six nadir imagers in three 700 km SSO planes from Keplerian elements, cone and rectangular fields of view with footprints; one-day sensor revisit over Europe (H3 4, shown) and global access above 10° (H3 2); Svalbard with a terrain horizon; opens on Analysis |
 
 ## Full panel
 
@@ -130,7 +131,7 @@ Six tabs on one row. Hidden panes stay mounted and bound. Sections collapse;
 a non-default open/closed state is remembered per title (`localStorage`).
 Sections marked *closed* start collapsed; Plots and Spacecraft reports hide
 while the project has neither spacecraft nor plots, Events while it has no
-spacecraft.
+spacecraft, Coverage while it has neither spacecraft nor studies.
 
 | Tab | Section | Controls |
 | --- | --- | --- |
@@ -139,15 +140,16 @@ spacecraft.
 | | Vector tiles | Source (MapLibre boundaries, OSM Shortbread), its source layers and depth, colour, ring fill, streaming on/off |
 | | GeoJSON overlays | Add from URL or local file; bundled samples and USGS feeds; refresh period; picking on/off. Per layer: visibility, colour, clamp to surface, extrude, simplestyle on/off, refresh, remove, feature counts and age |
 | | Satellites | Add OMM from URL or local file; five Celestrak groups. Per layer: visibility, colour, trails and trail window, refresh, remove, and a filterable object list with per-object draw and trail toggles |
-| **Spacecraft** | Spacecraft | Per spacecraft: visibility, colour, trails, span/samples/final mass, edit, go to start, OEM/SPK export, remove. Editor: initial state (GCRF state with circular-orbit fill, TLE, OMM), start/duration/step, vehicle, forces, integrator, impulsive and finite burns |
+| **Spacecraft** | Spacecraft | Per spacecraft: visibility, colour, trails, span/samples/final mass, edit, go to start, OEM/SPK export, remove. Editor: initial state (Keplerian elements, GCRF state with circular-orbit fill, TLE, OMM), start/duration/step, vehicle, forces, integrator, impulsive and finite burns |
 | | Targeting | Per target: spacecraft, solve, apply, edit, remove; last solution's variables (initial, solved) and goals (desired, achieved, error; misses in red). Editor: name, spacecraft, iterations, variables (burn, parameter, perturbation, max step), goals (quantity, at, value, tolerance) |
-| | Attitude | Per profile: law, AEM export, edit, remove; sensor angles (or LVLH Euler angles) chart with clock cursor (click to set the clock), min/time/max table. Editor: spacecraft, name, law (align/constrain axes and directions, or inertial quaternion), spin, target (station or site), step, body axes on/off, sensors (name, axis, direction, colour, boresight on/off) |
-| | Ground stations | Per station: name, position, altitude, mask, edit, remove. Add/edit: name, lat/lon, altitude, mask, colour. Drawn as a point overlay |
+| | Attitude | Per profile: law, AEM export, edit, remove; sensor angles (or LVLH Euler angles) chart with clock cursor (click to set the clock), min/time/max table. Editor: spacecraft, name, law (align/constrain axes and directions, or inertial quaternion), spin, target (station or site), step, body axes on/off, sensors (name, axis, direction or none, field of view: cone or rectangle, colour, drawing on/off) |
+| | Ground stations | Per station: name, position, altitude, mask, horizon points, edit, remove. Add/edit: name, lat/lon, altitude, mask, horizon (`az:el, …`), colour. Drawn as a point overlay |
 | | Propagation environment (*closed*) | EOP, space weather, kernel: URL or local file, coverage |
 | **Timeline** | Timeline | Directed on/off; searched events shown/hidden (remembered, default hidden); previous/next event; strip (click to set the clock) and list of every event with time, source, actions, Go, Remove (project events). Add event: label, at clock or an event plus offset, actions from the current scene (rate, paused, view, frame, camera, focus) |
 | **Analysis** | Plots | Saved plots: one quantity against time per spacecraft, burn markers, clock cursor (click to set the clock), CSV, remove. Add plot: quantity, spacecraft, label |
 | | Spacecraft reports | Per spacecraft: span, samples, start/end/min/max of altitude, SMA, eccentricity, inclination, period, perigee/apogee; Δv budget per burn; CSV. CZML of all spacecraft |
 | | Events | Search options (eclipses, apsides, nodes, step). Per spacecraft: contact and umbra totals; contacts (station, AOS, duration, max elevation) and eclipses (entry, umbra, total) — click a row to set the clock; CSV |
+| | Coverage | Per study: spacecraft, access, H3 resolution, region, step; run/re-run, show/hide on the globe, shaded metric, CSV, GeoJSON, edit, remove; cells seen, mean time covered, max gap (median and worst cell), mean revisit; metric legend. Editor: name, spacecraft, access (line of sight or sensor FOV), mask, resolution, bounds, step |
 | | Porkchop plot | Origin/destination bodies, departure/arrival date ranges, grid steps; contoured total-Δv SVG from `terramenta-charta`, minimum marked and listed, grid CSV |
 | | Porkchop studies | Save the inputs under a label (same label replaces); Open fills and computes; remove. The first study opens with the project |
 | | Launch | Calls `addMission` for the selected pair. Per mission: status, dates, Δv, remove |
@@ -258,7 +260,10 @@ options)`, which re-runs the propagation.
 - **Contacts**: elevation above the station's geodetic horizon (WGS 84) above
   `minElevationDeg`; GCRF → ITRF with IAU 2006/2000A (CIO) and loaded EOP,
   recomputed every 600 s with Earth rotation exact in between. Max elevation by
-  golden-section search. No light time, refraction or terrain mask.
+  golden-section search. A station's `horizon` (`[[azimuthDeg,
+  elevationDeg], …]`, azimuth ascending in [0, 360), linear between points,
+  wrapping) raises the mask toward terrain: visible when elevation exceeds
+  the larger of the two. No light time or refraction.
 - **Eclipses**: Earth (6378.137 km sphere) conical shadow, Sun from the loaded
   kernel or the analytic series; penumbra spans include the umbra.
 - **Apsides** (`r·v = 0`) and **nodes** (GCRF `z = 0`): off by default.
@@ -307,9 +312,13 @@ options)`, drawn with `globe.showAttitude`.
   `orbitNormal`, `antiOrbitNormal`, `sun`, `antiSun`, `target` (a ground
   `station` by id, or a `target` site), or a GCRF vector `[x, y, z]`. Sun as
   for eclipses; sites through full Earth orientation.
-- **Sensors**: a body axis and a direction; the angle between them is sampled.
-  Drawn as a boresight to the surface (or four axis lengths into space) unless
-  `draw: false`.
+- **Sensors**: a body axis and, optionally, a direction; the angle between
+  them is sampled. Drawn as a boresight to the surface (or four axis lengths
+  into space) unless `draw: false`. `fov`: `{halfAngleDeg}` (cone) or
+  `{halfXDeg, halfYDeg, reference}` (rectangle, width along body `reference`,
+  default the axis least aligned with the boresight); its footprint is drawn
+  on the globe (rays past the limb on the limb) with four cone edges, and
+  coverage counts access through it.
 - Sampled every `stepS` (default 60) over the propagation span. Euler angles
   are 3-2-1 roll/pitch/yaw of the body from CCSDS LVLH (z nadir, y −orbit
   normal). Samples where the law is undefined (parallel directions) are
@@ -320,6 +329,34 @@ options)`, drawn with `globe.showAttitude`.
   linear interpolation, sign-continuous.
 - Re-sampled when the profile, its spacecraft or its station changes. Samples
   are not saved; profiles of removed spacecraft are dropped on save.
+
+## Coverage
+
+[`coverage.js`](src/coverage.js), [`coverage-panel.js`](src/coverage-panel.js);
+`terramenta-solare` `coverage` via `globe.coverage(options)`, which re-runs
+each propagation.
+
+- **Grid**: H3 cells at `resolution` (0–7, default 2) whose centres lie in
+  `bounds` (`[west, south, east, north]`°, west > east crosses the
+  antimeridian; default the globe); at most 200 000 cells.
+- **Access**: a cell is covered at a sample when some spacecraft sees its
+  centre above `minElevationDeg` (geodetic up, WGS 84). `access: "sensors"`
+  also requires it inside a field of view of the spacecraft's attitude
+  profile; spacecraft without one are left out.
+- **Sampling**: every `stepS` (default 60) over the span all spacecraft share;
+  times resolve to one step.
+- **Per cell**: `fraction` of samples covered, `accesses` (runs of covered
+  samples), `maxGapS` (leading and trailing spans included; the span if never
+  covered), `meanGapS` (between accesses), `firstAccessS`.
+- **Globe**: the `show` study (one at a time) is drawn as overlay `coverage`,
+  cells filled by `metric` (`fraction`, `maxGap`, `meanGap`, `accesses`) on a
+  six-stop ramp from the study's minimum to maximum; never-covered cells left
+  out for `fraction` and `accesses`. Cells around a pole close through it.
+- **Results** are not saved; the shown study re-runs when it, a spacecraft
+  entry or a profile changes, others on Run. Changing the metric or label
+  does not re-run.
+- **Export**: CSV (`h3, lat_deg, lon_deg, fraction, accesses, max_gap_s,
+  mean_gap_s, first_access_s`) and GeoJSON (drawn cells with every statistic).
 
 ## Timeline
 
@@ -455,6 +492,7 @@ projects/
   ground-contacts.terramenta.json  Ground station contacts and eclipses
   targeted-transfer.terramenta.json  Differential correction of burns
   attitude-modes.terramenta.json  Pointing laws, body axes, sensor angles
+  coverage-study.terramenta.json  Imager constellation, footprints, H3 coverage
 data/
   geometry-tour.geojson         One feature per geometry type
   extruded-cube.geojson         Extruded ring
@@ -474,6 +512,7 @@ src/
   events.js              Ground stations, event options, findEvents cache, searched timeline events
   targeting.js           Project targets, solve/apply via globe.target
   attitude.js            Project attitude profiles, sampling and drawing via globe.attitude
+  coverage.js            Project coverage studies, globe.coverage runs, shading, CSV/GeoJSON
   reports.js             OEM parsing, osculating elements, Δv budget, CSV, CZML
   flight-panel.js        Flight panel
   globe.js               Sole wrapper around the globe WASM module; records add* sources, reports scene changes
@@ -486,6 +525,7 @@ src/
   events-panel.js        Ground stations section; Analysis tab events section, CSV
   targeting-panel.js     Spacecraft tab targeting section and editor
   attitude-panel.js      Spacecraft tab attitude section: charts, AEM, editor
+  coverage-panel.js      Analysis tab coverage section: summaries, legend, export, editor
   timeline-panel.js      Timeline tab: strip, event list, add event
   reports-panel.js       Analysis tab: plots, spacecraft reports, CSV/CZML export
   chart.js               SVG builder and time-series line chart

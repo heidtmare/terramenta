@@ -76,7 +76,7 @@ impl OrbitalElements {
     /// Used to place a body the moment its elements are set (`dt == 0` would
     /// do the same through [`OrbitalElements::state_at`]), and to check
     /// [`OrbitalElements::from_state`]'s round trip.
-    fn state_at_true_anomaly(&self, gm_km3_s2: f64, true_anomaly: f64) -> StateVector {
+    pub fn state_at_true_anomaly(&self, gm_km3_s2: f64, true_anomaly: f64) -> StateVector {
         let p = self.semi_latus_rectum_km();
         let r = p / (1.0 + self.eccentricity * true_anomaly.cos());
         let h = (gm_km3_s2 * p).sqrt();

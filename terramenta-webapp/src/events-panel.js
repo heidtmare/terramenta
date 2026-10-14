@@ -42,7 +42,7 @@ function stationRow(station, editor) {
       button("Edit", () => editor.edit(station)),
       button("Remove", () => events.removeStation(station.id)),
     ),
-    el("p", { class: "detail" }, `${latLon(station)}${alt} · mask ${mask}°`),
+    el("p", { class: "detail" }, `${latLon(station)}${alt} · mask ${mask}°${station.horizon?.length ? ` · horizon ${station.horizon.length} pts` : ""}`),
   );
 }
 
@@ -58,6 +58,7 @@ function mountStationEditor() {
   const lon = number({ placeholder: "−180 … 180" });
   const alt = number({ value: "0" });
   const mask = number({ value: "5", min: "-90", max: "90" });
+  const horizon = el("input", { class: "coordinate", type: "text", spellcheck: false, placeholder: "az:el, … (optional)" });
   const color = el("input", { class: "swatch", type: "color", value: events.STATION_COLOR });
   const error = el("p", { class: "detail error", hidden: true });
   const title = el("summary", {}, "Add station");
@@ -72,6 +73,7 @@ function mountStationEditor() {
     lon.value = station.lonDeg;
     alt.value = station.altKm ?? 0;
     mask.value = station.minElevationDeg ?? 0;
+    horizon.value = events.formatHorizon(station.horizon);
     color.value = (station.color ?? events.STATION_COLOR).slice(0, 7);
     title.textContent = `Edit ${station.label ?? station.id}`;
     submit.textContent = "Save";
@@ -84,6 +86,7 @@ function mountStationEditor() {
     label.value = lat.value = lon.value = "";
     alt.value = "0";
     mask.value = "5";
+    horizon.value = "";
     color.value = events.STATION_COLOR;
     title.textContent = "Add station";
     submit.textContent = "Add";
@@ -94,6 +97,15 @@ function mountStationEditor() {
   function save() {
     const name = label.value.trim();
     const values = { latDeg: lat.valueAsNumber, lonDeg: lon.valueAsNumber, altKm: alt.valueAsNumber || 0, minElevationDeg: mask.valueAsNumber || 0 };
+    let terrain = [];
+    try {
+      terrain = events.parseHorizon(horizon.value);
+    } catch (caught) {
+      error.textContent = caught.message;
+      error.hidden = false;
+      return;
+    }
+    const horizonProblem = events.horizonProblem(terrain);
     const problem = !name
       ? "Give the station a name."
       : !(Math.abs(values.latDeg) <= 90)
@@ -102,7 +114,9 @@ function mountStationEditor() {
           ? "Longitude must be within −180° … 360°."
           : !(Math.abs(values.minElevationDeg) <= 90)
             ? "Mask must be within ±90°."
-            : null;
+            : horizonProblem
+              ? `Horizon: ${horizonProblem}.`
+              : null;
     if (problem) {
       error.textContent = problem;
       error.hidden = false;
@@ -110,6 +124,7 @@ function mountStationEditor() {
     }
     const station = { id: editing ?? events.uniqueStationId(name), label: name, ...values };
     if (!values.altKm) delete station.altKm;
+    if (terrain.length) station.horizon = terrain;
     if (color.value !== events.STATION_COLOR) station.color = color.value;
     events.addStation(station);
     reset();
@@ -124,6 +139,7 @@ function mountStationEditor() {
     row("Longitude °", lon),
     row("Altitude km", alt),
     row("Mask °", mask),
+    row("Horizon", horizon),
     row("Colour", color),
     error,
     el("div", { class: "buttons" }, submit, cancel),
@@ -159,7 +175,7 @@ export function mountEvents(bind, signal) {
     "Events",
     settings.node,
     list,
-    el("p", { class: "detail" }, "Contacts against the geodetic horizon; Earth shadow conical; nodes on the GCRF equator."),
+    el("p", { class: "detail" }, "Contacts above each station's mask and terrain horizon; Earth shadow conical; nodes on the GCRF equator."),
   );
   return node;
 }
