@@ -93,7 +93,7 @@ async function boot() {
   if (!globe.isSupported()) {
     fail(
       "This build renders through <strong>WebGPU</strong>, which this browser " +
-        "does not expose. Try Chrome or Edge 113+, Safari 26+, or Firefox 141+ " +
+        "does not expose. Try Chrome or Edge 123+, Safari 26+, or Firefox 141+ " +
         "(on Linux, Firefox still needs <code>dom.webgpu.enabled</code>).",
     );
     return;

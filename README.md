@@ -131,7 +131,7 @@ cd terramenta-webapp
 
 `index.html?project=projects/<name>.terramenta.json` opens a project; the
 Project tab lists bundled examples, opens local files and saves. WebGPU requires a secure context, so serve over HTTP(S), not `file://`.
-Supported browsers: Chrome/Edge 113+, Safari 26+, Firefox 141+ (Linux requires
+Supported browsers: Chrome/Edge 123+, Safari 26+, Firefox 141+ (Linux requires
 `dom.webgpu.enabled`).
 
 ### Native globe

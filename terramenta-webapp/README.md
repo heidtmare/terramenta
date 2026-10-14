@@ -2,7 +2,7 @@
 
 Reference client for [`terramenta-globe`](../terramenta-globe/) and
 [`terramenta-charta`](../terramenta-charta/). Plain HTML, CSS and ES modules:
-no npm, no bundler. One page, `index.html`, which loads a project file.
+no dependencies, no bundler. One page, `index.html`, which loads a project file.
 
 | URL | Loads |
 | --- | --- |
@@ -25,20 +25,44 @@ no npm, no bundler. One page, `index.html`, which loads a project file.
 build step. WebGPU requires a secure context, so the pages must be served (not
 opened from `file://`).
 
+```sh
+npm test                       # node --test (Node 22+); no dependencies
+```
+
+Tests ([`test/`](test/)) cover the schema validator, project validation,
+migrations, and capture → parse → apply round trips against a fake globe
+module (`globe.attach`).
+
 ## Project files
 
-`*.terramenta.json`. Every project, bundled or user-supplied, loads the same
-way: fetch/read → validate → `globe.reset()` → queue onto the globe. The first
-project is queued before `start`; later ones switch in place (no reload).
-Errors list every failing path; unknown keys warn. Omitted fields keep
+`*.terramenta.json`, described by
+[`schema/project.schema.json`](schema/project.schema.json) (JSON Schema
+2020-12; point `$schema` at it for editor completion). Every project, bundled
+or user-supplied, loads the same way: fetch/read → upgrade → validate →
+`globe.reset()` → queue onto the globe. The first project is queued before
+`start`; later ones switch in place (no reload). Omitted fields keep
 fresh-globe defaults.
+
+Validation ([`schema.js`](src/schema.js), [`project.js`](src/project.js)
+`parseProject`): structure against the schema, then ids and references
+(duplicate ids, `url` xor `text`, `camera.follow`, `gnc.focus.layer`, director
+mission). Errors list every failing path. Unknown keys warn and are ignored, so
+files with keys from newer builds still open.
+
+Versions: older files are upgraded on load (`migrateProject`) and saved at the
+current version; newer ones are refused.
+
+| Version | Change |
+| --- | --- |
+| 1 | Initial |
+| 2 | `picking` → `overlays.picking` |
 
 Relative URLs resolve against the app root (the directory holding
 `index.html`), not the project file.
 
 | Key | Type | Applies |
 | --- | --- | --- |
-| `terramenta` | `1` | Format version. Required. |
+| `terramenta` | `2` | Format version. Required. |
 | `name`, `description` | string | Masthead, Project tab, page title |
 | `ui.panel` | `"full"` \| `"flight"` | Full tabbed panel (default) or [flight panel](#flight-panel) |
 | `ui.tab` | `"project"` \| `"imagery"` \| `"data"` \| `"other"` \| `"mission"` | Initial tab (full panel) |
@@ -48,13 +72,13 @@ Relative URLs resolve against the app root (the directory holding
 | `clock` | `{epoch, timeScale, paused, shaded}` | `epoch`: ISO 8601 UTC or `"now"` |
 | `camera` | `{lat, lon, altitudeKm, follow \| anchor}` | `lookAt`; `follow`: mission id; `anchor`: `sun`/`earth`/`mars`/`barycenter` |
 | `imagery`, `vectorTiles` | `{enabled, layer, style?}` | `layer`: preset label or index |
-| `overlays` | `{enabled, layers: [{id, ...addOverlay options}]}` | One of `url`/`text` per layer |
+| `overlays` | `{enabled, picking, layers: [{id, ...addOverlay options}]}` | One of `url`/`text` per layer |
 | `ephemerides` | `{enabled, layers: [{id, ...addEphemeris options}]}` | OMM JSON or KVN OEM |
 | `missions` | `[{id, ...addMission options}]` | |
-| `placemarks.enabled`, `picking`, `keyboard` | bool | |
+| `placemarks.enabled`, `keyboard` | bool | |
 | `gnc` | `{enabled, eciAxes, ecefAxes, graticule, graticuleStepDeg, sidereal, track, trackOrbits, focus: {layer, noradId}}` | |
 | `hud` | `{visible, help}` | Globe's built-in HUD (off unless set) |
-| `director` | `{type, ...}` | Scripted clock/view control; see [`director.js`](src/director.js) |
+| `director` | `{type, ...}` | Scripted clock/view control; see [Directors](#directors) |
 
 **Save** (Project tab) writes the current scene: state-stream values plus
 what [`globe.js`](src/globe.js) recorded from `add*` calls (inline text,
@@ -158,7 +182,8 @@ marker cap).
 ## Directors
 
 [`director.js`](src/director.js). A director is a state-stream callback that
-drives clock and view.
+drives clock and view. Fields are typed in the schema (`$defs/<type>`); a new
+director needs a `$defs` entry and an `allOf` branch in `$defs/director`.
 
 `missionFlight` — `{mission, launchLeadSeconds = 3600, departureTimeScale = 600,
 departureDoublingSeconds = 2}`:
@@ -229,6 +254,9 @@ Display-only values need only a `GlobeState` field and a line in
 ```
 index.html               The page
 assets/terramenta.png    Loading-screen banner
+package.json             `npm test` only
+schema/
+  project.schema.json           Project format (JSON Schema 2020-12)
 projects/
   manifest.json                 Bundled project list
   overview.terramenta.json      Layers tour
@@ -242,7 +270,8 @@ src/
   main.js                Boot: project → workspace → globe; per-project UI mount
   workspace.js           Open project: in-place switching, dirty tracking, autosave, recent, drop
   store.js               IndexedDB key-value store
-  project.js             Project load, validate, apply, capture, save
+  project.js             Project load, upgrade, validate, apply, capture, save
+  schema.js              JSON Schema subset validator
   project-panel.js       Project section (open, save, recover, recent, examples)
   director.js            Scripted clock/view control (missionFlight)
   flight-panel.js        Flight panel
