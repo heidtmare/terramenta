@@ -12,9 +12,9 @@
  * fights the pointer, so a slider says so while it is being held and `sync`
  * leaves it alone until it is let go.
  *
- * The sections are dealt out into seven tabs — the project, the imagery under
+ * The sections are dealt out into eight tabs — the project, the imagery under
  * everything, the data drawn over it, numerically propagated spacecraft, the
- * timeline of events, the view it is all seen from, and mission, which is two things stacked: a porkchop plot bound to nothing, since it depends on
+ * timeline of events, plots and reports, the view it is all seen from, and mission, which is two things stacked: a porkchop plot bound to nothing, since it depends on
  * nothing the globe is currently doing, and a launch list bound the same way
  * every other section here is. Switching tabs only hides panes; nothing is
  * torn down or rebuilt, so a control in a closed tab is still bound and still
@@ -30,6 +30,7 @@ import { mountMission } from "./mission.js";
 import { mountOverlays } from "./overlays.js";
 import { PLACES } from "./places.js";
 import { mountProjectSection } from "./project-panel.js";
+import { mountReports } from "./reports-panel.js";
 import { mountSpacecraft } from "./spacecraft-panel.js";
 import { mountTimeline } from "./timeline-panel.js";
 import { button, choice, slider, toggle } from "./widgets.js";
@@ -403,9 +404,10 @@ export function mountPanel(root, { tab, signal }) {
   // over it, vector tiles included — they are decoded features, not pixels,
   // and belong with the other two feature layers rather than with the raster
   // imagery. What is left is how the scene is viewed rather than what is in it.
-  const mission = mountMission(bind);
+  const mission = mountMission(bind, signal);
   const spacecraft = mountSpacecraft(bind, signal);
   const timelineSection = mountTimeline(bind);
+  const reports = mountReports(bind, signal);
 
   const projectSection = mountProjectSection({ signal });
 
@@ -415,6 +417,7 @@ export function mountPanel(root, { tab, signal }) {
     { id: "data", label: "Data", panes: [vectorTiles, overlays, ephemerides] },
     { id: "spacecraft", label: "Spacecraft", panes: spacecraft },
     { id: "timeline", label: "Timeline", panes: [timelineSection] },
+    { id: "reports", label: "Reports", panes: reports },
     { id: "other", label: "Other", panes: [sun, frame, gnc, camera, chrome] },
     { id: "mission", label: "Mission", panes: [mission] },
   ]);

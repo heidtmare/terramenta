@@ -751,9 +751,12 @@ body.panel-collapsed #panel {
 
 /* --- Porkchop plot --------------------------------------------------------- */
 
+/* Two date inputs side by side outgrow the panel; stacked. */
 .porkchop-date-range {
   display: flex;
+  flex-direction: column;
   gap: 0.35rem;
+  min-width: 0;
 }
 
 .porkchop-date-range .coordinate {
@@ -998,15 +1001,24 @@ textarea.coordinate {
 }
 
 /* Grid items default to min-width: auto; the nowrap title would widen the pane. */
-.timeline-event {
+.timeline-event,
+.layer.plot,
+.layer.report,
+.layer.study {
   min-width: 0;
 }
 
-.timeline-event .mission-title {
+.timeline-event .mission-title,
+.layer.plot .mission-title,
+.layer.report .mission-title,
+.layer.study .mission-title {
   white-space: normal;
 }
 
-.timeline-event .layer-head .button {
+.timeline-event .layer-head .button,
+.layer.plot .layer-head .button,
+.layer.report .layer-head .button,
+.layer.study .layer-head .button {
   flex: 0 0 auto;
 }
 
@@ -1027,4 +1039,108 @@ textarea.coordinate {
 .timeline-strip[hidden],
 .timeline-span[hidden] {
   display: none;
+}
+
+/* --- Reports --------------------------------------------------------------- */
+
+.porkchop-minimum {
+  fill: none;
+  stroke: #fff;
+  stroke-width: 1.5;
+}
+
+.chart-wrap {
+  margin-top: 0.4rem;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: rgba(6, 10, 18, 0.4);
+}
+
+.line-chart {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.line-chart.pickable {
+  cursor: crosshair;
+}
+
+.chart-frame {
+  fill: none;
+  stroke: var(--line);
+}
+
+.chart-grid {
+  stroke: var(--line);
+  stroke-width: 0.5;
+}
+
+.chart-line {
+  fill: none;
+  stroke-width: 1.2;
+  stroke-linejoin: round;
+}
+
+.chart-marker {
+  stroke: var(--ink-faint);
+  stroke-dasharray: 3 3;
+}
+
+.chart-cursor {
+  stroke: var(--accent);
+  stroke-width: 1;
+}
+
+.chart-label,
+.chart-empty {
+  fill: var(--ink-dim);
+  font-size: 10px;
+  font-family: inherit;
+}
+
+.chart-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-right: 0.75rem;
+}
+
+.chart-legend i {
+  display: inline-block;
+  width: 0.7rem;
+  height: 2px;
+}
+
+.report-table {
+  width: 100%;
+  margin-top: 0.4rem;
+  border-collapse: collapse;
+  font-size: 0.68rem;
+  color: var(--ink-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.report-table th,
+.report-table td {
+  padding: 0.15rem 0.3rem;
+  border-bottom: 1px solid var(--line);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.report-table th:first-child,
+.report-table td:first-child {
+  text-align: left;
+  white-space: normal;
+}
+
+.report-table thead th {
+  color: var(--ink-faint);
+  font-weight: normal;
+}
+
+.table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
 }

@@ -10,8 +10,13 @@
     "description": "Directed Earth → Mars transfer in the flight layout."
   },
   {
+    "file": "mars-windows.terramenta.json",
+    "name": "Mars launch windows",
+    "description": "Saved Earth → Mars porkchop studies, 2026 and 2028."
+  },
+  {
     "file": "leo-transfer.terramenta.json",
     "name": "LEO Hohmann transfer",
-    "description": "Cowell-propagated 500 → 800 km Hohmann transfer with a coasting reference; OEM/SPK export."
+    "description": "Cowell-propagated 500 → 800 km Hohmann transfer with a coasting reference; plots, Δv budget, CSV/CZML/OEM/SPK export."
   }
 ]

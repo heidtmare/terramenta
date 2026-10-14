@@ -31,7 +31,8 @@ npm test                       # node --test (Node 22+); no dependencies
 
 Tests ([`test/`](test/)) cover the schema validator, project validation,
 migrations, spacecraft/environment application, timeline resolution and
-runner, and capture → parse → apply round trips against a fake globe module (`globe.attach`).
+runner, analysis sections, report math (OEM parsing, osculating elements, Δv
+budget, CSV, CZML), and capture → parse → apply round trips against a fake globe module (`globe.attach`).
 
 ## Project files
 
@@ -46,7 +47,8 @@ fresh-globe defaults.
 Validation ([`schema.js`](src/schema.js), [`project.js`](src/project.js)
 `parseProject`): structure against the schema, then ids and references
 (duplicate ids, `url` xor `text`, `camera.follow`, `gnc.focus.layer`, director
-mission, timeline event references and cycles). Errors list every failing path. Unknown keys warn and are ignored, so
+mission, timeline event references and cycles, plot spacecraft, porkchop
+bodies and date ranges). Errors list every failing path. Unknown keys warn and are ignored, so
 files with keys from newer builds still open.
 
 Versions: older files are upgraded on load (`migrateProject`) and saved at the
@@ -65,7 +67,7 @@ Relative URLs resolve against the app root (the directory holding
 | `terramenta` | `2` | Format version. Required. |
 | `name`, `description` | string | Masthead, Project tab, page title |
 | `ui.panel` | `"full"` \| `"flight"` | Full tabbed panel (default) or [flight panel](#flight-panel) |
-| `ui.tab` | `"project"` \| `"imagery"` \| `"data"` \| `"spacecraft"` \| `"timeline"` \| `"other"` \| `"mission"` | Initial tab (full panel) |
+| `ui.tab` | `"project"` \| `"imagery"` \| `"data"` \| `"spacecraft"` \| `"timeline"` \| `"reports"` \| `"other"` \| `"mission"` | Initial tab (full panel) |
 | `ui.readout`, `ui.collapsed` | bool | Telemetry + picked-item panels (default on); panel collapsed |
 | `view` | `"globe"` \| `"heliocentric"` | Initial view, no transition |
 | `frame` | `"ecef"` \| `"eci"` | `setFrame` |
@@ -82,14 +84,15 @@ Relative URLs resolve against the app root (the directory holding
 | `hud` | `{visible, help}` | Globe's built-in HUD (off unless set) |
 | `director` | `{type, ...}` | Timeline preset; see [Directors](#directors) |
 | `timeline` | `{directed, skipTo, events: [{id, label, at, actions}]}` | See [Timeline](#timeline) |
+| `analysis` | `{plots: [{id, label, quantity, spacecraft}], porkchops: [{id, label, origin, destination, departure, arrival, retrograde, steps}]}` | See [Reports](#reports) |
 
 **Save** (Project tab) writes the current scene: state-stream values plus
 what [`globe.js`](src/globe.js) recorded from `add*` calls (inline text,
 mission search options, explicit satellite selections, camera lock). `ui`,
 `description` and `director` carry over from the loaded project; the timeline
-is saved as edited, minus events whose references no longer hold. Not saved:
-per-satellite trail toggles, local-file overlay refresh timers, porkchop
-inputs.
+and analysis are saved as edited, minus events whose references no longer hold
+and plot spacecraft no longer in the scene. Not saved: per-satellite trail
+toggles, local-file overlay refresh timers, unsaved porkchop inputs.
 
 ### Workspace
 
@@ -98,7 +101,7 @@ inputs.
 | | |
 | --- | --- |
 | Open | Project tab (file, URL, recent, examples) or drop a file on the page. Switches in place: abort old panel → `globe.reset()` → apply → mount. |
-| Unsaved changes | Any scene-changing `globe.js` command outside `globe.quietly`, or a timeline edit, marks the project dirty (`•` in title and Project tab). Camera moves, view switches, pins, refreshes, project application and the timeline runner do not. Opening another project asks; leaving the page prompts. |
+| Unsaved changes | Any scene-changing `globe.js` command outside `globe.quietly`, or a timeline or analysis edit, marks the project dirty (`•` in title and Project tab). Camera moves, view switches, pins, refreshes, project application and the timeline runner do not. Opening another project asks; leaving the page prompts. |
 | Autosave | Dirty scene captured to IndexedDB 3 s after the last change; cleared on save or discard. One left at boot is offered under the Project tab (Recover / Dismiss). |
 | Recent | Last 8 opened projects (IndexedDB). Local files keep their text up to 4 MB. |
 
@@ -110,11 +113,12 @@ Listed in [`projects/manifest.json`](projects/manifest.json).
 | --- | --- |
 | [`overview`](projects/overview.terramenta.json) | Geometry tour, extruded cube, USGS past hour (60 s refresh), Celestrak `stations` |
 | [`mars-mission`](projects/mars-mission.terramenta.json) | Earth → Mars, flight panel, `missionFlight` director, Earth layers off |
-| [`leo-transfer`](projects/leo-transfer.terramenta.json) | 500 → 800 km Hohmann transfer vs. coasting reference; CelesTrak EOP and space weather; timeline slows the clock around each burn |
+| [`mars-windows`](projects/mars-windows.terramenta.json) | Earth → Mars porkchop studies, 2026 and 2028 windows; opens on Mission |
+| [`leo-transfer`](projects/leo-transfer.terramenta.json) | 500 → 800 km Hohmann transfer vs. coasting reference; CelesTrak EOP and space weather; timeline slows the clock around each burn; altitude, SMA and eccentricity plots |
 
 ## Full panel
 
-The panel has seven tabs. All controls stay bound while hidden, so switching
+The panel has eight tabs. All controls stay bound while hidden, so switching
 tabs does not resync anything.
 
 | Tab | Section | Controls |
@@ -127,12 +131,15 @@ tabs does not resync anything.
 | **Spacecraft** | Propagation environment | EOP, space weather, kernel: URL or local file, coverage |
 | | Spacecraft | Per spacecraft: visibility, colour, trails, span/samples/final mass, edit, go to start, OEM/SPK export, remove. Editor: initial state (GCRF state with circular-orbit fill, TLE, OMM), start/duration/step, vehicle, forces, integrator, impulsive and finite burns |
 | **Timeline** | Timeline | Directed on/off; previous/next event; strip (click to set the clock) and list of every event with time, source, actions, Go, Remove (project events). Add event: label, at clock or an event plus offset, actions from the current scene (rate, paused, view, frame, camera, focus) |
+| **Reports** | Plots | Saved plots: one quantity against time per spacecraft, burn markers, clock cursor (click to set the clock), CSV, remove. Add plot: quantity, spacecraft, label |
+| | Spacecraft reports | Per spacecraft: span, samples, start/end/min/max of altitude, SMA, eccentricity, inclination, period, perigee/apogee; Δv budget per burn; CSV. CZML of all spacecraft |
 | **Other** | Sun & clock | Run/pause, rate (1× to 86,400×), jump to now or by hours/days, terminator shading |
 | | Reference frame | ECEF / ECI |
 | | Both frames at once | ECI and ECEF triads, graticule and spacing, sidereal arc, focused satellite's orbit and ground track over a set number of orbits; quaternion readout and per-frame speeds |
 | | Camera | Fly to lat/lon/altitude, nine preset places, read back current view, reset |
 | | Globe chrome | Built-in HUD, key legend, key bindings |
-| **Mission** | Porkchop plot | Origin/destination bodies and departure/arrival date ranges; renders a contoured total-Δv SVG from `terramenta-charta` |
+| **Mission** | Porkchop plot | Origin/destination bodies, departure/arrival date ranges, grid steps; contoured total-Δv SVG from `terramenta-charta`, minimum marked and listed, grid CSV |
+| | Porkchop studies | Save the inputs under a label (same label replaces); Open fills and computes; remove. The first study opens with the project |
 | | Launch | Calls `addMission` for the selected pair. Per mission: status, dates, Δv, remove |
 
 Launched spacecraft are visible in the heliocentric view (`U`; `5` follows the
@@ -196,6 +203,33 @@ Satellites.
   `EOP-All.csv`/`SW-All.csv` with CORS; NAIF kernels need a local file or a
   same-origin URL.
 - **Export**: OEM (KVN, GCRF/UTC) and SPK Type 13 re-run the propagation.
+  CSV and CZML: [Reports](#reports).
+
+## Reports
+
+[`reports.js`](src/reports.js) (pure), [`reports-panel.js`](src/reports-panel.js),
+[`chart.js`](src/chart.js), [`analysis.js`](src/analysis.js).
+
+- **Samples**: the spacecraft's OEM (`propagate` with `kvn`), parsed per
+  segment; cached per propagation.
+- **Quantities**: osculating two-body elements about Earth
+  (μ = 398600.4418 km³/s²) from each GCRF state: altitude, radius, speed, SMA,
+  eccentricity, inclination, RAAN, argument of perigee, true anomaly (argument
+  of latitude when circular), period, perigee/apogee altitude. Altitudes are
+  radius − 6378.137 km, not geodetic.
+- **Δv budget**: from the request by the rocket equation, as the propagator
+  models burns: impulsive burns spend propellant only with `ispS`; finite
+  burns flow at `thrustN / (ispS·g0)` and stop at dry mass (default
+  min(850 kg, wet)).
+- **CSV**: per spacecraft (UTC, GCRF state, every quantity), per plot
+  (`utc, spacecraft, value`), per porkchop grid (dates, time of flight,
+  departure/arrival/total Δv; unsolved cells empty).
+- **CZML**: all spacecraft, `INERTIAL` frame (ICRF ≈ GCRF), metres, one
+  Lagrange position interval per OEM segment so burns are not interpolated
+  across; document clock spans the data.
+- **Saved** under `analysis`: `plots` (`quantity` is a `reports.js`
+  `QUANTITIES` key) and `porkchops` (dates `YYYY-MM-DD`, UTC; `steps` 2–101,
+  default 33).
 
 ## Timeline
 
@@ -286,7 +320,8 @@ Other patterns:
 - **Porkchop plots** ([`porkchop.js`](src/porkchop.js),
   [`mission.js`](src/mission.js)): `terramenta-charta` is stateless, so the
   plot is computed on request — once without levels to get the Δv range, then
-  with levels across it — and drawn as hand-built SVG.
+  with levels across it — and drawn as hand-built SVG. Studies are saved
+  in the project (`analysis.porkchops`).
 
 ### Boot order
 
@@ -323,6 +358,7 @@ projects/
   manifest.json                 Bundled project list
   overview.terramenta.json      Layers tour
   mars-mission.terramenta.json  Directed Earth → Mars flight
+  mars-windows.terramenta.json  Porkchop studies
   leo-transfer.terramenta.json  Propagated Hohmann transfer
 data/
   geometry-tour.geojson         One feature per geometry type
@@ -339,20 +375,24 @@ src/
   project-panel.js       Project section (open, save, recover, recent, examples)
   director.js            Timeline presets (missionFlight)
   timeline.js            Timeline: scene/project/director events, resolution, runner
+  analysis.js            Project analysis: saved plots and porkchop studies
+  reports.js             OEM parsing, osculating elements, Δv budget, CSV, CZML
   flight-panel.js        Flight panel
   globe.js               Sole wrapper around the globe WASM module; records add* sources, reports scene changes
   porkchop.js            Sole wrapper around the charta WASM module
   panel.js               Control panel tabs and the one-way bind rule
   overlays.js            GeoJSON layer controls, local-file refresh
   ephemeris.js           Satellite layer controls, object list
-  mission.js             Mission tab: porkchop plot and launch
+  mission.js             Mission tab: porkchop plot, studies, grid CSV, launch
   spacecraft-panel.js    Spacecraft tab: environment, spacecraft list, editor, OEM/SPK export
   timeline-panel.js      Timeline tab: strip, event list, add event
+  reports-panel.js       Reports tab: plots, spacecraft reports, CSV/CZML export
+  chart.js               SVG builder and time-series line chart
   feature.js             Picking, click handling, placemark calculations
   readout.js             Telemetry panel
   widgets.js             Buttons, toggles, choices, sliders
   format.js              Coordinate, altitude, rate, duration and UTC time formatting
-  dom.js                 Element helpers and tab strip
+  dom.js                 Element helpers, tab strip, download
   places.js              Camera presets
   feeds.js               Overlay catalogue
   orbits.js              Satellite catalogue

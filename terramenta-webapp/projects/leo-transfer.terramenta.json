@@ -2,8 +2,8 @@
   "$schema": "../schema/project.schema.json",
   "terramenta": 2,
   "name": "LEO Hohmann transfer",
-  "description": "500 → 800 km Hohmann transfer against a coasting reference, Cowell-propagated with EGM2008 8×8, Harris-Priester drag, Sun/Moon and SRP. The timeline slows the clock around each burn. Export either as OEM or SPK from the Spacecraft tab.",
-  "ui": { "tab": "timeline" },
+  "description": "500 → 800 km Hohmann transfer against a coasting reference, Cowell-propagated with EGM2008 8×8, Harris-Priester drag, Sun/Moon and SRP. The timeline slows the clock around each burn. Reports plots altitude, SMA and eccentricity with a Δv budget; export CSV/CZML there, OEM/SPK from the Spacecraft tab.",
+  "ui": { "tab": "reports" },
   "frame": "eci",
   "clock": { "epoch": "2026-01-01T00:20:00Z", "timeScale": 60, "paused": false },
   "camera": { "lat": 20, "lon": -40, "altitudeKm": 30000 },
@@ -66,6 +66,13 @@
       { "id": "burn2-approach", "label": "Slow for burn 2", "at": { "event": "transfer.burn2", "offsetS": -300 }, "actions": { "timeScale": 10 } },
       { "id": "final-orbit", "label": "Final orbit", "at": { "event": "transfer.burn2", "offsetS": 120 }, "actions": { "timeScale": 120 } },
       { "id": "hold", "label": "Hold at end", "at": { "event": "transfer.end" }, "actions": { "paused": true } }
+    ]
+  },
+  "analysis": {
+    "plots": [
+      { "id": "altitude", "quantity": "altitudeKm", "spacecraft": ["reference", "transfer"] },
+      { "id": "sma", "quantity": "smaKm", "spacecraft": ["reference", "transfer"] },
+      { "id": "eccentricity", "quantity": "eccentricity", "spacecraft": ["transfer"] }
     ]
   }
 }

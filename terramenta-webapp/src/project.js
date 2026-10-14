@@ -2,7 +2,8 @@
  * Project files: `*.terramenta.json`, format version `PROJECT_VERSION`.
  *
  * A project is the full initial scene — layers, spacecraft, missions, clock,
- * camera, UI layout — plus its timeline and an optional director. Every
+ * camera, UI layout — plus its timeline, an optional director, and saved
+ * analysis (plots, porkchop studies). Every
  * project, bundled or user-supplied, loads the same way: parsed here, then
  * applied onto a reset globe by `workspace.js`. `?project=<url>` (or
  * `?project=session` for a local file stashed in `sessionStorage`) names the
@@ -14,6 +15,7 @@
  */
 
 import * as globe from "./globe.js";
+import { analysisErrors, analysisSection } from "./analysis.js";
 import { DIRECTORS } from "./director.js";
 import { applyEnvironment, recordedEnvironment } from "./environment.js";
 import { validate } from "./schema.js";
@@ -250,6 +252,7 @@ function referenceErrors(project) {
   }
   const layerIds = new Set([...ephemerisIds, ...spacecraftIds]);
   errors.push(...timelineErrors(project, { missionIds, layerIds }).map((error) => `timeline.${error}`));
+  errors.push(...analysisErrors(project, { spacecraftIds }).map((error) => `analysis.${error}`));
   return errors;
 }
 
@@ -370,8 +373,8 @@ function presetIndex(presets, layer, key) {
 /**
  * The current scene as a project. `base` is the loaded project: its name,
  * description, `ui` and `director` carry over, since the globe does not
- * report them. The timeline is `timeline.js`'s, references that no longer
- * hold dropped.
+ * report them. The timeline and analysis are `timeline.js`'s and
+ * `analysis.js`'s, references that no longer hold dropped.
  */
 export function captureProject(state, base = {}) {
   const sources = globe.recordedSources();
@@ -504,6 +507,8 @@ export function captureProject(state, base = {}) {
     layerIds: new Set([...project.ephemerides.layers.map((layer) => layer.id), ...sources.spacecraft.keys()]),
   });
   if (timeline) project.timeline = timeline;
+  const analysis = analysisSection({ spacecraftIds: new Set(sources.spacecraft.keys()) });
+  if (analysis) project.analysis = analysis;
   return project;
 }
 
