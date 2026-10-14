@@ -1,11 +1,12 @@
 /**
  * Project files: `*.terramenta.json`, format version `PROJECT_VERSION`.
  *
- * A project is the full initial scene — layers, missions, clock, camera, UI
- * layout and an optional director. Every project, bundled or user-supplied,
- * loads the same way: parsed here, then applied onto a reset globe by
- * `workspace.js`. `?project=<url>` (or `?project=session` for a local file
- * stashed in `sessionStorage`) names the open project, so a reload reopens it.
+ * A project is the full initial scene — layers, spacecraft, missions, clock,
+ * camera, UI layout — plus its timeline and an optional director. Every
+ * project, bundled or user-supplied, loads the same way: parsed here, then
+ * applied onto a reset globe by `workspace.js`. `?project=<url>` (or
+ * `?project=session` for a local file stashed in `sessionStorage`) names the
+ * open project, so a reload reopens it.
  * Format: `schema/project.schema.json`; README, "Project files".
  *
  * Relative URLs (project path and layer `url`s) resolve against the app root,
@@ -16,6 +17,7 @@ import * as globe from "./globe.js";
 import { DIRECTORS } from "./director.js";
 import { applyEnvironment, recordedEnvironment } from "./environment.js";
 import { validate } from "./schema.js";
+import { timelineErrors, timelineSection } from "./timeline.js";
 import SCHEMA from "../schema/project.schema.json" with { type: "json" };
 
 /** Format version written; older ones are upgraded on load (`migrateProject`). */
@@ -246,6 +248,8 @@ function referenceErrors(project) {
     const director = DIRECTORS[project.director.type];
     errors.push(...director.validate(project.director, { missionIds }).map((error) => `director.${error}`));
   }
+  const layerIds = new Set([...ephemerisIds, ...spacecraftIds]);
+  errors.push(...timelineErrors(project, { missionIds, layerIds }).map((error) => `timeline.${error}`));
   return errors;
 }
 
@@ -347,11 +351,6 @@ export function startOptions(project) {
   return { view: project.view };
 }
 
-/** Installs the project's director, if any; returns a state callback or `null`. */
-export function directorFor(project) {
-  return project.director ? DIRECTORS[project.director.type].create(project.director) : null;
-}
-
 function withResolvedUrl(options) {
   return options.url === undefined ? options : { ...options, url: resolveUrl(options.url) };
 }
@@ -371,7 +370,8 @@ function presetIndex(presets, layer, key) {
 /**
  * The current scene as a project. `base` is the loaded project: its name,
  * description, `ui` and `director` carry over, since the globe does not
- * report them.
+ * report them. The timeline is `timeline.js`'s, references that no longer
+ * hold dropped.
  */
 export function captureProject(state, base = {}) {
   const sources = globe.recordedSources();
@@ -498,6 +498,12 @@ export function captureProject(state, base = {}) {
   if (base.director && (!base.director.mission || missionIds.has(base.director.mission))) {
     project.director = base.director;
   }
+  const timeline = timelineSection({
+    spacecraft: new Map(spacecraft.map(({ id, propagation }) => [id, propagation])),
+    missionIds,
+    layerIds: new Set([...project.ephemerides.layers.map((layer) => layer.id), ...sources.spacecraft.keys()]),
+  });
+  if (timeline) project.timeline = timeline;
   return project;
 }
 

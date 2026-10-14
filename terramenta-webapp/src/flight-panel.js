@@ -14,6 +14,7 @@ import { el, row, section } from "./dom.js";
 import { clock, timeScale } from "./format.js";
 import * as globe from "./globe.js";
 import { mountProjectSection } from "./project-panel.js";
+import * as timeline from "./timeline.js";
 import { button, choice, slider, toggle } from "./widgets.js";
 
 const PHASE_IDS = ["departure", "escape", "arrival", "capture"];
@@ -79,8 +80,12 @@ export function mountFlightPanel(root, { missionId, project, signal }) {
     rate.isHeld,
   );
 
+  const directed = toggle("Directed", timeline.setDirected);
+  bind(directed.node, () => directed.set(timeline.isDirected()));
+
   const clockSection = section(
     "Clock",
+    directed.node,
     pauseToggle.node,
     row("Direction", directionChoice.node),
     rate.node,

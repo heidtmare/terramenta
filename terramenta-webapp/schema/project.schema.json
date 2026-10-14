@@ -15,7 +15,9 @@
       "additionalProperties": false,
       "properties": {
         "panel": { "enum": ["full", "flight"] },
-        "tab": { "enum": ["project", "imagery", "data", "spacecraft", "other", "mission"] },
+        "tab": {
+          "enum": ["project", "imagery", "data", "spacecraft", "timeline", "other", "mission"]
+        },
         "readout": { "type": "boolean" },
         "collapsed": { "type": "boolean" }
       }
@@ -131,7 +133,8 @@
       "properties": { "visible": {"type": "boolean"}, "help": {"type": "boolean"} }
     },
     "keyboard": { "type": "boolean" },
-    "director": { "$ref": "#/$defs/director" }
+    "director": { "$ref": "#/$defs/director" },
+    "timeline": { "$ref": "#/$defs/timeline" }
   },
   "$defs": {
     "color": {
@@ -226,8 +229,89 @@
         "parkingAltitudeKm": { "type": "number", "minimum": 0 }
       }
     },
+    "timeline": {
+      "description": "Events on the clock; see src/timeline.js.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "directed": { "type": "boolean", "description": "Apply event actions; default true." },
+        "skipTo": {
+          "$ref": "#/$defs/eventTime",
+          "description": "Once known, a clock before it jumps forward to it (once per open)."
+        },
+        "events": { "type": "array", "items": {"$ref": "#/$defs/timelineEvent"} }
+      }
+    },
+    "eventTime": {
+      "title": "a date-time or {event, offsetS}",
+      "anyOf": [
+        { "type": "string", "format": "date-time" },
+        {
+          "type": "object",
+          "required": ["event"],
+          "additionalProperties": false,
+          "properties": {
+            "event": {
+              "type": "string",
+              "description": "<spacecraft>.start|end|burnN|finiteN|finiteN.end, <mission>.departure|escape|arrival|capture, or a timeline event id."
+            },
+            "offsetS": { "type": "number" }
+          }
+        }
+      ]
+    },
+    "timelineEvent": {
+      "type": "object",
+      "required": ["id", "at"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "title": "an id without dots", "type": "string", "pattern": "^[^.]+$" },
+        "label": { "type": "string" },
+        "at": { "$ref": "#/$defs/eventTime" },
+        "actions": { "$ref": "#/$defs/actions" }
+      }
+    },
+    "actions": {
+      "description": "Applied while directed; see src/timeline.js.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "timeScale": {
+          "anyOf": [{"type": "number", "exclusiveMinimum": 0}, {"const": "max"}],
+          "description": "Magnitude; the clock keeps its direction."
+        },
+        "rampDoublingS": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Doubles timeScale every this many wall-clock seconds, up to the maximum."
+        },
+        "paused": { "type": "boolean" },
+        "view": { "enum": ["globe", "heliocentric"] },
+        "frame": { "enum": ["ecef", "eci"] },
+        "focus": {
+          "type": "object",
+          "required": ["layer"],
+          "additionalProperties": false,
+          "properties": {
+            "layer": { "type": "string", "description": "Ephemeris layer or spacecraft id." },
+            "noradId": { "type": "integer", "description": "Default: the layer's first object." }
+          }
+        },
+        "follow": { "type": "string", "description": "Mission id; heliocentric camera lock." },
+        "camera": {
+          "type": "object",
+          "required": ["lat", "lon"],
+          "additionalProperties": false,
+          "properties": {
+            "lat": { "type": "number", "minimum": -90, "maximum": 90 },
+            "lon": { "type": "number" },
+            "altitudeKm": { "type": "number", "exclusiveMinimum": 0 }
+          }
+        }
+      }
+    },
     "director": {
-      "description": "Scripted clock/view control; see src/director.js.",
+      "description": "Timeline preset; see src/director.js.",
       "type": "object",
       "required": ["type"],
       "properties": { "type": {"enum": ["missionFlight"]} },
@@ -239,7 +323,7 @@
       ]
     },
     "missionFlight": {
-      "description": "Flies the camera and clock through one mission.",
+      "description": "Flies the clock and view through one mission.",
       "type": "object",
       "required": ["mission"],
       "additionalProperties": false,

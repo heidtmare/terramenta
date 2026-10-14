@@ -1,26 +1,20 @@
 /**
- * Directors: scripted view/clock control driven by the state stream, selected
- * by a project's `director.type`.
+ * Directors: timeline presets, selected by a project's `director.type`.
  *
  * Each entry: `validate(config, {missionIds})` → reference errors (paths
- * relative to `director`), and `create(config)` → `(state) => void`. Fields are
- * typed in `schema/project.schema.json` (`$defs/<type>`, listed in
+ * relative to `director`), and `events(config)` → `{events, skipTo?}` in
+ * `timeline` form, run by `timeline.js` alongside the project's own events.
+ * Fields are typed in `schema/project.schema.json` (`$defs/<type>`, listed in
  * `$defs/director`).
  */
 
-import * as globe from "./globe.js";
-
 /**
- * `missionFlight`: flies the camera and clock through one mission.
+ * `missionFlight`: flies the clock and view through one mission.
  *
- * - `waiting`: clock to `launchLeadSeconds` before departure at `departureTimeScale`.
- * - Orbiting origin: rate doubles every `departureDoublingSeconds` (wall clock) up to max.
- * - Heliocentric cruise: max rate, heliocentric view.
- * - Orbiting destination: pause.
- *
- * Rates keep the sign of the current time scale, so reverse playback works.
- * The view is re-requested each snapshot until it lands (requests made
- * mid-transition are dropped).
+ * - Skip to `launchLeadSeconds` before departure; globe view at `departureTimeScale`.
+ * - Departure: the rate doubles every `departureDoublingSeconds` (wall clock) up to max.
+ * - Escape: max rate, heliocentric view.
+ * - Capture: pause.
  */
 const missionFlight = {
   defaults: { launchLeadSeconds: 3_600, departureTimeScale: 600, departureDoublingSeconds: 2 },
@@ -29,48 +23,31 @@ const missionFlight = {
     return missionIds.has(config.mission) ? [] : [`mission: no mission "${config.mission}"`];
   },
 
-  create(config) {
-    const { mission: missionId, launchLeadSeconds, departureTimeScale, departureDoublingSeconds } = {
+  events(config) {
+    const { mission, launchLeadSeconds, departureTimeScale, departureDoublingSeconds } = {
       ...this.defaults,
       ...config,
     };
-    const cruiseTimeScale = globe.limits().maxTimeScale;
-    let skippedWait = false;
-    let leg;
-    let rampStartedAt = null;
-
-    return (state) => {
-      const mission = state.missions.find((mission) => mission.id === missionId);
-      if (!mission) return;
-      const sign = state.sun.timeScale < 0 ? -1 : 1;
-
-      if (mission.status === "waiting" && !skippedWait) {
-        skippedWait = true;
-        globe.setClock(mission.departureUnixSeconds - launchLeadSeconds);
-        globe.setTimeScale(sign * departureTimeScale);
-      }
-
-      const orbiting =
-        mission.status === "enroute" || mission.status === "arrived" ? mission.orbiting : null;
-      if (orbiting !== leg) {
-        leg = orbiting;
-        rampStartedAt = null;
-        if (leg === mission.origin) {
-          rampStartedAt = performance.now();
-        } else if (leg === mission.destination) {
-          globe.setSunPaused(true);
-        } else if (leg) {
-          globe.setTimeScale(sign * cruiseTimeScale);
-        }
-      }
-
-      if (rampStartedAt != null) {
-        const doublings = (performance.now() - rampStartedAt) / 1000 / departureDoublingSeconds;
-        globe.setTimeScale(sign * Math.min(departureTimeScale * 2 ** doublings, cruiseTimeScale));
-      }
-
-      const view = leg == null || leg === mission.origin ? "globe" : "heliocentric";
-      if (state.view !== view && state.view !== "transitioning") globe.setView(view);
+    const at = (phase, offsetS) => ({ event: `${mission}.${phase}`, ...(offsetS ? { offsetS } : {}) });
+    const approach = at("departure", -launchLeadSeconds);
+    return {
+      skipTo: approach,
+      events: [
+        {
+          id: "director-approach",
+          label: "Launch approach",
+          at: approach,
+          actions: { timeScale: departureTimeScale, view: "globe" },
+        },
+        {
+          id: "director-departure",
+          label: "Departure ramp",
+          at: at("departure"),
+          actions: { timeScale: departureTimeScale, rampDoublingS: departureDoublingSeconds },
+        },
+        { id: "director-cruise", label: "Cruise", at: at("escape"), actions: { timeScale: "max", view: "heliocentric" } },
+        { id: "director-capture", label: "Hold at capture", at: at("capture"), actions: { paused: true } },
+      ],
     };
   },
 };

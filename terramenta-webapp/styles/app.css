@@ -943,3 +943,88 @@ textarea.coordinate {
 .layers + .buttons {
   margin-top: 0.45rem;
 }
+
+/* --- Timeline ---------------------------------------------------------------- */
+
+.timeline-strip {
+  position: relative;
+  height: 1.6rem;
+  margin-top: 0.8rem;
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.timeline-marker {
+  position: absolute;
+  top: 0.3rem;
+  bottom: 0.3rem;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--ink-dim);
+  pointer-events: none;
+}
+
+.timeline-marker.project,
+.timeline-marker.director {
+  background: var(--accent);
+}
+
+.timeline-marker.mission {
+  background: #7ef0c8;
+}
+
+.timeline-cursor {
+  position: absolute;
+  top: -0.2rem;
+  bottom: -0.2rem;
+  width: 2px;
+  margin-left: -1px;
+  background: #ffb86b;
+  pointer-events: none;
+}
+
+.timeline-cursor.outside {
+  opacity: 0.35;
+}
+
+.timeline-span {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 0.25rem;
+  font-size: 0.72rem;
+  color: var(--ink-faint);
+}
+
+/* Grid items default to min-width: auto; the nowrap title would widen the pane. */
+.timeline-event {
+  min-width: 0;
+}
+
+.timeline-event .mission-title {
+  white-space: normal;
+}
+
+.timeline-event .layer-head .button {
+  flex: 0 0 auto;
+}
+
+.timeline-event[data-status="reached"] {
+  border-left-color: var(--accent);
+}
+
+.timeline-event.next {
+  border-color: var(--accent);
+}
+
+.timeline-capture {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.25rem 0.75rem;
+}
+
+.timeline-strip[hidden],
+.timeline-span[hidden] {
+  display: none;
+}

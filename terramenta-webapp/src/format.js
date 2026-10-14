@@ -57,6 +57,11 @@ export function clock(unixSeconds) {
   return `${date.toISOString().slice(0, 10)} ${date.toISOString().slice(11, 16)} UTC`;
 }
 
+/** `propagate`'s UTC times (`2026-01-01T00:00:00.000`, no zone) → Unix seconds. */
+export function utcSeconds(text) {
+  return Date.parse(`${text.slice(0, 23)}Z`) / 1000;
+}
+
 /**
  * Maps a slider's linear position onto a range that spans orders of magnitude.
  *

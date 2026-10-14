@@ -12,9 +12,9 @@
  * fights the pointer, so a slider says so while it is being held and `sync`
  * leaves it alone until it is let go.
  *
- * The sections are dealt out into six tabs — the project, the imagery under
+ * The sections are dealt out into seven tabs — the project, the imagery under
  * everything, the data drawn over it, numerically propagated spacecraft, the
- * view it is all seen from, and mission, which is two things stacked: a porkchop plot bound to nothing, since it depends on
+ * timeline of events, the view it is all seen from, and mission, which is two things stacked: a porkchop plot bound to nothing, since it depends on
  * nothing the globe is currently doing, and a launch list bound the same way
  * every other section here is. Switching tabs only hides panes; nothing is
  * torn down or rebuilt, so a control in a closed tab is still bound and still
@@ -31,6 +31,7 @@ import { mountOverlays } from "./overlays.js";
 import { PLACES } from "./places.js";
 import { mountProjectSection } from "./project-panel.js";
 import { mountSpacecraft } from "./spacecraft-panel.js";
+import { mountTimeline } from "./timeline-panel.js";
 import { button, choice, slider, toggle } from "./widgets.js";
 
 /** `tab`: the tab opened first; `signal` aborts when the project closes. */
@@ -404,6 +405,7 @@ export function mountPanel(root, { tab, signal }) {
   // imagery. What is left is how the scene is viewed rather than what is in it.
   const mission = mountMission(bind);
   const spacecraft = mountSpacecraft(bind, signal);
+  const timelineSection = mountTimeline(bind);
 
   const projectSection = mountProjectSection({ signal });
 
@@ -412,6 +414,7 @@ export function mountPanel(root, { tab, signal }) {
     { id: "imagery", label: "Imagery", panes: [imagery] },
     { id: "data", label: "Data", panes: [vectorTiles, overlays, ephemerides] },
     { id: "spacecraft", label: "Spacecraft", panes: spacecraft },
+    { id: "timeline", label: "Timeline", panes: [timelineSection] },
     { id: "other", label: "Other", panes: [sun, frame, gnc, camera, chrome] },
     { id: "mission", label: "Mission", panes: [mission] },
   ]);
