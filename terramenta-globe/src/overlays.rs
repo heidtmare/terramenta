@@ -707,6 +707,22 @@ impl OverlaySettings {
         self.revision += 1;
     }
 
+    /// Takes every overlay down and restores the startup switches.
+    pub fn reset(&mut self) {
+        let ids: Vec<String> = self
+            .overlays
+            .iter()
+            .map(|overlay| overlay.id.clone())
+            .collect();
+        for id in ids {
+            self.remove(&id);
+        }
+        self.clear_pin();
+        self.enabled = true;
+        self.picking = true;
+        self.revision += 1;
+    }
+
     /// Takes an overlay down. Returns whether there was one.
     pub fn remove(&mut self, id: &str) -> bool {
         let Some(index) = self.overlays.iter().position(|overlay| overlay.id == id) else {

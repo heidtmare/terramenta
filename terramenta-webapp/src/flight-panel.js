@@ -19,10 +19,10 @@ import { button, choice, slider, toggle } from "./widgets.js";
 const PHASE_IDS = ["departure", "escape", "arrival", "capture"];
 
 /**
- * `missionId`: the mission shown; `project`/`source` as `loadRequestedProject`
- * returns them.
+ * `missionId`: the mission shown; `project` the open project;
+ * `signal` aborts when it closes.
  */
-export function mountFlightPanel(root, { missionId, project, source }) {
+export function mountFlightPanel(root, { missionId, project, signal }) {
   const limits = globe.limits();
   const controls = [];
 
@@ -163,7 +163,7 @@ export function mountFlightPanel(root, { missionId, project, source }) {
       clockSection,
       missionSection,
       anchorSection,
-      mountProjectSection(bind, project, source),
+      mountProjectSection({ signal }),
     ),
   );
 

@@ -862,3 +862,30 @@ body.layout-flight .buttons .button:disabled {
   color: #ff8a8a;
   white-space: pre-line;
 }
+
+.detail[hidden],
+.recovery:empty {
+  display: none;
+}
+
+.recovery {
+  margin: 0.5rem 0;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+}
+
+/* A file dragged over the page. */
+body.dropping::after {
+  content: "Drop to open project";
+  position: fixed;
+  inset: var(--gutter);
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  border: 2px dashed var(--accent);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--ink);
+  pointer-events: none;
+}

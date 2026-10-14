@@ -8,7 +8,9 @@ no npm, no bundler. One page, `index.html`, which loads a project file.
 | --- | --- |
 | `index.html` | Empty project |
 | `index.html?project=projects/overview.terramenta.json` | Bundled project (any same-origin or CORS URL) |
-| `index.html?project=session` | Local file opened from the Project tab (`sessionStorage`) |
+| `index.html?project=session` | Local file opened from the Project tab or dropped (`sessionStorage`) |
+
+`?project=` tracks the open project, so a reload reopens it.
 
 ## Running
 
@@ -26,9 +28,10 @@ opened from `file://`).
 ## Project files
 
 `*.terramenta.json`. Every project, bundled or user-supplied, loads the same
-way: page load → fetch → validate → queue onto the globe → `start`. Opening
-another project reloads the page, so each starts on a fresh globe. Errors list
-every failing path; unknown keys warn. Omitted fields keep globe defaults.
+way: fetch/read → validate → `globe.reset()` → queue onto the globe. The first
+project is queued before `start`; later ones switch in place (no reload).
+Errors list every failing path; unknown keys warn. Omitted fields keep
+fresh-globe defaults.
 
 Relative URLs resolve against the app root (the directory holding
 `index.html`), not the project file.
@@ -60,6 +63,17 @@ mission search options, explicit satellite selections, camera lock). `ui`,
 per-satellite trail toggles, local-file overlay refresh timers, porkchop
 inputs.
 
+### Workspace
+
+[`workspace.js`](src/workspace.js) owns the open project.
+
+| | |
+| --- | --- |
+| Open | Project tab (file, URL, recent, examples) or drop a file on the page. Switches in place: abort old panel → `globe.reset()` → apply → mount. |
+| Unsaved changes | Any scene-changing `globe.js` command outside `globe.quietly` marks the project dirty (`•` in title and Project tab). Camera moves, view switches, pins, refreshes, project application and directors do not. Opening another project asks; leaving the page prompts. |
+| Autosave | Dirty scene captured to IndexedDB 3 s after the last change; cleared on save or discard. One left at boot is offered under the Project tab (Recover / Dismiss). |
+| Recent | Last 8 opened projects (IndexedDB). Local files keep their text up to 4 MB. |
+
 ### Bundled projects
 
 Listed in [`projects/manifest.json`](projects/manifest.json).
@@ -76,7 +90,7 @@ tabs does not resync anything.
 
 | Tab | Section | Controls |
 | --- | --- | --- |
-| **Project** | Project | Name, description, source; open file/URL; save; new; bundled projects |
+| **Project** | Project | Name, description, source, unsaved marker; open file/URL; save; new; recover; recent; bundled projects |
 | **Imagery** | Imagery | The eight presets grouped by protocol (WMS/WMTS) with tile size, format and depth; previous/next; streaming on/off |
 | **Data** | Vector tiles | Source (MapLibre boundaries, OSM Shortbread), its source layers and depth, colour, ring fill, streaming on/off |
 | | GeoJSON overlays | Add from URL or local file; bundled samples and USGS feeds; refresh period; picking on/off. Per layer: visibility, colour, clamp to surface, extrude, simplestyle on/off, refresh, remove, feature counts and age |
@@ -189,11 +203,13 @@ Other patterns:
 
 ### Boot order
 
-[`main.js`](src/main.js) loads the module and the project in parallel, builds
-the panel the project names from `layers()`, `vectorLayers()` and `limits()`
-(available before the renderer starts), queues the project
-([`project.js`](src/project.js) `applyProject`), then calls `start` with the
-project's `view`. Commands sent before `start` are applied on the first frame.
+[`main.js`](src/main.js) loads the module and the project in parallel, opens
+the project in the workspace — builds the panel it names from `layers()`,
+`vectorLayers()` and `limits()` (available before the renderer starts) and
+queues it ([`project.js`](src/project.js) `applyProject`) — then calls `start`
+with the project's `view`. Commands sent before `start` are applied on the
+first frame. Panels take an `AbortSignal` that fires when the project closes;
+anything with a timer or subscription must stop on it.
 
 ### Adding a control
 
@@ -223,12 +239,14 @@ data/
   simplestyle-examples.geojson  simplestyle-spec member examples
 styles/app.css           Styles
 src/
-  main.js                Boot: project → panel → globe
+  main.js                Boot: project → workspace → globe; per-project UI mount
+  workspace.js           Open project: in-place switching, dirty tracking, autosave, recent, drop
+  store.js               IndexedDB key-value store
   project.js             Project load, validate, apply, capture, save
-  project-panel.js       Project section (open, save, bundled list)
+  project-panel.js       Project section (open, save, recover, recent, examples)
   director.js            Scripted clock/view control (missionFlight)
   flight-panel.js        Flight panel
-  globe.js               Sole wrapper around the globe WASM module; records add* sources
+  globe.js               Sole wrapper around the globe WASM module; records add* sources, reports scene changes
   porkchop.js            Sole wrapper around the charta WASM module
   panel.js               Control panel tabs and the one-way bind rule
   overlays.js            GeoJSON layer controls, local-file refresh

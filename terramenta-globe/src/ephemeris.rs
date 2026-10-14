@@ -824,6 +824,18 @@ impl EphemerisSettings {
         self.revision += 1;
     }
 
+    /// Takes every layer down and restores the startup switches.
+    pub fn reset(&mut self) {
+        let ids: Vec<String> = self.layers.iter().map(|layer| layer.id.clone()).collect();
+        for id in ids {
+            self.remove(&id);
+        }
+        self.clear_pin();
+        self.enabled = true;
+        self.picking = true;
+        self.revision += 1;
+    }
+
     /// Takes a layer down. Returns whether there was one.
     pub fn remove(&mut self, id: &str) -> bool {
         let Some(index) = self.layers.iter().position(|layer| layer.id == id) else {
@@ -2170,6 +2182,18 @@ mod tests {
 
     fn layer() -> Ephemeris {
         settings().layers.pop().expect("a layer")
+    }
+
+    #[test]
+    fn reset_takes_every_layer_down_and_restores_the_switches() {
+        let mut settings = settings();
+        assert!(settings.pin("stations", 25544));
+        settings.enabled = false;
+        settings.picking = false;
+        settings.reset();
+        assert!(settings.layers.is_empty());
+        assert!(settings.pinned.is_none());
+        assert!(settings.enabled && settings.picking);
     }
 
     #[test]

@@ -124,14 +124,6 @@ enum MissionState {
 struct Mission {
     request: MissionRequest,
     state: MissionState,
-    /// How many times [`launch_missions`] has spawned this mission's
-    /// spacecraft — 0 until the first launch. [`terramenta_solare::frame::FrameTree`]
-    /// never frees a name once added, and never will (see
-    /// [`crate::solar::spawn_spacecraft`]), so a mission un-launched and
-    /// relaunched — the clock running back past its departure and then
-    /// forward again — needs a fresh frame name each time rather than
-    /// reusing one the tree already has.
-    launches: u32,
 }
 
 /// Every mission this globe has been asked for, in whatever state its
@@ -144,6 +136,12 @@ pub struct MissionSettings {
     /// resource method has no [`Commands`] to despawn with (same hand-off as
     /// [`crate::overlays::OverlaySettings`]'s own `retired` list).
     retired: Vec<Entity>,
+    /// How many spacecraft [`launch_missions`] has spawned, across every
+    /// mission. [`terramenta_solare::frame::FrameTree`] never frees a name
+    /// once added (see [`crate::solar::spawn_spacecraft`]), so each launch —
+    /// a relaunch after the clock ran back past departure, or a mission
+    /// removed and re-added under the same id — needs a name never used.
+    launches: u32,
 }
 
 impl MissionSettings {
@@ -153,8 +151,19 @@ impl MissionSettings {
         self.missions.push(Mission {
             request,
             state: MissionState::Searching,
-            launches: 0,
         });
+    }
+
+    /// Cancels every mission.
+    pub fn reset(&mut self) {
+        let ids: Vec<String> = self
+            .missions
+            .iter()
+            .map(|mission| mission.request.id.clone())
+            .collect();
+        for id in ids {
+            self.remove(&id);
+        }
     }
 
     /// Cancels a mission. Returns whether there was one. If it had already
@@ -357,7 +366,10 @@ fn launch_missions(
         return;
     };
 
-    for mission in &mut settings.missions {
+    let MissionSettings {
+        missions, launches, ..
+    } = &mut *settings;
+    for mission in missions {
         if let MissionState::Launched { entity, plan, .. } = mission.state {
             if clock.unix_seconds < plan.departure.to_unix_seconds() {
                 let bodies = solar_system
@@ -452,12 +464,12 @@ fn launch_missions(
 
         let bundle = spawn_spacecraft(
             &mut solar_system,
-            frame_name(&mission.request.id, mission.launches),
+            frame_name(&mission.request.id, *launches),
             primary,
             departure_state,
             plan.departure,
         );
-        mission.launches += 1;
+        *launches += 1;
         let frame = bundle.0.0;
         let entity = commands.spawn((bundle, trail)).id();
         mission.state = MissionState::Launched {
@@ -472,12 +484,10 @@ fn launch_missions(
     }
 }
 
-/// A fresh, never-reused frame name for a mission's `launches`-th spacecraft.
+/// A fresh, never-reused frame name for the `launches`-th spacecraft.
 ///
 /// [`terramenta_solare::frame::FrameTree::add`] rejects a name already in the
-/// tree, and the tree never frees one — see the field doc on
-/// [`Mission::launches`] for why a relaunch cannot reuse the name its
-/// previous launch took. Leaked rather than stored: a `'static str` is what
+/// tree, and the tree never frees one — see [`MissionSettings::launches`]. Leaked rather than stored: a `'static str` is what
 /// [`crate::solar::spawn_spacecraft`] takes, or a compile-time constant would
 /// do here, but that's not available for a name built at runtime from the
 /// mission's own id — and missions are added by an embedder's explicit
@@ -1018,6 +1028,64 @@ mod tests {
         }
         assert!(is_launched(&app), "the mission never relaunched");
         assert_eq!(spacecraft_count(&mut app), 1);
+    }
+
+    /// Removed and re-added under the same id (a project reopened in place),
+    /// a launched mission relaunches under a fresh frame name.
+    #[test]
+    fn a_mission_re_added_under_its_id_relaunches() {
+        let start_unix_seconds = Epoch::J2000
+            .advanced_by_seconds(1_200.0 * 86_400.0)
+            .to_unix_seconds();
+
+        let mut app = App::new();
+        app.add_plugins(TaskPoolPlugin::default())
+            .init_resource::<ReferenceFrame>()
+            .init_resource::<ViewState>()
+            .insert_resource(SimClock {
+                unix_seconds: start_unix_seconds,
+                ..SimClock::default()
+            })
+            .add_plugins(SolarSystemPlugin)
+            .add_plugins(MissionPlugin {
+                initial: Vec::new(),
+            });
+        let request = MissionRequest {
+            id: "test".to_string(),
+            ..MissionRequest::default()
+        };
+        let is_launched = |app: &App| {
+            app.world()
+                .resource::<MissionSettings>()
+                .missions
+                .iter()
+                .any(|mission| matches!(mission.state, MissionState::Launched { .. }))
+        };
+        let run_until_launched = |app: &mut App| {
+            for _ in 0..(150 * 24) {
+                app.world_mut().resource_mut::<SimClock>().unix_seconds += 3_600.0;
+                app.update();
+                if is_launched(app) {
+                    return;
+                }
+            }
+            panic!("the mission never launched");
+        };
+
+        app.world_mut()
+            .resource_mut::<MissionSettings>()
+            .add(request.clone());
+        run_until_launched(&mut app);
+        let launch_time = app.world().resource::<SimClock>().unix_seconds;
+
+        app.world_mut().resource_mut::<MissionSettings>().reset();
+        app.world_mut().resource_mut::<SimClock>().unix_seconds = start_unix_seconds;
+        app.update();
+        app.world_mut()
+            .resource_mut::<MissionSettings>()
+            .add(request);
+        run_until_launched(&mut app);
+        assert_eq!(app.world().resource::<SimClock>().unix_seconds, launch_time);
     }
 
     /// What a heliocentric camera following a mission orbits: the origin

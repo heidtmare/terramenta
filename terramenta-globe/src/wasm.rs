@@ -128,6 +128,12 @@ pub fn reset_view() {
     api::send(GlobeCommand::ResetView);
 }
 
+/// Restores a freshly started globe; see [`GlobeCommand::Reset`].
+#[wasm_bindgen]
+pub fn reset() {
+    api::send(GlobeCommand::Reset);
+}
+
 // ---------------------------------------------------------------------------
 // Reference frame
 // ---------------------------------------------------------------------------

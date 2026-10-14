@@ -1,18 +1,21 @@
 /**
- * Boot: load the module, load the project, build the panel it asks for, queue
- * its scene, start the globe, fan out the state stream.
+ * Boot: load the module and the requested project, open it in the workspace,
+ * start the globe.
  *
- * Commands queue until `start`, so the whole project is applied on the first
+ * Commands queue until `start`, so the first project is applied on the first
  * frame. `layers()`/`limits()` answer from compiled-in tables, so panels build
- * before the renderer exists.
+ * before the renderer exists. Later projects open in place (`workspace.js`):
+ * `mountProject` rebuilds the panel; the readout and feature card persist and
+ * are shown or hidden per project.
  */
 
 import * as globe from "./globe.js";
 import { mountFeature } from "./feature.js";
 import { mountFlightPanel } from "./flight-panel.js";
 import { mountPanel } from "./panel.js";
-import { applyProject, directorFor, loadRequestedProject, startOptions } from "./project.js";
+import { loadRequestedProject } from "./project.js";
 import { mountReadout } from "./readout.js";
+import * as workspace from "./workspace.js";
 
 const CANVAS_SELECTOR = "#terramenta";
 
@@ -51,6 +54,41 @@ function setCollapsed(collapsed) {
   panelToggle.setAttribute("aria-expanded", String(!collapsed));
 }
 
+/** Builds the per-project UI; see `workspace.initWorkspace`. */
+function mountProject(readout, feature) {
+  return (project, source, signal) => {
+    const ui = project.ui ?? {};
+    subtitle.textContent = project.name ?? "Untitled";
+    panelRoot.replaceChildren();
+
+    const flight = ui.panel === "flight";
+    document.body.classList.toggle("layout-flight", flight);
+    const panel = flight
+      ? mountFlightPanel(panelRoot, {
+          missionId: project.director?.mission ?? project.missions?.[0]?.id,
+          project,
+          source,
+          signal,
+        })
+      : mountPanel(panelRoot, { project, source, tab: ui.tab, signal });
+
+    const showReadout = ui.readout !== false;
+    readoutRoot.hidden = !showReadout;
+    featureRoot.hidden ||= !showReadout;
+    setCollapsed(Boolean(ui.collapsed));
+
+    return {
+      sync(state) {
+        panel.sync(state);
+        if (showReadout) {
+          readout.sync(state);
+          feature.sync(state);
+        }
+      },
+    };
+  };
+}
+
 async function boot() {
   if (!globe.isSupported()) {
     fail(
@@ -70,49 +108,20 @@ async function boot() {
     fail(`Failed to load: <code>${detail}</code><br><a href="${location.pathname}">Start an empty project</a>`);
     return;
   }
-  const { project, source } = loaded;
-  const ui = project.ui ?? {};
 
-  document.title = project.name ? `${project.name} — Terramenta` : "Terramenta";
-  subtitle.textContent = project.name ?? "Untitled";
+  // Clicks on the canvas become pins; see `feature.js`.
+  const readout = mountReadout(readoutRoot);
+  const feature = mountFeature(featureRoot, document.querySelector(CANVAS_SELECTOR));
+  await workspace.initWorkspace({ mount: mountProject(readout, feature) });
+  await workspace.open(loaded, { force: true });
 
-  const listeners = [];
-  if (ui.panel === "flight") {
-    const missionId = project.director?.mission ?? project.missions?.[0]?.id;
-    document.body.classList.add("layout-flight");
-    listeners.push(mountFlightPanel(panelRoot, { missionId, project, source }));
-  } else {
-    listeners.push(mountPanel(panelRoot, { project, source, tab: ui.tab }));
-  }
-
-  if (ui.readout === false) {
-    readoutRoot.hidden = true;
-  } else {
-    listeners.push(mountReadout(readoutRoot));
-    // Clicks on the canvas become pins; see `feature.js`.
-    listeners.push(mountFeature(featureRoot, document.querySelector(CANVAS_SELECTOR)));
-  }
-
-  const director = directorFor(project);
   shell.hidden = false;
-
   panelToggle.addEventListener("click", () =>
     setCollapsed(!document.body.classList.contains("panel-collapsed")),
   );
-  if (ui.collapsed) setCollapsed(true);
-
-  // The globe keeps one listener only.
-  globe.onState((state) => {
-    for (const listener of listeners) listener.sync(state);
-    director?.(state);
-  });
-
-  // This app draws its own readout; a project's `hud` overrides.
-  globe.setHudVisible(false);
-  applyProject(project);
 
   try {
-    await globe.start(CANVAS_SELECTOR, startOptions(project));
+    await workspace.start(CANVAS_SELECTOR);
     dismissStatus();
   } catch (error) {
     console.error(error);

@@ -36,7 +36,9 @@ import { button, setUnlessFocused, toggle } from "./widgets.js";
  * of thing rather than as another feed of places.
  */
 const PALETTE = ["#8ce0ff", "#b9a8ff", "#7ef0c8", "#ffd9f0", "#a8c8ff"];
-let added = 0;
+
+/** Next palette colour: by how many ephemeris layers the open project has. */
+const nextColor = () => PALETTE[globe.recordedSources().ephemerides.size % PALETTE.length];
 
 /** The globe floors a refresh at five minutes; so does the box. */
 const MIN_REFRESH_SECONDS = 300;
@@ -50,7 +52,7 @@ function addCatalogue({ id, url, label, refreshSeconds = null, options = {} }) {
     url,
     label: label ?? url,
     refreshSeconds,
-    ...paint(PALETTE[added++ % PALETTE.length]),
+    ...paint(nextColor()),
     ...options,
   });
 }
@@ -120,7 +122,7 @@ export function mountEphemeris(bind) {
       globe.addEphemeris(`file:${file.name}`, {
         text: await file.text(),
         label: file.name,
-        ...paint(PALETTE[added++ % PALETTE.length]),
+        ...paint(nextColor()),
       });
     },
   });
