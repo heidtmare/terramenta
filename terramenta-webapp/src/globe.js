@@ -125,6 +125,7 @@ const UNTRACKED = new Set([
   "propagate",
   "propagateSpk",
   "findEvents",
+  "target",
 ]);
 
 let changeListener = null;
@@ -681,6 +682,17 @@ export const propagateSpk = (options) => required().propagateSpk(options);
  * Full option list: `terramenta-globe/src/wasm.rs`, `findEvents`.
  */
 export const findEvents = (propagation, options) => required().findEvents(propagation, options);
+
+/**
+ * Differential correction of `propagation`'s burns (`propagate` options) to
+ * meet goals: `{converged, iterations, history, values, goals: [{achieved,
+ * error}], maneuvers, finiteBurns}`, the burns with `values` applied.
+ * `options`: `{variables: [{burn | finite, parameter, perturbation?,
+ * maxStep?}], goals: [{quantity, at, value, tolerance}], maxIterations?}`.
+ * Synchronous; throws on bad input, not on failing to converge.
+ * Full option list: `terramenta-globe/src/wasm.rs`, `target`.
+ */
+export const target = (propagation, options) => required().target(propagation, options);
 
 /**
  * Propagates `propagation` (`propagate` options; `kvn` ignored) and puts the

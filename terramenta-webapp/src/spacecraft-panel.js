@@ -1,6 +1,7 @@
 /**
- * Spacecraft tab: numerically propagated spacecraft and their editor, ground
- * stations (`events-panel.js`), propagation environment.
+ * Spacecraft tab: numerically propagated spacecraft and their editor,
+ * targeting (`targeting-panel.js`), ground stations (`events-panel.js`),
+ * propagation environment.
  *
  * A spacecraft is a `propagate` request plus ephemeris display options
  * (`globe.addSpacecraft`), saved under the project's `spacecraft`. The editor
@@ -12,11 +13,12 @@
 
 import * as environment from "./environment.js";
 import { mountStations } from "./events-panel.js";
+import { mountTargeting } from "./targeting-panel.js";
 import * as globe from "./globe.js";
 import { download, el, row, section } from "./dom.js";
 import { clock, utcSeconds } from "./format.js";
 import { PROJECT_VERSION, layerDisplay, parseProject } from "./project.js";
-import { button, toggle } from "./widgets.js";
+import { button, rowList, toggle } from "./widgets.js";
 
 const PALETTE = ["#ffb86b", "#ff8fa3", "#c3ff7a", "#ffe66b", "#7affea"];
 const nextColor = () => PALETTE[globe.recordedSources().spacecraft.size % PALETTE.length];
@@ -50,7 +52,7 @@ const INITIAL = [
 
 /** `bind(node, sync)`: the panel's registration. `signal` aborts on close. */
 export function mountSpacecraft(bind, signal) {
-  return [mountSpacecraftList(bind), mountStations(signal), mountEnvironment(signal)];
+  return [mountSpacecraftList(bind), mountTargeting(bind, signal), mountStations(signal), mountEnvironment(signal)];
 }
 
 // --- Environment -----------------------------------------------------------------
@@ -602,39 +604,6 @@ function mountEditor(getState) {
         }),
     };
   }
-}
-
-/** A growable list of sub-forms; `make(value?)` → `{fields, value()}`. */
-function rowList(make, addLabel) {
-  const entries = [];
-  const list = el("div", { class: "layers" });
-  const add = (value) => {
-    const entry = make(value);
-    const node = el(
-      "div",
-      { class: "layer" },
-      ...entry.fields,
-      el(
-        "div",
-        { class: "buttons" },
-        button("Remove", () => {
-          node.remove();
-          entries.splice(entries.indexOf(entry), 1);
-        }),
-      ),
-    );
-    entries.push(entry);
-    list.append(node);
-  };
-  return {
-    node: el("div", {}, list, el("div", { class: "buttons" }, button(addLabel, () => add()))),
-    add,
-    clear() {
-      entries.length = 0;
-      list.replaceChildren();
-    },
-    values: () => entries.map((entry) => entry.value()),
-  };
 }
 
 function relabel(vector, frame, unit = " m/s") {

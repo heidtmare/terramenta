@@ -108,6 +108,7 @@ from a real failure.
 | `addMission(id, options)` `removeMission(id)` | Flown interplanetary missions |
 | `propagate(options)` `propagateSpk(options)` | Numerical propagation → OEM text / SPK bytes |
 | `findEvents(propagation, options)` | Ground-station contacts, Earth eclipses, apsides, nodes over a propagation |
+| `target(propagation, options)` | Differential correction of a propagation's burns to meet orbit goals |
 | `loadKernel(bytes)` `loadEop(text)` `loadSpaceWeather(text)` `propagationEnvironment()` | Propagation data |
 | `setPickingEnabled(bool)` `pinFeature(layer, index)` `clearPinnedFeature()` | Overlay feature picking |
 | `pinSatellite(layer, noradId)` `clearPinnedSatellite()` | Satellite picking |
@@ -506,6 +507,28 @@ const { contacts, eclipses, orbit } = globe.findEvents(sameOptions, {
   missed. Contacts use the geodetic horizon and loaded EOP; eclipses are Earth
   conical shadow. No light time or refraction.
 
+```js
+const { converged, values, goals, maneuvers, finiteBurns } = globe.target(sameOptions, {
+  variables: [{ burn: 1, parameter: "dv1" }, { burn: 2, parameter: "epoch" }, { burn: 2, parameter: "dv1" }],
+  goals: [
+    { quantity: "flightPathAngleDeg", at: "burn2.before", value: 0, tolerance: 1e-4 },
+    { quantity: "radiusKm", at: "burn2", value: 7178.137, tolerance: 1e-3 },
+    { quantity: "smaKm", at: "burn2", value: 7178.137, tolerance: 1e-3 },
+  ],
+});
+// maneuvers / finiteBurns: the request's with `values` applied; goals: [{ achieved, error }]
+```
+
+- `target` runs `terramenta_solare::targeting::solve` with one propagation per
+  evaluation, ended two steps after the latest goal unless one is at `end`.
+  Variables: `dv1`–`dv3` (km/s, burn frame) or `epoch` (s offset) of an
+  impulsive `burn`; `start` (s offset) or `duration` of a `finite` burn.
+  Goals: two-body osculating `smaKm`, `eccentricity`, `inclinationDeg`,
+  `raanDeg`, `argPerigeeDeg`, `trueAnomalyDeg`, `radiusKm`, `altitudeKm`,
+  `speedKmS`, `periodMin`, `perigeeAltKm`, `apogeeAltKm`,
+  `flightPathAngleDeg`, `massKg`, at `end`, `burnN`, `burnN.before`,
+  `finiteN`, `finiteN.end` or a UTC epoch. Not converging is not an error.
+
 - Without a kernel, Sun/Moon come from analytic series (Moon ≤ 0.1°).
 - Without EOP, Earth orientation uses zero polar motion and UT1 = UTC.
 - Synchronous; ≤ 200 000 samples per call. Errors throw.
@@ -727,7 +750,7 @@ src/
   geojson.rs       GeoJSON parsing and flattening
   simplestyle.rs   simplestyle-spec 1.1.0
   omm.rs           OMM → SGP4 propagators; OEM → tabulated motion
-  numerical.rs     propagate/propagateSpk/findEvents requests; kernel, EOP, space weather
+  numerical.rs     propagate/propagateSpk/findEvents/target requests; kernel, EOP, space weather
   tessellate.rs    Ear clipping, holes, antimeridian
   picking.rs       Overlay hit-testing
   overlays.rs      Overlay layers, geojson:// source, refresh, meshes

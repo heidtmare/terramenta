@@ -93,6 +93,40 @@ export function slider({ min, max, format, onInput }) {
   };
 }
 
+/** A growable list of sub-forms; `make(value?)` → `{fields, value()}`. */
+export function rowList(make, addLabel) {
+  const entries = [];
+  const list = el("div", { class: "layers" });
+  const add = (value) => {
+    const entry = make(value);
+    const node = el(
+      "div",
+      { class: "layer" },
+      ...entry.fields,
+      el(
+        "div",
+        { class: "buttons" },
+        button("Remove", () => {
+          node.remove();
+          entries.splice(entries.indexOf(entry), 1);
+        }),
+      ),
+    );
+    entries.push(entry);
+    list.append(node);
+  };
+  return {
+    node: el("div", {}, list, el("div", { class: "buttons" }, button(addLabel, () => add()))),
+    add,
+    clear() {
+      entries.length = 0;
+      list.replaceChildren();
+    },
+    values: () => entries.map((entry) => entry.value()),
+    entries: () => entries,
+  };
+}
+
 /**
  * Sets a text-ish input from the globe, unless the user is in the middle of
  * typing into it.

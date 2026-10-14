@@ -1,0 +1,104 @@
+{
+  "$schema": "../schema/project.schema.json",
+  "terramenta": 3,
+  "name": "Targeted transfer",
+  "description": "Differential correction from rough first guesses, EGM2008 8×8, Harris-Priester drag, Sun/Moon and SRP. Spacecraft tab → Targeting: Solve, then Apply. \"Hohmann\" varies both Δv and the second burn's epoch to circularise at 800 km; \"Low-thrust raise\" varies a 20 N burn's duration for a 150 km SMA raise.",
+  "ui": { "tab": "spacecraft" },
+  "frame": "eci",
+  "clock": { "epoch": "2026-01-01T00:20:00Z", "timeScale": 60, "paused": false },
+  "camera": { "lat": 20, "lon": -40, "altitudeKm": 30000 },
+  "environment": {
+    "eop": "https://celestrak.org/SpaceData/EOP-All.csv",
+    "spaceWeather": "https://celestrak.org/SpaceData/SW-All.csv"
+  },
+  "spacecraft": [
+    {
+      "id": "impulsive",
+      "label": "Impulsive · 500 → 800 km",
+      "pointColor": "#ffb86b",
+      "lineColor": "#ffb86ba6",
+      "leadingOrbits": 0,
+      "trailingOrbits": 1,
+      "trailPath": "orbit",
+      "propagation": {
+        "name": "IMPULSIVE",
+        "initial": {
+          "epoch": "2026-01-01T00:00:00Z",
+          "positionKm": [6878.137, 0, 0],
+          "velocityKmS": [0, 4.728554669, 5.965951219]
+        },
+        "durationS": 21600,
+        "stepS": 30,
+        "vehicle": { "massKg": 500, "dryMassKg": 400, "dragAreaM2": 4, "srpAreaM2": 4 },
+        "forces": { "gravity": [8, 8], "drag": "harrisPriester" },
+        "maneuvers": [
+          { "epoch": "2026-01-01T00:30:00Z", "deltaVKmS": [0.07, 0, 0], "frame": "vnb", "ispS": 300 },
+          { "epoch": "2026-01-01T01:18:00Z", "deltaVKmS": [0.07, 0, 0], "frame": "vnb", "ispS": 300 }
+        ]
+      }
+    },
+    {
+      "id": "low-thrust",
+      "label": "Low thrust · 20 N",
+      "pointColor": "#c3ff7a",
+      "lineColor": "#c3ff7aa6",
+      "leadingOrbits": 0,
+      "trailingOrbits": 1,
+      "trailPath": "orbit",
+      "propagation": {
+        "name": "LOW-THRUST",
+        "initial": {
+          "epoch": "2026-01-01T00:00:00Z",
+          "positionKm": [6878.137, 0, 0],
+          "velocityKmS": [0, 4.728554669, 5.965951219]
+        },
+        "durationS": 21600,
+        "stepS": 30,
+        "vehicle": { "massKg": 500, "dryMassKg": 300, "dragAreaM2": 4, "srpAreaM2": 4 },
+        "forces": { "gravity": [8, 8], "drag": "harrisPriester" },
+        "finiteBurns": [
+          { "start": "2026-01-01T00:30:00Z", "durationS": 1500, "thrustN": 20, "ispS": 220, "direction": [1, 0, 0], "frame": "vnb" }
+        ]
+      }
+    }
+  ],
+  "targets": [
+    {
+      "id": "hohmann",
+      "label": "Hohmann",
+      "spacecraft": "impulsive",
+      "variables": [
+        { "burn": 1, "parameter": "dv1" },
+        { "burn": 2, "parameter": "epoch" },
+        { "burn": 2, "parameter": "dv1" }
+      ],
+      "goals": [
+        { "quantity": "flightPathAngleDeg", "at": "burn2.before", "value": 0, "tolerance": 0.0001 },
+        { "quantity": "radiusKm", "at": "burn2", "value": 7178.137, "tolerance": 0.001 },
+        { "quantity": "smaKm", "at": "burn2", "value": 7178.137, "tolerance": 0.001 }
+      ]
+    },
+    {
+      "id": "low-thrust-raise",
+      "label": "Low-thrust raise",
+      "spacecraft": "low-thrust",
+      "variables": [{ "finite": 1, "parameter": "duration" }],
+      "goals": [{ "quantity": "smaKm", "at": "finite1.end", "value": 7028.137, "tolerance": 0.01 }]
+    }
+  ],
+  "timeline": {
+    "events": [
+      { "id": "burn1-approach", "label": "Slow for burn 1", "at": { "event": "impulsive.burn1", "offsetS": -300 }, "actions": { "timeScale": 10 } },
+      { "id": "transfer-coast", "label": "Transfer coast", "at": { "event": "impulsive.burn1", "offsetS": 120 }, "actions": { "timeScale": 60 } },
+      { "id": "burn2-approach", "label": "Slow for burn 2", "at": { "event": "impulsive.burn2", "offsetS": -300 }, "actions": { "timeScale": 10 } },
+      { "id": "final-orbit", "label": "Final orbit", "at": { "event": "impulsive.burn2", "offsetS": 120 }, "actions": { "timeScale": 120 } },
+      { "id": "hold", "label": "Hold at end", "at": { "event": "impulsive.end" }, "actions": { "paused": true } }
+    ]
+  },
+  "analysis": {
+    "plots": [
+      { "id": "altitude", "quantity": "altitudeKm", "spacecraft": ["impulsive", "low-thrust"] },
+      { "id": "sma", "quantity": "smaKm", "spacecraft": ["impulsive", "low-thrust"] }
+    ]
+  }
+}

@@ -151,6 +151,11 @@
         "nodes": { "type": "boolean", "description": "GCRF equator crossings; default false." },
         "stepS": { "type": "number", "exclusiveMinimum": 0, "description": "Bracketing grid, s; spans shorter than this may be missed. Default 30." }
       }
+    },
+    "targets": {
+      "description": "Differential-correction problems on spacecraft burns (Spacecraft tab); see src/targeting.js.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/target" }
     }
   },
   "$defs": {
@@ -258,6 +263,57 @@
         "altKm": { "type": "number", "description": "Above the ellipsoid; default 0." },
         "minElevationDeg": { "type": "number", "minimum": -90, "maximum": 90, "description": "Mask; default 0." },
         "color": { "$ref": "#/$defs/color" }
+      }
+    },
+    "target": {
+      "type": "object",
+      "required": ["id", "spacecraft", "variables", "goals"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$", "title": "letters, digits, - and _" },
+        "label": { "type": "string" },
+        "spacecraft": { "type": "string", "description": "Spacecraft id; its propagation's burns are varied." },
+        "variables": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/targetVariable" } },
+        "goals": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/targetGoal" } },
+        "maxIterations": { "type": "integer", "minimum": 1, "maximum": 200, "description": "Default 25." }
+      }
+    },
+    "targetVariable": {
+      "type": "object",
+      "required": ["parameter"],
+      "additionalProperties": false,
+      "properties": {
+        "burn": { "type": "integer", "minimum": 1, "description": "Impulsive burn, 1-based." },
+        "finite": { "type": "integer", "minimum": 1, "description": "Finite burn, 1-based." },
+        "parameter": { "type": "string", "enum": ["dv1", "dv2", "dv3", "epoch", "start", "duration"] },
+        "perturbation": { "type": "number", "exclusiveMinimum": 0, "description": "Finite-difference step and scale; default 1e-5 km/s or 1 s." },
+        "maxStep": { "type": "number", "exclusiveMinimum": 0, "description": "Largest change per iteration; default 0.1 km/s or 600 s." }
+      },
+      "if": { "required": ["burn"] },
+      "then": {
+        "properties": { "parameter": { "enum": ["dv1", "dv2", "dv3", "epoch"] } }
+      },
+      "else": {
+        "required": ["finite"],
+        "properties": { "parameter": { "enum": ["start", "duration"] } }
+      }
+    },
+    "targetGoal": {
+      "type": "object",
+      "required": ["quantity", "at", "value", "tolerance"],
+      "additionalProperties": false,
+      "properties": {
+        "quantity": {
+          "type": "string",
+          "enum": ["altitudeKm", "radiusKm", "speedKmS", "smaKm", "eccentricity", "inclinationDeg", "raanDeg", "argPerigeeDeg", "trueAnomalyDeg", "periodMin", "perigeeAltKm", "apogeeAltKm", "flightPathAngleDeg", "massKg"]
+        },
+        "at": {
+          "type": "string",
+          "pattern": "^(end|burn[1-9]\\d*(\\.before)?|finite[1-9]\\d*(\\.end)?|\\d{4}-\\d{2}-\\d{2}T[0-9:.]+Z?)$",
+          "title": "end, burnN, burnN.before, finiteN, finiteN.end or a UTC epoch"
+        },
+        "value": { "type": "number" },
+        "tolerance": { "type": "number", "exclusiveMinimum": 0 }
       }
     },
     "analysis": {
