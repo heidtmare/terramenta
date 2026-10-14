@@ -14,6 +14,7 @@ import {
   summarize,
   toCsv,
   toCzml,
+  withUncertainty,
 } from "../src/reports.js";
 
 const close = (actual, expected, tolerance, message) =>
@@ -160,4 +161,32 @@ test("chart ticks are round and cover the range", () => {
   const ticks = niceTicks(497.3, 812.9, 5);
   assert.ok(ticks[0] <= 497.3 && ticks.at(-1) >= 812.9, `${ticks}`);
   assert.ok(ticks.every((tick) => tick % 50 === 0), `${ticks}`);
+});
+
+test("uncertainty: matched in time order across a burn; CSV columns follow", () => {
+  const rows = reportRows(parseOem(OEM));
+  const t0 = rows[0].t;
+  const covariance = {
+    times: [t0, t0 + 60.25, t0 + 60.25],
+    sigmaRsw: [
+      [0.001, 0.002, 0.002, 0, 0, 0],
+      [0.003, 0.004, 0, 0, 0, 0],
+      [0.006, 0.008, 0, 0, 0, 0],
+    ],
+  };
+  const sigmas = withUncertainty(rows, covariance);
+  assert.deepEqual(
+    sigmas.map((row) => [row.sigmaRadialM, row.sigmaInTrackM, row.sigmaPositionM]),
+    [
+      [1, 2, 3],
+      [3, 4, 5],
+      [6, 8, 10],
+    ],
+  );
+  assert.equal(withUncertainty(rows, undefined), rows);
+  assert.equal(withUncertainty(rows, { times: [t0 + 1], sigmaRsw: [[1, 1, 1, 0, 0, 0]] })[0].sigmaRadialM, undefined);
+  const [header, first] = reportCsv(sigmas).split("\r\n");
+  assert.ok(header.endsWith(",sigma_radial_m,sigma_in_track_m,sigma_cross_track_m,sigma_position_m"), header);
+  assert.ok(first.endsWith(",1,2,2,3"), first);
+  assert.ok(!reportCsv(rows).includes("sigma"));
 });

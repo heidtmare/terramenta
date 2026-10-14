@@ -2,7 +2,7 @@
   "$schema": "../schema/project.schema.json",
   "terramenta": 3,
   "name": "LEO Hohmann transfer",
-  "description": "500 → 800 km Hohmann transfer against a coasting reference, Cowell-propagated with EGM2008 8×8, Harris-Priester drag, Sun/Moon and SRP. The timeline slows the clock around each burn. Reports plots altitude, SMA and eccentricity with a Δv budget; export CSV/CZML there, OEM/SPK from the Spacecraft tab.",
+  "description": "500 → 800 km Hohmann transfer against a coasting reference, Cowell-propagated with EGM2008 8×8, Harris-Priester drag, Sun/Moon and SRP. The timeline slows the clock around each burn. Both start with the same 1σ state uncertainty (RSW), propagated linearly and drawn as 3σ position ellipsoids. Reports plots altitude, SMA, eccentricity and 1σ in-track with a Δv budget; export CSV/CZML there, OEM (with covariance)/SPK from the Spacecraft tab.",
   "ui": { "tab": "analysis" },
   "frame": "eci",
   "clock": { "epoch": "2026-01-01T00:20:00Z", "timeScale": 60, "paused": false },
@@ -30,7 +30,12 @@
         "durationS": 21600,
         "stepS": 30,
         "vehicle": { "massKg": 500, "dragAreaM2": 4, "srpAreaM2": 4 },
-        "forces": { "gravity": [8, 8], "drag": "harrisPriester" }
+        "forces": { "gravity": [8, 8], "drag": "harrisPriester" },
+        "covariance": {
+          "positionSigmaKm": [0.05, 0.2, 0.03],
+          "velocitySigmaKmS": [0.0002, 0.00005, 0.00003],
+          "processNoiseKm2S3": [1e-13, 1e-13, 1e-13]
+        }
       }
     },
     {
@@ -55,7 +60,12 @@
         "maneuvers": [
           { "epoch": "2026-01-01T00:30:00Z", "deltaVKmS": [0.080808, 0, 0], "frame": "vnb", "ispS": 300 },
           { "epoch": "2026-01-01T01:18:51.847Z", "deltaVKmS": [0.07995, 0, 0], "frame": "vnb", "ispS": 300 }
-        ]
+        ],
+        "covariance": {
+          "positionSigmaKm": [0.05, 0.2, 0.03],
+          "velocitySigmaKmS": [0.0002, 0.00005, 0.00003],
+          "processNoiseKm2S3": [1e-13, 1e-13, 1e-13]
+        }
       }
     }
   ],
@@ -72,7 +82,8 @@
     "plots": [
       { "id": "altitude", "quantity": "altitudeKm", "spacecraft": ["reference", "transfer"] },
       { "id": "sma", "quantity": "smaKm", "spacecraft": ["reference", "transfer"] },
-      { "id": "eccentricity", "quantity": "eccentricity", "spacecraft": ["transfer"] }
+      { "id": "eccentricity", "quantity": "eccentricity", "spacecraft": ["transfer"] },
+      { "id": "in-track", "quantity": "sigmaInTrackM", "spacecraft": ["reference", "transfer"] }
     ]
   }
 }

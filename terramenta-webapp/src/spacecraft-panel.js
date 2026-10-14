@@ -45,6 +45,8 @@ const INTEGRATORS = [
   ["rkf78", "RKF7(8)"],
   ["rk4", "RK4 (fixed step)"],
 ];
+/** Project covariance frames → editor `FRAMES` keys. */
+const COVARIANCE_FRAMES = { ric: "rsw", rtn: "rsw", gcrf: "inertial", eci: "inertial" };
 const INITIAL = [
   ["elements", "Keplerian elements"],
   ["state", "GCRF state"],
@@ -233,10 +235,16 @@ function describeInfo({ info, propagation }, state) {
   const now = state.sun.unixSeconds;
   const where = now < start ? "clock before span" : now > stop ? "clock after span" : "in span";
   const burns = (propagation.maneuvers?.length ?? 0) + (propagation.finiteBurns?.length ?? 0);
+  const sigma = info.covariance?.sigmaRsw.at(-1);
+  const spread = sigma ? ` · 1σ ${length(Math.hypot(...sigma.slice(0, 3)))} at end` : "";
   return (
     `${clock(start)} → ${clock(stop)} · ${info.samples} samples · ${info.finalMassKg.toFixed(1)} kg` +
-    `${burns ? ` · ${burns} burn${burns > 1 ? "s" : ""}` : ""} · ${where}`
+    `${burns ? ` · ${burns} burn${burns > 1 ? "s" : ""}` : ""}${spread} · ${where}`
   );
+}
+
+function length(km) {
+  return km < 1 ? `${(km * 1000).toFixed(1)} m` : `${km.toFixed(2)} km`;
 }
 
 function exportOem(id, propagation) {
@@ -359,6 +367,21 @@ function mountEditor(getState) {
   const maneuvers = rowList(maneuverRow, "Add impulsive burn");
   const burns = rowList(finiteBurnRow, "Add finite burn");
 
+  const covarianceFrame = select(FRAMES, "rsw");
+  const positionSigma = vector([]);
+  const velocitySigma = vector([]);
+  const processNoise = vector([]);
+  const ellipsoidSigma = number({ value: "3", min: "0", title: "Ellipsoid drawn at this many σ; 0 hides" });
+  /** A project's `lowerTriangle`, kept while no sigma is typed. */
+  let keptMatrix = null;
+  const matrixNote = el("p", { class: "detail", hidden: true }, "Full covariance matrix from the project; sigmas replace it.");
+  const relabelCovariance = () => {
+    relabel(positionSigma, covarianceFrame.value, " m");
+    relabel(velocitySigma, covarianceFrame.value, " m/s");
+    relabel(processNoise, covarianceFrame.value, " m²/s³");
+  };
+  covarianceFrame.onchange = relabelCovariance;
+
   const error = el("p", { class: "detail error", hidden: true });
 
   function fillCircular() {
@@ -402,6 +425,12 @@ function mountEditor(getState) {
     integrator.value = "dop853";
     maneuvers.clear();
     burns.clear();
+    covarianceFrame.value = "rsw";
+    for (const input of [...positionSigma.inputs, ...velocitySigma.inputs, ...processNoise.inputs]) input.value = "";
+    ellipsoidSigma.value = "3";
+    keptMatrix = null;
+    matrixNote.hidden = true;
+    relabelCovariance();
     error.hidden = true;
     fillCircular();
     showInitial();
@@ -456,6 +485,17 @@ function mountEditor(getState) {
     fixedStepS.value = p.integrator?.fixedStepS ?? "";
     for (const maneuver of p.maneuvers ?? []) maneuvers.add(maneuver);
     for (const burn of p.finiteBurns ?? []) burns.add(burn);
+    const c = p.covariance ?? {};
+    covarianceFrame.value = COVARIANCE_FRAMES[c.frame] ?? c.frame ?? "rsw";
+    const fill = (vector, values, scale) =>
+      vector.inputs.forEach((input, index) => (input.value = values ? String(Number((values[index] * scale).toPrecision(12))) : ""));
+    fill(positionSigma, c.positionSigmaKm, 1e3);
+    fill(velocitySigma, c.velocitySigmaKmS, 1e3);
+    fill(processNoise, c.processNoiseKm2S3, 1e6);
+    keptMatrix = c.lowerTriangle ?? null;
+    matrixNote.hidden = !keptMatrix;
+    ellipsoidSigma.value = String(spacecraft.display.uncertaintySigma ?? 3);
+    relabelCovariance();
     details.open = true;
     details.scrollIntoView({ block: "nearest" });
   }
@@ -516,12 +556,37 @@ function mountEditor(getState) {
     if (impulsive.length) propagation.maneuvers = impulsive;
     const finite = burns.values();
     if (finite.length) propagation.finiteBurns = finite;
+    const covariance = readCovariance();
+    if (covariance) propagation.covariance = covariance;
 
     const color = nextColor();
     const display = editingDisplay
       ? { ...editingDisplay, label }
       : { label, pointColor: color, lineColor: `${color}a6`, leadingOrbits: 0.5, trailingOrbits: 0.5 };
+    const sigma = optional(ellipsoidSigma);
+    delete display.uncertaintySigma;
+    if (covariance && sigma !== undefined && sigma !== 3) display.uncertaintySigma = sigma;
     return { id, display, propagation };
+  }
+
+  /** Editor fields → `propagation.covariance` (km), or `undefined` when none is set. */
+  function readCovariance() {
+    const read = (vector, divisor) => {
+      const values = vector.inputs.map(optional);
+      return values.some((value) => value !== undefined) ? values.map((value) => Number(((value ?? 0) / divisor).toPrecision(12))) : undefined;
+    };
+    const position = read(positionSigma, 1e3);
+    const velocity = read(velocitySigma, 1e3);
+    const noise = read(processNoise, 1e6);
+    const matrix = position || velocity ? undefined : (keptMatrix ?? undefined);
+    if (!position && !velocity && !matrix && !noise) return undefined;
+    return compact({
+      frame: covarianceFrame.value === "rsw" ? undefined : covarianceFrame.value,
+      positionSigmaKm: position,
+      velocitySigmaKmS: velocity,
+      lowerTriangle: matrix,
+      processNoiseKm2S3: noise,
+    });
   }
 
   function propagate() {
@@ -580,6 +645,13 @@ function mountEditor(getState) {
     maneuvers.node,
     el("h3", { class: "editor-title" }, "Finite burns"),
     burns.node,
+    el("h3", { class: "editor-title" }, "Uncertainty (1σ at start)"),
+    row("Frame", covarianceFrame),
+    row("Position", positionSigma.node),
+    row("Velocity", velocitySigma.node),
+    row("Noise", processNoise.node),
+    matrixNote,
+    row("Ellipsoid σ", ellipsoidSigma),
     error,
     el(
       "div",
@@ -590,7 +662,8 @@ function mountEditor(getState) {
     el(
       "p",
       { class: "detail" },
-      "Cowell in GCRF: EGM2008 20×20, Sun/Moon, drag, SRP. TLE/OMM via SGP4 to the start epoch.",
+      "Cowell in GCRF: EGM2008 20×20, Sun/Moon, drag, SRP. TLE/OMM via SGP4 to the start epoch. " +
+        "Uncertainty: linear covariance through the state transition matrix; noise is white acceleration spectral density.",
     ),
   );
 

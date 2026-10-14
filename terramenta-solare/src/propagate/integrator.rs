@@ -5,7 +5,8 @@
 //! - [`Method::Dop853`]: Dormand–Prince 8(5,3), Hairer, Nørsett & Wanner, *Solving ODEs I*, §II.10;
 //!   FSAL, 7th-order dense output (`contd8`).
 //!
-//! Adaptive error norm: RMS of `err_i / (atol + rtol·max(|y_i|, |y'_i|))`.
+//! Adaptive error norm: RMS of `err_i / (atol + rtol·max(|y_i|, |y'_i|))` over the
+//! controlled components ([`Integrator::controlled`]).
 
 /// `f(t, y, dy/dt)`.
 pub type Derivative<'a> = dyn FnMut(f64, &[f64], &mut [f64]) + 'a;
@@ -68,6 +69,8 @@ pub struct Integrator {
     pub min_step_s: f64,
     pub max_step_s: f64,
     pub max_steps: usize,
+    /// Error control over the first `n` components only (e.g. the state, not its partials).
+    pub controlled: Option<usize>,
     pub stats: Stats,
     /// Carried between calls.
     h_next: Option<f64>,
@@ -87,6 +90,7 @@ impl Integrator {
             min_step_s: 1e-6,
             max_step_s: f64::INFINITY,
             max_steps: 5_000_000,
+            controlled: None,
             stats: Stats::default(),
             h_next: None,
             k: Vec::new(),
@@ -357,7 +361,8 @@ impl Integrator {
 
     fn error_norm(&mut self, y: &[f64], e: &[f64], h: f64, err3: Option<&[f64]>) -> f64 {
         let tol = self.tolerance;
-        let n = y.len() as f64;
+        let m = self.controlled.map_or(y.len(), |c| c.min(y.len()));
+        let n = m as f64;
         let scale = |i: usize| tol.absolute + tol.relative * y[i].abs().max(self.y_new[i].abs());
         let weighted = |coef: &[f64], i: usize| -> f64 {
             let sum = coef
@@ -368,12 +373,12 @@ impl Integrator {
                 .sum::<f64>();
             scaled(sum, scale(i))
         };
-        let e5: f64 = (0..y.len()).map(|i| weighted(e, i).powi(2)).sum();
+        let e5: f64 = (0..m).map(|i| weighted(e, i).powi(2)).sum();
         match err3 {
             None => h * (e5 / n).sqrt(),
             Some(e3c) => {
                 // Hairer's combined 5th/3rd-order estimate.
-                let e3: f64 = (0..y.len()).map(|i| weighted(e3c, i).powi(2)).sum();
+                let e3: f64 = (0..m).map(|i| weighted(e3c, i).powi(2)).sum();
                 if e5 == 0.0 && e3 == 0.0 {
                     return 0.0;
                 }
@@ -392,8 +397,9 @@ impl Integrator {
         order: usize,
     ) -> f64 {
         let n = y.len();
+        let m = self.controlled.map_or(n, |c| c.min(n));
         let tol = self.tolerance;
-        let sc: Vec<f64> = y
+        let sc: Vec<f64> = y[..m]
             .iter()
             .map(|v| tol.absolute + tol.relative * v.abs())
             .collect();
@@ -402,7 +408,7 @@ impl Integrator {
                 .zip(&sc)
                 .map(|(a, s)| scaled(*a, *s).powi(2))
                 .sum::<f64>()
-                / n as f64)
+                / m as f64)
                 .sqrt()
         };
         let mut f0 = std::mem::take(&mut self.k[0]);

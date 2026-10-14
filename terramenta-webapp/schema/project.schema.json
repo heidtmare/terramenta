@@ -484,9 +484,10 @@
         "quantity": {
           "enum": [
             "altitudeKm", "radiusKm", "speedKmS", "smaKm", "eccentricity", "inclinationDeg", "raanDeg",
-            "argPerigeeDeg", "trueAnomalyDeg", "periodMin", "perigeeAltKm", "apogeeAltKm"
+            "argPerigeeDeg", "trueAnomalyDeg", "periodMin", "perigeeAltKm", "apogeeAltKm",
+            "sigmaRadialM", "sigmaInTrackM", "sigmaCrossTrackM", "sigmaPositionM"
           ],
-          "description": "src/reports.js QUANTITIES; osculating two-body about Earth, altitudes over the equatorial radius."
+          "description": "src/reports.js PLOT_QUANTITIES; osculating two-body about Earth, altitudes over the equatorial radius; sigma* from propagation.covariance."
         },
         "spacecraft": { "type": "array", "minItems": 1, "items": { "type": "string" }, "description": "Spacecraft ids." }
       }
@@ -659,6 +660,11 @@
         "lineColor": { "$ref": "#/$defs/color" },
         "lineWidthPx": { "type": "number", "minimum": 0 },
         "fillColor": { "$ref": "#/$defs/color" },
+        "uncertaintySigma": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Position ellipsoid drawn at this many σ when propagation has a covariance; default 3, 0 hides."
+        },
         "propagation": { "$ref": "#/$defs/propagation" }
       }
     },
@@ -766,9 +772,38 @@
           }
         },
         "maneuvers": { "type": "array", "items": {"$ref": "#/$defs/maneuver"} },
-        "finiteBurns": { "type": "array", "items": {"$ref": "#/$defs/finiteBurn"} }
+        "finiteBurns": { "type": "array", "items": {"$ref": "#/$defs/finiteBurn"} },
+        "covariance": { "$ref": "#/$defs/covariance" }
       }
     },
+    "covariance": {
+      "description": "Initial [r, v] covariance at the propagation start, propagated linearly through the state transition matrix.",
+      "type": "object",
+      "additionalProperties": false,
+      "anyOf": [
+        { "required": ["positionSigmaKm"] },
+        { "required": ["velocitySigmaKmS"] },
+        { "required": ["lowerTriangle"] }
+      ],
+      "title": "positionSigmaKm/velocitySigmaKmS or lowerTriangle",
+      "properties": {
+        "frame": {
+          "enum": ["rsw", "ric", "rtn", "vnb", "lvlh", "inertial", "gcrf", "eci"],
+          "description": "Axes of the sigmas, matrix and process noise; default rsw."
+        },
+        "positionSigmaKm": { "$ref": "#/$defs/sigma3", "description": "1σ per axis, km." },
+        "velocitySigmaKmS": { "$ref": "#/$defs/sigma3", "description": "1σ per axis, km/s." },
+        "lowerTriangle": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 21,
+          "maxItems": 21,
+          "description": "Row by row, km², km²/s, km²/s²; instead of sigmas."
+        },
+        "processNoiseKm2S3": { "$ref": "#/$defs/sigma3", "description": "White acceleration spectral density per axis, km²/s³." }
+      }
+    },
+    "sigma3": { "type": "array", "items": { "type": "number", "minimum": 0 }, "minItems": 3, "maxItems": 3 },
     "maneuver": {
       "description": "Impulsive.",
       "type": "object",

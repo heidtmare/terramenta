@@ -473,3 +473,49 @@ test("a stale open skips its spacecraft", async () => {
   await applySpacecraft(parse(v({ spacecraft: [spacecraft("late")] })).project, () => false);
   assert.ok(!commands(calls).includes("propagate"));
 });
+
+test("covariance: typed, drawn at uncertaintySigma, kept on save", () => {
+  const sigmas = { positionSigmaKm: [0.1, 0.5, 0.05], velocitySigmaKmS: [1e-4, 1e-4, 1e-4] };
+  assert.deepEqual(
+    errorsOf(
+      v({
+        spacecraft: [
+          spacecraft("a", { covariance: {} }),
+          spacecraft("b", { covariance: { lowerTriangle: [1, 2], frame: "body" } }),
+          spacecraft("c", { covariance: { positionSigmaKm: [-1, 0, 0] } }),
+          spacecraft("d", { covariance: sigmas }, { uncertaintySigma: -1 }),
+        ],
+      }),
+    ),
+    [
+      "spacecraft[0].propagation.covariance: expected positionSigmaKm/velocitySigmaKmS or lowerTriangle, got {}",
+      "spacecraft[1].propagation.covariance.lowerTriangle: expected 21 items, got [1,2]",
+      'spacecraft[1].propagation.covariance.frame: expected one of rsw, ric, rtn, vnb, lvlh, inertial, gcrf, eci, got "body"',
+      "spacecraft[2].propagation.covariance.positionSigmaKm[0]: expected a number ≥ 0, got -1",
+      "spacecraft[3].uncertaintySigma: expected a number ≥ 0, got -1",
+    ],
+  );
+
+  globe.addSpacecraft("a", { initial: STATE_INITIAL, durationS: 3600, covariance: sigmas }, { pointColor: "#ff8800cc" });
+  globe.addSpacecraft("b", { initial: STATE_INITIAL, durationS: 3600, covariance: sigmas }, { uncertaintySigma: 0 });
+  globe.addSpacecraft("c", { initial: STATE_INITIAL, durationS: 3600 }, { uncertaintySigma: 2 });
+  assert.deepEqual(
+    calls.filter(([name]) => name.endsWith("Uncertainty")),
+    [
+      ["showUncertainty", "a", { sigma: 3, color: "#ff8800" }],
+      ["hideUncertainty", "b"],
+      ["hideUncertainty", "c"],
+    ],
+  );
+  globe.removeSpacecraft("a");
+  assert.deepEqual(calls.at(-2), ["hideUncertainty", "a"]);
+
+  const captured = captureProject(snapshot());
+  assert.deepEqual(
+    captured.spacecraft.map((entry) => [entry.id, entry.uncertaintySigma, !!entry.propagation.covariance]),
+    [
+      ["b", 0, true],
+      ["c", 2, false],
+    ],
+  );
+});

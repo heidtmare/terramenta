@@ -536,6 +536,7 @@ mod tests {
                 ..Default::default()
             },
             states: states.to_vec(),
+            covariances: Vec::new(),
         };
         // Two segments sharing a boundary epoch.
         let oem = Oem {
@@ -591,6 +592,7 @@ mod tests {
                 ..Default::default()
             },
             states,
+            covariances: Vec::new(),
         };
         let oem = Oem {
             segments: vec![

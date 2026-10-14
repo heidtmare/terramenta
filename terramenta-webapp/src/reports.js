@@ -1,6 +1,6 @@
 /**
- * Reports: spacecraft samples, derived quantities, Δv budget, CSV and CZML.
- * Pure; no globe or DOM.
+ * Reports: spacecraft samples, derived quantities, position uncertainty, Δv
+ * budget, CSV and CZML. Pure; no globe or DOM.
  *
  * Samples come from `propagate`'s OEM (GCRF, UTC, km, km/s), one array per
  * segment (segments split at impulsive burns, sharing the burn epoch).
@@ -30,6 +30,17 @@ export const QUANTITIES = {
   perigeeAltKm: { label: "Perigee altitude", unit: "km", digits: 3 },
   apogeeAltKm: { label: "Apogee altitude", unit: "km", digits: 3 },
 };
+
+/** 1σ position from `propagate`'s `covariance` (RSW), metres; rows of covariance runs only. */
+export const UNCERTAINTY_QUANTITIES = {
+  sigmaRadialM: { label: "1σ radial", unit: "m", digits: 3 },
+  sigmaInTrackM: { label: "1σ in-track", unit: "m", digits: 3 },
+  sigmaCrossTrackM: { label: "1σ cross-track", unit: "m", digits: 3 },
+  sigmaPositionM: { label: "1σ position (RSS)", unit: "m", digits: 3 },
+};
+
+/** Plot axes: `QUANTITIES` and `UNCERTAINTY_QUANTITIES`. */
+export const PLOT_QUANTITIES = { ...QUANTITIES, ...UNCERTAINTY_QUANTITIES };
 
 // --- OEM -----------------------------------------------------------------------
 
@@ -132,6 +143,23 @@ export function reportRows(oem) {
   );
 }
 
+/**
+ * `rows` with `UNCERTAINTY_QUANTITIES` from `covariance` (`{times, sigmaRsw}`,
+ * km), matched by time in order, so a burn epoch's pre- and post-burn rows take
+ * the pre- and post-burn samples. Unmatched rows are left as they are.
+ */
+export function withUncertainty(rows, covariance) {
+  if (!covariance) return rows;
+  const samples = covariance.times.map((t, index) => ({ t, sigma: covariance.sigmaRsw[index] })).sort((a, b) => a.t - b.t);
+  let k = 0;
+  return rows.map((row) => {
+    while (k < samples.length && samples[k].t < row.t - 1e-3) k++;
+    if (k >= samples.length || samples[k].t > row.t + 1e-3) return row;
+    const [r, s, w] = samples[k++].sigma.map((km) => km * 1000);
+    return { ...row, sigmaRadialM: r, sigmaInTrackM: s, sigmaCrossTrackM: w, sigmaPositionM: Math.hypot(r, s, w) };
+  });
+}
+
 /** `{min, max, first, last}` of `key` over `rows`, non-finite values skipped; `null` if none. */
 export function summarize(rows, key) {
   const values = rows.map((row) => row[key]).filter(Number.isFinite);
@@ -198,8 +226,8 @@ export function toCsv(header, rows) {
   return `${[header, ...rows].map((row) => row.map(cell).join(",")).join("\r\n")}\r\n`;
 }
 
-/** Report rows as CSV: UTC, GCRF state, then `keys` (default all `QUANTITIES`). */
-export function reportCsv(rows, keys = Object.keys(QUANTITIES)) {
+/** Report rows as CSV: UTC, GCRF state, then `keys` (default `QUANTITIES`, and `UNCERTAINTY_QUANTITIES` when the rows have them). */
+export function reportCsv(rows, keys = reportKeys(rows)) {
   const header = [
     "utc", "segment", "x_km", "y_km", "z_km", "vx_km_s", "vy_km_s", "vz_km_s",
     ...keys.map((key) => columnName(key)),
@@ -209,11 +237,17 @@ export function reportCsv(rows, keys = Object.keys(QUANTITIES)) {
     rows.map((row) => [
       isoUtc(row.t), row.segment, ...row.r, ...row.v,
       ...keys.map((key) => {
-        const value = round(row[key], QUANTITIES[key].digits);
-        return QUANTITIES[key].unit === "°" && value === 360 ? 0 : value;
+        const value = round(row[key], PLOT_QUANTITIES[key].digits);
+        return PLOT_QUANTITIES[key].unit === "°" && value === 360 ? 0 : value;
       }),
     ]),
   );
+}
+
+/** `QUANTITIES` keys, then `UNCERTAINTY_QUANTITIES` keys if any row has them. */
+export function reportKeys(rows) {
+  const uncertain = rows.some((row) => row.sigmaRadialM !== undefined);
+  return [...Object.keys(QUANTITIES), ...(uncertain ? Object.keys(UNCERTAINTY_QUANTITIES) : [])];
 }
 
 /** `smaKm` → `sma_km`. */

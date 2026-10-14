@@ -97,4 +97,14 @@ pub trait ForceModel: std::fmt::Debug + Send + Sync {
     fn discontinuities(&self) -> Vec<Epoch> {
         Vec::new()
     }
+
+    /// `(∂a/∂r, ∂a/∂v)`, s⁻², s⁻¹. `None`: the propagator takes central differences.
+    fn partials(&self, _ctx: &ForceContext) -> Option<(DMat3, DMat3)> {
+        None
+    }
+
+    /// Acceleration depends on velocity. `false` skips velocity differences.
+    fn velocity_dependent(&self) -> bool {
+        true
+    }
 }

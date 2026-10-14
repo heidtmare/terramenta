@@ -487,7 +487,9 @@ export function captureProject(state, base = {}) {
   // In add order; a failed one (no layer) keeps its recorded display options.
   const spacecraft = [...sources.spacecraft].map(([id, { propagation, display }]) => {
     const layer = spacecraftLayers.get(id);
-    return { id, ...(layer ? layerDisplay(layer) : display), propagation };
+    // Not a layer property: from the recorded display.
+    const sigma = display.uncertaintySigma === undefined ? {} : { uncertaintySigma: display.uncertaintySigma };
+    return { id, ...(layer ? layerDisplay(layer) : display), ...sigma, propagation };
   });
   if (spacecraft.length) project.spacecraft = spacecraft;
 

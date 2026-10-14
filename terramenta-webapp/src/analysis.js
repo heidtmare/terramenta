@@ -3,7 +3,7 @@
  * here between open and save, like `timeline.js`.
  *
  * - Plot: `{id, label?, quantity, spacecraft: [id]}`, `quantity` a
- *   `reports.QUANTITIES` key.
+ *   `reports.PLOT_QUANTITIES` key.
  * - Porkchop: `{id, label?, origin, destination, departure: {start, end},
  *   arrival: {start, end}, retrograde?, steps?}`, dates `YYYY-MM-DD` (UTC).
  */

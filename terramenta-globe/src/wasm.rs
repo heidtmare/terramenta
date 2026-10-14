@@ -1067,19 +1067,31 @@ pub fn propagation_environment() -> JsValue {
 ///   finiteBurns: [{ start, durationS: 120, thrustN: 20, ispS: 220,
 ///                   direction: [1, 0, 0], frame: "vnb" }],
 ///   kvn: true,                               // false: no `oem` text; use addPropagated
+///   covariance: {                            // optional, at start; OEM gets COVARIANCE blocks
+///     frame: "rsw",                          // rsw (ric, rtn) | vnb | lvlh | gcrf
+///     positionSigmaKm: [0.1, 0.3, 0.05], velocitySigmaKmS: [1e-4, 5e-5, 5e-5],
+///     // or lowerTriangle: [21 values] (km², km²/s, km²/s²)
+///     processNoiseKm2S3: [1e-12, 1e-12, 1e-12],  // white acceleration PSD per axis
+///   },
 /// });
 /// addEphemeris("demo", { text: oem }); // or addPropagated("demo", {})
+/// // covariance: { times, sigmaRsw: [[r, s, w, ṙ, ṡ, ẇ]], ellipsoidKm: [[a, b, c]] } per sample
 /// ```
 ///
-/// Synchronous: a day of LEO at 60 s steps takes tens of milliseconds. Throws on bad input.
+/// Synchronous: a day of LEO at 60 s steps takes tens of milliseconds; covariance adds the
+/// state transition matrix (several times slower). Throws on bad input.
 #[wasm_bindgen]
 pub fn propagate(options: JsValue) -> Result<JsValue, JsError> {
     PROPAGATED.with_borrow_mut(|p| *p = None);
+    UNCERTAINTY.with_borrow_mut(|p| *p = None);
     let request = propagation_request(&options)?;
     let out = crate::numerical::propagate(&request).map_err(|e| JsError::new(&e))?;
     let oem = out.to_oem();
     let info = out.info(request.kvn.then_some(&oem));
     PROPAGATED.with_borrow_mut(|p| *p = Some(Arc::new(oem)));
+    if !out.covariances.is_empty() {
+        UNCERTAINTY.with_borrow_mut(|p| *p = Some(out.position_covariance_teme()));
+    }
     Ok(to_js(&info))
 }
 
@@ -1088,6 +1100,64 @@ thread_local! {
     /// call leaves nothing; [`propagate_spk`] does not touch it.
     static PROPAGATED: RefCell<Option<Arc<terramenta_solare::ccsds::Oem>>> =
         const { RefCell::new(None) };
+    /// Last [`propagate`] TEME position covariance, for [`show_uncertainty`].
+    static UNCERTAINTY: RefCell<Option<Vec<(f64, crate::uncertainty::Covariance3)>>> =
+        const { RefCell::new(None) };
+}
+
+#[derive(serde::Deserialize, Default)]
+struct UncertaintyDrawOptions {
+    sigma: Option<f64>,
+    color: Option<String>,
+}
+
+/// Draws the last [`propagate`] covariance on ephemeris layer `id`: the position
+/// ellipsoid's three principal ellipses at `sigma` (default 3), interpolated at the
+/// clock. Replaces any earlier drawing for `id`. `false` if the last `propagate` had no
+/// covariance, failed or never ran, or the options are bad.
+///
+/// ```js
+/// propagate({ ..., covariance: { positionSigmaKm: [0.1, 1, 0.1] } });
+/// addPropagated("demo", {});
+/// showUncertainty("demo", { sigma: 3, color: "#ff8800" });
+/// ```
+#[wasm_bindgen(js_name = showUncertainty)]
+pub fn show_uncertainty(id: String, options: JsValue) -> bool {
+    let Some(samples) = UNCERTAINTY.with_borrow(Clone::clone) else {
+        return false;
+    };
+    let options = if options.is_undefined() || options.is_null() {
+        UncertaintyDrawOptions::default()
+    } else {
+        match from_js::<UncertaintyDrawOptions>(&options) {
+            Some(o) => o,
+            None => return false,
+        }
+    };
+    let sigma = options.sigma.unwrap_or(3.0);
+    if !(sigma.is_finite() && sigma > 0.0) {
+        return false;
+    }
+    let color = match options.color.as_deref().map(bevy::color::Srgba::hex) {
+        Some(Ok(c)) => c,
+        Some(Err(_)) => return false,
+        None => bevy::color::Srgba::rgb(1.0, 0.55, 0.1),
+    };
+    crate::uncertainty::set(
+        id,
+        crate::uncertainty::Track {
+            samples,
+            sigma,
+            color,
+        },
+    );
+    true
+}
+
+/// Stops drawing uncertainty on `id`; `false` if none was drawn.
+#[wasm_bindgen(js_name = hideUncertainty)]
+pub fn hide_uncertainty(id: &str) -> bool {
+    crate::uncertainty::remove(id)
 }
 
 /// Puts the last [`propagate`] result up as an ephemeris layer without the KVN round
@@ -1130,7 +1200,7 @@ pub fn add_propagated(id: String, options: JsValue) -> bool {
 #[wasm_bindgen(js_name = propagateSpk)]
 pub fn propagate_spk(options: JsValue) -> Result<Vec<u8>, JsError> {
     let request = propagation_request(&options)?;
-    let out = crate::numerical::propagate(&request).map_err(|e| JsError::new(&e))?;
+    let out = crate::numerical::trajectory(&request).map_err(|e| JsError::new(&e))?;
     out.to_spk().map_err(|e| JsError::new(&e))
 }
 
@@ -1160,7 +1230,7 @@ pub fn find_events(propagation: JsValue, options: JsValue) -> Result<JsValue, Js
             .map_err(|_| JsError::new("options are not JSON-serialisable"))?;
         serde_json::from_str(&String::from(json)).map_err(|e| JsError::new(&e.to_string()))?
     };
-    let out = crate::numerical::propagate(&request).map_err(|e| JsError::new(&e))?;
+    let out = crate::numerical::trajectory(&request).map_err(|e| JsError::new(&e))?;
     let found = crate::numerical::find_events(&out, &events).map_err(|e| JsError::new(&e))?;
     Ok(to_js(&found))
 }
@@ -1224,7 +1294,7 @@ pub fn attitude(propagation: JsValue, options: JsValue) -> Result<JsValue, JsErr
         .map_err(|_| JsError::new("options are not JSON-serialisable"))?;
     let law: crate::numerical::AttitudeRequest =
         serde_json::from_str(&String::from(json)).map_err(|e| JsError::new(&e.to_string()))?;
-    let out = crate::numerical::propagate(&request).map_err(|e| JsError::new(&e))?;
+    let out = crate::numerical::trajectory(&request).map_err(|e| JsError::new(&e))?;
     let mut samples = crate::numerical::attitude(&out, &law).map_err(|e| JsError::new(&e))?;
     let teme = std::mem::take(&mut samples.teme);
     ATTITUDE.with_borrow_mut(|a| *a = Some(teme));

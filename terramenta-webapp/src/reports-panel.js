@@ -5,8 +5,9 @@
  *
  * Samples are the spacecraft's OEM (`globe.propagate` with `kvn`), parsed
  * and derived by `reports.js`, cached per `globe.recordedSources().spacecraft`
- * entry (re-propagating replaces the entry). Plots are `analysis.js`'s;
- * clicking one sets the clock.
+ * entry (re-propagating replaces the entry), with 1σ position columns from
+ * the entry's `covariance`. Plots are `analysis.js`'s; clicking one sets the
+ * clock.
  */
 
 import * as analysis from "./analysis.js";
@@ -15,7 +16,8 @@ import { download, el, row, section } from "./dom.js";
 import { clock, duration } from "./format.js";
 import * as globe from "./globe.js";
 import {
-  QUANTITIES,
+  PLOT_QUANTITIES,
+  UNCERTAINTY_QUANTITIES,
   deltaVBudget,
   epochSeconds,
   isoUtc,
@@ -26,11 +28,12 @@ import {
   toCsv,
   toCzml,
   columnName,
+  withUncertainty,
 } from "./reports.js";
 import { button } from "./widgets.js";
 import * as workspace from "./workspace.js";
 
-/** Quantities in a spacecraft report's table. */
+/** Quantities in a spacecraft report's table; uncertainty rows follow for covariance runs. */
 const SUMMARY = ["altitudeKm", "smaKm", "eccentricity", "inclinationDeg", "periodMin", "perigeeAltKm", "apogeeAltKm"];
 
 const cache = new WeakMap();
@@ -45,7 +48,8 @@ export function spacecraftData(id) {
   if (!data) {
     try {
       const oem = parseOem(globe.propagate({ ...entry.propagation, kvn: true }).oem);
-      data = { oem, rows: reportRows(oem), budget: deltaVBudget(entry.propagation) };
+      const rows = withUncertainty(reportRows(oem), entry.info.covariance);
+      data = { oem, rows, budget: deltaVBudget(entry.propagation) };
     } catch (error) {
       data = { error: error.message ?? String(error) };
     }
@@ -120,7 +124,7 @@ function mountPlots(bind, signal) {
 }
 
 function plotCard(plot, state) {
-  const quantity = QUANTITIES[plot.quantity];
+  const quantity = PLOT_QUANTITIES[plot.quantity];
   const series = plot.spacecraft.map((id) => {
     const look = lookOf(id, state);
     const data = spacecraftData(id);
@@ -174,7 +178,7 @@ function mountPlotEditor() {
   const quantity = el(
     "select",
     { class: "select" },
-    ...Object.entries(QUANTITIES).map(([key, { label, unit }]) =>
+    ...Object.entries(PLOT_QUANTITIES).map(([key, { label, unit }]) =>
       el("option", { value: key }, unit ? `${label} (${unit})` : label),
     ),
   );
@@ -325,7 +329,9 @@ function spacecraftReport(id, state) {
 }
 
 function summaryTable(rows) {
-  const format = (key, value) => (Number.isFinite(value) ? Number(value.toFixed(QUANTITIES[key].digits > 4 ? 6 : 3)).toLocaleString() : "—");
+  const format = (key, value) =>
+    Number.isFinite(value) ? Number(value.toFixed(PLOT_QUANTITIES[key].digits > 4 ? 6 : 3)).toLocaleString() : "—";
+  const keys = [...SUMMARY, ...(rows.some((row) => row.sigmaRadialM !== undefined) ? Object.keys(UNCERTAINTY_QUANTITIES) : [])];
   const table = el(
     "table",
     { class: "report-table" },
@@ -333,8 +339,8 @@ function summaryTable(rows) {
     el(
       "tbody",
       {},
-      ...SUMMARY.map((key) => {
-        const { label, unit } = QUANTITIES[key];
+      ...keys.map((key) => {
+        const { label, unit } = PLOT_QUANTITIES[key];
         const stats = summarize(rows, key);
         return el(
           "tr",
