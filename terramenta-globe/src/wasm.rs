@@ -1472,6 +1472,33 @@ pub fn coverage(options: JsValue) -> Result<JsValue, JsError> {
     Ok(to_js(&out))
 }
 
+/// Terrain horizon mask for a ground station from Terrarium DEM tiles
+/// (`h = 256 R + G + B/256 − 32768` m).
+///
+/// ```js
+/// const { groundM, horizon } = terrainHorizon({
+///   latDeg, lonDeg,
+///   tiles: { zoom: 11, x0, y0, columns, rows, tileSize: 256 },  // XYZ, Web Mercator
+///   azimuthStepDeg: 1, maxRangeKm: 50,
+///   stepKm,                    // default: one DEM pixel
+///   heightAboveGroundM: 2,     // eye height
+///   refraction: 0,             // k; 0.25 for radio (4/3 Earth)
+///   floorM: 0,                 // heights raised to this (sea over bathymetry); null: none
+/// }, rgba);                    // Uint8Array, columns·tileSize × rows·tileSize RGBA
+/// // horizon: [[azimuthDeg, elevationDeg], …], as a station's `horizon`
+/// ```
+///
+/// Synchronous. Rays stop at the mosaic edge; alpha 0 is a void.
+#[wasm_bindgen(js_name = terrainHorizon)]
+pub fn terrain_horizon(options: JsValue, rgba: &[u8]) -> Result<JsValue, JsError> {
+    let json = js_sys::JSON::stringify(&options)
+        .map_err(|_| JsError::new("options are not JSON-serialisable"))?;
+    let request: crate::numerical::TerrainHorizonRequest =
+        serde_json::from_str(&String::from(json)).map_err(|e| JsError::new(&e.to_string()))?;
+    let out = crate::numerical::terrain_horizon(&request, rgba).map_err(|e| JsError::new(&e))?;
+    Ok(to_js(&out))
+}
+
 /// Screens `primary` (as [`propagate`]) against secondaries for close approaches.
 ///
 /// ```js

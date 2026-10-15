@@ -146,7 +146,7 @@ spacecraft, Coverage, Conjunctions and Orbit determination while it has neither 
 | **Spacecraft** | Spacecraft | Per spacecraft: visibility, colour, trails, span/samples/final mass/final 1σ, edit, go to start, OEM/SPK export, remove. Editor: initial state (Keplerian elements, GCRF state with circular-orbit fill, TLE, OMM), start/duration/step, vehicle, plates (normal, area, specular, diffuse), forces, integrator, impulsive and finite burns (finite: body frame too), uncertainty (frame, 1σ position and velocity, process noise, ellipsoid σ) |
 | | Targeting | Per target: spacecraft, solve, apply, edit, remove; last solution's variables (initial, solved) and goals (desired, achieved, error; misses in red). Editor: name, spacecraft, iterations, variables (burn, parameter, perturbation, max step), goals (quantity, at, value, tolerance) |
 | | Attitude | Per profile: law, AEM export, edit, remove; sensor angles (or LVLH Euler angles) chart with clock cursor (click to set the clock), min/time/max table. Editor: spacecraft, name, law (align/constrain axes and directions, or inertial quaternion), spin, target (station or site), step, body axes on/off, sensors (name, axis, direction or none, field of view: cone or rectangle, colour, drawing on/off) |
-| | Ground stations | Per station: name, position, altitude, mask, horizon points, edit, remove. Add/edit: name, lat/lon, altitude, mask, horizon (`az:el, …`), colour. Drawn as a point overlay |
+| | Ground stations | Per station: name, position, altitude, mask, horizon points, edit, remove. Add/edit: name, lat/lon, altitude, mask, horizon (`az:el, …`) or *From terrain* (range, eye height), colour. Drawn as a point overlay |
 | | Propagation environment (*closed*) | EOP, space weather, kernel: URL or local file, coverage |
 | **Timeline** | Timeline | Directed on/off; searched events shown/hidden (remembered, default hidden); previous/next event; strip (click to set the clock) and list of every event with time, source, actions, Go, Remove (project events). Add event: label, at clock or an event plus offset, actions from the current scene (rate, paused, view, frame, camera, focus) |
 | **Analysis** | Plots | Saved plots: one quantity against time per spacecraft, burn markers, clock cursor (click to set the clock), CSV, remove. Add plot: quantity, spacecraft, label |
@@ -276,6 +276,13 @@ options)`, which re-runs the propagation.
   elevationDeg], …]`, azimuth ascending in [0, 360), linear between points,
   wrapping) raises the mask toward terrain: visible when elevation exceeds
   the larger of the two. No light time or refraction.
+- **Terrain masks** ([`terrain.js`](src/terrain.js)): *From terrain* in the
+  station editor fetches AWS Terrain Tiles (Terrarium, CORS) covering *Range
+  km* at the finest zoom ≤ 12 within 64 tiles, mosaics them on an
+  `OffscreenCanvas` (no colour conversion) and calls `globe.terrainHorizon` with
+  *Eye m* above the DEM ground; 1° azimuths, simplified to 0.05°. Fills the
+  horizon field; saved like a hand-entered mask. DEM heights are EGM96; the
+  station's `altKm` (ellipsoid) is not changed.
 - **Eclipses**: Earth (6378.137 km sphere) conical shadow, Sun from the loaded
   kernel or the analytic series; penumbra spans include the umbra.
 - **Apsides** (`r·v = 0`) and **nodes** (GCRF `z = 0`): off by default.

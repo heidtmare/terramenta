@@ -131,6 +131,7 @@ const UNTRACKED = new Set([
   "showAttitude",
   "hideAttitude",
   "coverage",
+  "terrainHorizon",
   "conjunctions",
   "determineOrbit",
 ]);
@@ -734,6 +735,15 @@ export const hideAttitude = (id) => required().hideAttitude(id);
  * Full option list: `terramenta-globe/src/wasm.rs`, `coverage`.
  */
 export const coverage = (options) => required().coverage(options);
+
+/**
+ * Terrain horizon mask from Terrarium tiles: `options` `{latDeg, lonDeg,
+ * tiles: {zoom, x0, y0, columns, rows, tileSize}, maxRangeKm?,
+ * heightAboveGroundM?, azimuthStepDeg?, refraction?, floorM?}`, `rgba` the
+ * mosaic → `{groundM, horizon: [[azimuthDeg, elevationDeg]]}`. Throws on bad
+ * input. Full option list: `terramenta-globe/src/wasm.rs`, `terrainHorizon`.
+ */
+export const terrainHorizon = (options, rgba) => required().terrainHorizon(options, rgba);
 
 /**
  * Close-approach screening: `{primary: propagation, secondaries: [{id?,

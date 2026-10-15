@@ -113,6 +113,7 @@ from a real failure.
 | `attitude(propagation, options)` | Attitude under a pointing law over a propagation: quaternions, LVLH Euler angles, sensor angles, AEM |
 | `showAttitude(id, options)` / `hideAttitude(id)` | Draw the last `attitude` result on ephemeris layer `id`: body axes, sensor boresights, field-of-view footprints |
 | `showUncertainty(id, options)` / `hideUncertainty(id)` | Draw the last `propagate` covariance on ephemeris layer `id`: position ellipsoid at `sigma` |
+| `terrainHorizon(options, rgba)` | Station horizon mask from a Terrarium DEM tile mosaic: ground height, `[azimuthDeg, elevationDeg]` mask |
 | `coverage(options)` | Access coverage of an H3 grid by spacecraft, line of sight or through sensor fields of view: per-cell fraction, accesses, gaps |
 | `conjunctions(options)` | Screen a propagated spacecraft against propagated spacecraft, TLE/OMM and loaded ephemeris layers: TCA, miss, RSW geometry, Pc, Pc max, CDM |
 | `determineOrbit(options)` | Batch least squares (state, Cd/Cr) or EKF from observations, CCSDS TDM or simulated tracking: estimate, covariance, residuals, TDM |
@@ -548,6 +549,21 @@ const { contacts, eclipses, orbit } = globe.findEvents(sameOptions, {
   eclipses are Earth conical shadow. No light time or refraction.
 
 ```js
+const { groundM, horizon } = globe.terrainHorizon({
+  latDeg: 46.594, lonDeg: 7.908,
+  tiles: { zoom: 11, x0: 1066, y0: 721, columns: 6, rows: 5 },  // Terrarium XYZ block
+  maxRangeKm: 30, heightAboveGroundM: 2, refraction: 0,
+}, rgba);  // Uint8Array RGBA mosaic, north-west tile first
+```
+
+- `terrainHorizon` ray-marches the DEM (`terramenta_solare::terrain`) every
+  `azimuthStepDeg` to `maxRangeKm`, one DEM pixel per step: highest geodetic
+  elevation of the terrain from the eye. Heights below `floorM` (default 0: sea
+  surface over bathymetry) are raised; alpha 0 is a void and ends the ray. The
+  mask goes straight into a station's `horizon`. The caller fetches and decodes
+  tiles.
+
+```js
 const { converged, values, goals, maneuvers, finiteBurns } = globe.target(sameOptions, {
   variables: [{ burn: 1, parameter: "dv1" }, { burn: 2, parameter: "epoch" }, { burn: 2, parameter: "dv1" }],
   goals: [
@@ -933,7 +949,7 @@ src/
   geojson.rs       GeoJSON parsing and flattening
   simplestyle.rs   simplestyle-spec 1.1.0
   omm.rs           OMM → SGP4 propagators; OEM → tabulated motion
-  numerical.rs     propagate/propagateSpk/findEvents/target/attitude/coverage/conjunctions requests; kernel, EOP, space weather
+  numerical.rs     propagate/propagateSpk/findEvents/target/attitude/coverage/conjunctions/terrainHorizon requests; kernel, EOP, space weather
   od.rs            determineOrbit requests
   tessellate.rs    Ear clipping, holes, antimeridian
   picking.rs       Overlay hit-testing

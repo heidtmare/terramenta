@@ -10,6 +10,7 @@ import * as events from "./events.js";
 import { clock, duration } from "./format.js";
 import * as globe from "./globe.js";
 import { isoUtc, toCsv } from "./reports.js";
+import * as terrain from "./terrain.js";
 import { button, toggle } from "./widgets.js";
 
 // --- Ground stations -----------------------------------------------------------
@@ -60,6 +61,10 @@ function mountStationEditor() {
   const mask = number({ value: "5", min: "-90", max: "90" });
   const horizon = el("input", { class: "coordinate", type: "text", spellcheck: false, placeholder: "az:el, … (optional)" });
   const color = el("input", { class: "swatch", type: "color", value: events.STATION_COLOR });
+  const range = number({ value: String(terrain.DEFAULTS.maxRangeKm), min: "1", max: "500", title: "Ray length, km" });
+  const eye = number({ value: String(terrain.DEFAULTS.heightAboveGroundM), min: "0", title: "Antenna above ground, m" });
+  const terrainStatus = el("p", { class: "detail", hidden: true });
+  const fromTerrain = button("From terrain", computeHorizon, { title: "Horizon mask from Terrarium DEM tiles (AWS Terrain Tiles)" });
   const error = el("p", { class: "detail error", hidden: true });
   const title = el("summary", {}, "Add station");
   const submit = button("Add", save);
@@ -87,6 +92,7 @@ function mountStationEditor() {
     alt.value = "0";
     mask.value = "5";
     horizon.value = "";
+    terrainStatus.hidden = true;
     color.value = events.STATION_COLOR;
     title.textContent = "Add station";
     submit.textContent = "Add";
@@ -130,6 +136,30 @@ function mountStationEditor() {
     reset();
   }
 
+  async function computeHorizon() {
+    const station = { latDeg: lat.valueAsNumber, lonDeg: lon.valueAsNumber };
+    if (!(Math.abs(station.latDeg) <= 90) || !Number.isFinite(station.lonDeg)) {
+      terrainStatus.textContent = "Set latitude and longitude first.";
+      terrainStatus.hidden = false;
+      return;
+    }
+    fromTerrain.disabled = true;
+    terrainStatus.textContent = "Fetching terrain…";
+    terrainStatus.hidden = false;
+    try {
+      const result = await terrain.terrainHorizon(station, {
+        maxRangeKm: range.valueAsNumber || terrain.DEFAULTS.maxRangeKm,
+        heightAboveGroundM: Number.isFinite(eye.valueAsNumber) ? eye.valueAsNumber : terrain.DEFAULTS.heightAboveGroundM,
+      });
+      horizon.value = events.formatHorizon(result.horizon);
+      terrainStatus.textContent = `Ground ${Math.round(result.groundM)} m (EGM96) · z${result.zoom} · ${result.horizon.length} pts`;
+    } catch (caught) {
+      terrainStatus.textContent = `Terrain: ${caught.message}`;
+    } finally {
+      fromTerrain.disabled = false;
+    }
+  }
+
   const node = el(
     "details",
     { class: "editor" },
@@ -140,6 +170,10 @@ function mountStationEditor() {
     row("Altitude km", alt),
     row("Mask °", mask),
     row("Horizon", horizon),
+    row("Range km", range),
+    row("Eye m", eye),
+    el("div", { class: "buttons" }, fromTerrain),
+    terrainStatus,
     row("Colour", color),
     error,
     el("div", { class: "buttons" }, submit, cancel),
