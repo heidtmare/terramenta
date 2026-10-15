@@ -514,6 +514,13 @@ globe.addPropagated("demo", {});
 globe.showUncertainty("demo", { sigma: 3, color: "#ffb86b" });
 ```
 
+- `attitude` (an `attitude` law: `quaternion` or `primary` + `secondary`,
+  `spin`, `target`) is flown for `vehicle.plates` and `frame: "body"` finite
+  burns. Plates (`normal` body axes, `areaM2`, `specular`, `diffuse`) replace
+  `dragAreaM2` (area facing the flow, with `dragCoefficient`), `srpAreaM2` and
+  `reflectivity` (per-plate absorption, specular, diffuse). Spin zero angle
+  defaults to the propagation start. Impulsive maneuvers take local frames only.
+  OD cannot solve for `reflectivity` with plates; `Φ` holds the attitude fixed.
 - Covariance is at the propagation start (after SGP4 for TLE/OMM). Linear:
   no unscented or Monte Carlo propagation. Force partials: point mass
   analytic, the rest central differences; mass is not a solve-for. Local

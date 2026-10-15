@@ -11,8 +11,9 @@
 
 use std::sync::Arc;
 
-use glam::{DMat3, DVec3};
+use glam::{DMat3, DQuat, DVec3};
 
+use crate::attitude::{Geometry, Steering};
 use crate::covariance::Matrix6;
 use crate::earth::{EarthModel, TerrestrialTransform, gcrf_to_itrf};
 use crate::eop::{Eop, EopTable};
@@ -92,6 +93,10 @@ pub enum PropagationError {
     Integration(IntegrationError),
     /// A force model needs a body-fixed frame and none is set.
     MissingOrientation,
+    /// Plates or a body-frame burn need an attitude and none is set.
+    MissingAttitude,
+    /// The attitude law is undefined (parallel directions) at this epoch.
+    UndefinedAttitude(Epoch),
 }
 
 impl std::fmt::Display for PropagationError {
@@ -99,6 +104,8 @@ impl std::fmt::Display for PropagationError {
         match self {
             Self::Integration(e) => write!(f, "{e}"),
             Self::MissingOrientation => write!(f, "force model requires a body orientation"),
+            Self::MissingAttitude => write!(f, "plates or a body-frame burn require an attitude"),
+            Self::UndefinedAttitude(e) => write!(f, "attitude undefined at {e}"),
         }
     }
 }
@@ -125,12 +132,16 @@ pub struct Propagator {
     /// [`ForceContext::sun_km`].
     pub sun: Option<Arc<dyn Ephemeris>>,
     pub maneuvers: Vec<ImpulsiveManeuver>,
+    /// Body attitude for plates and body-frame burns.
+    pub attitude: Option<Steering>,
     pub integrator: Integrator,
     /// `(anchor TT s, transform)`, LRU, most recent first. Holds every anchor one RKF78
     /// step (13 stages) can touch.
     cache: [Option<(f64, TerrestrialTransform)>; ORIENTATION_CACHE],
     switch_epoch: Option<Epoch>,
     switch_mass: Option<f64>,
+    /// First epoch the attitude was undefined in the current run.
+    attitude_failure: Option<Epoch>,
 }
 
 impl Propagator {
@@ -142,10 +153,12 @@ impl Propagator {
             orientation_refresh_s: 600.0,
             sun: None,
             maneuvers: Vec::new(),
+            attitude: None,
             integrator,
             cache: [None; ORIENTATION_CACHE],
             switch_epoch: None,
             switch_mass: None,
+            attitude_failure: None,
         }
     }
 
@@ -173,6 +186,56 @@ impl Propagator {
     pub fn with_maneuver(mut self, maneuver: ImpulsiveManeuver) -> Self {
         self.maneuvers.push(maneuver);
         self
+    }
+
+    pub fn with_attitude(mut self, steering: Steering) -> Self {
+        self.attitude = Some(steering);
+        self
+    }
+
+    /// Plates or a force need [`ForceContext::attitude`].
+    pub fn needs_attitude(&self) -> bool {
+        !self.vehicle.plates.is_empty() || self.forces.iter().any(|f| f.requires_attitude())
+    }
+
+    /// Body → inertial at a state, `None` without [`Self::attitude`] or where it is
+    /// undefined. Sun from [`Self::sun`]; target through the body orientation.
+    pub fn attitude_at(&mut self, state: &SpacecraftState) -> Option<DQuat> {
+        let bf = self
+            .attitude?
+            .uses_target()
+            .then(|| self.body_fixed(state.epoch));
+        let sun = self.sun.as_ref().map(|s| s.position_at(state.epoch));
+        self.steer(
+            state.epoch,
+            state.position_km,
+            state.velocity_km_s,
+            sun,
+            bf.flatten().as_ref(),
+        )
+    }
+
+    fn steer(
+        &self,
+        epoch: Epoch,
+        r: DVec3,
+        v: DVec3,
+        sun_km: Option<DVec3>,
+        body_fixed: Option<&TerrestrialTransform>,
+    ) -> Option<DQuat> {
+        let steering = self.attitude?;
+        let target_km = match steering.target_body_fixed_km {
+            Some(site) => Some(body_fixed?.rotation().transpose() * site),
+            None => None,
+        };
+        let g = Geometry {
+            position_km: r,
+            velocity_km_s: v,
+            // NaN: Sun directions resolve to `None`.
+            sun_km: sun_km.unwrap_or(DVec3::NAN),
+            target_km,
+        };
+        steering.profile.attitude(epoch, &g)
     }
 
     /// State at `to`.
@@ -277,21 +340,36 @@ impl Propagator {
     }
 
     fn eval(&mut self, epoch: Epoch, y: &[f64], d: &mut [f64]) {
-        let bf = if self.forces.iter().any(|f| f.requires_body_fixed()) {
+        let steered = self.attitude.is_some() && self.needs_attitude();
+        let bf = if self.forces.iter().any(|f| f.requires_body_fixed())
+            || (steered && self.attitude.is_some_and(|s| s.uses_target()))
+        {
             self.body_fixed(epoch)
+        } else {
+            None
+        };
+        let (r, v) = (DVec3::new(y[0], y[1], y[2]), DVec3::new(y[3], y[4], y[5]));
+        let sun_km = self.sun.as_ref().map(|s| s.position_at(epoch));
+        let attitude = if steered {
+            let q = self.steer(epoch, r, v, sun_km, bf.as_ref());
+            if q.is_none() {
+                self.attitude_failure.get_or_insert(epoch);
+            }
+            q
         } else {
             None
         };
         let ctx = ForceContext {
             epoch,
-            position_km: DVec3::new(y[0], y[1], y[2]),
-            velocity_km_s: DVec3::new(y[3], y[4], y[5]),
+            position_km: r,
+            velocity_km_s: v,
             mass_kg: y[6],
             vehicle: &self.vehicle,
             body_fixed: bf.as_ref(),
             switch_epoch: self.switch_epoch.unwrap_or(epoch),
             switch_mass_kg: self.switch_mass.unwrap_or(y[6]),
-            sun_km: self.sun.as_ref().map(|s| s.position_at(epoch)),
+            sun_km,
+            attitude,
         };
         let (mut a, mut mdot) = (DVec3::ZERO, 0.0);
         for f in &self.forces {
@@ -369,9 +447,17 @@ impl Propagator {
         with_stm: bool,
         mut on_sample: impl FnMut(Epoch, &[f64]),
     ) -> Result<Vec<f64>, PropagationError> {
-        if self.orientation.is_none() && self.forces.iter().any(|f| f.requires_body_fixed()) {
+        let needs_attitude = self.needs_attitude();
+        if needs_attitude && self.attitude.is_none() {
+            return Err(PropagationError::MissingAttitude);
+        }
+        let targeted = needs_attitude && self.attitude.is_some_and(|s| s.uses_target());
+        if self.orientation.is_none()
+            && (targeted || self.forces.iter().any(|f| f.requires_body_fixed()))
+        {
             return Err(PropagationError::MissingOrientation);
         }
+        self.attitude_failure = None;
         let start = state.epoch;
         let span = to.seconds_since(start);
         let dir = if span < 0.0 { -1.0 } else { 1.0 };
@@ -509,6 +595,9 @@ impl Propagator {
         self.integrator = integ;
         self.switch_epoch = None;
         self.switch_mass = None;
+        if let Some(e) = self.attitude_failure.take() {
+            return Err(PropagationError::UndefinedAttitude(e));
+        }
         result.map(|()| y)
     }
 }
@@ -756,7 +845,7 @@ mod tests {
             thrust_n: 500.0,
             isp_s: 320.0,
             direction: DVec3::Y,
-            frame: LocalFrame::Inertial,
+            frame: LocalFrame::Inertial.into(),
         };
         let mut p = Propagator::new(Integrator::new(Method::Dop853)).with_force(burn);
         let s1 = p
@@ -790,7 +879,7 @@ mod tests {
             thrust_n: 500.0,
             isp_s: 320.0,
             direction: DVec3::Y,
-            frame: LocalFrame::Inertial,
+            frame: LocalFrame::Inertial.into(),
         };
         let vehicle = crate::force::Vehicle {
             dry_mass_kg: 900.0,
@@ -1029,5 +1118,155 @@ mod tests {
             .propagate_stm(&s0, s0.epoch.advanced_by_seconds(2000.0))
             .unwrap();
         assert_stm_close(&samples[2].1, &mid, 1e-8);
+    }
+
+    fn steering(primary_to: crate::attitude::Direction) -> Steering {
+        use crate::attitude::{AlignConstrain, Direction, Law, Profile};
+        Steering::new(Profile {
+            law: Law::AlignConstrain(AlignConstrain {
+                primary: DVec3::X,
+                primary_to,
+                secondary: DVec3::Z,
+                secondary_to: Direction::OrbitNormal,
+            }),
+            spin: None,
+        })
+    }
+
+    #[test]
+    fn body_frame_burn_follows_attitude() {
+        use crate::attitude::Direction;
+        use crate::maneuver::BurnFrame;
+        let s0 = leo();
+        let burn = |frame| FiniteBurn {
+            start: s0.epoch.advanced_by_seconds(60.0),
+            duration_s: 600.0,
+            thrust_n: 400.0,
+            isp_s: 300.0,
+            direction: DVec3::X,
+            frame,
+        };
+        let to = s0.epoch.advanced_by_seconds(1800.0);
+        let vnb = two_body(Method::Dop853)
+            .with_force(burn(LocalFrame::Vnb.into()))
+            .propagate(&s0, to)
+            .unwrap();
+        // Body x along velocity, z on the orbit normal: body axes are VNB.
+        let body = two_body(Method::Dop853)
+            .with_force(burn(BurnFrame::Body))
+            .with_attitude(steering(Direction::Velocity))
+            .propagate(&s0, to)
+            .unwrap();
+        assert!(
+            (body.position_km - vnb.position_km).length() < 1e-6,
+            "{body:?} {vnb:?}"
+        );
+        assert!((body.mass_kg - vnb.mass_kg).abs() < 1e-9);
+        // Anti-velocity: a retro burn.
+        let retro = two_body(Method::Dop853)
+            .with_force(burn(BurnFrame::Body))
+            .with_attitude(steering(Direction::AntiVelocity))
+            .propagate(&s0, to)
+            .unwrap();
+        let energy = |s: &SpacecraftState| {
+            0.5 * s.velocity_km_s.length_squared() - GM / s.position_km.length()
+        };
+        assert!(energy(&retro) < energy(&s0) && energy(&vnb) > energy(&s0));
+    }
+
+    #[test]
+    fn attitude_errors() {
+        use crate::attitude::Direction;
+        use crate::maneuver::BurnFrame;
+        let s0 = leo();
+        let burn = FiniteBurn {
+            start: s0.epoch,
+            duration_s: 60.0,
+            thrust_n: 400.0,
+            isp_s: 300.0,
+            direction: DVec3::X,
+            frame: BurnFrame::Body,
+        };
+        let to = s0.epoch.advanced_by_seconds(120.0);
+        let mut p = two_body(Method::Dop853).with_force(burn);
+        assert_eq!(p.propagate(&s0, to), Err(PropagationError::MissingAttitude));
+        // Sun pointing without a Sun ephemeris: undefined.
+        let mut p = p.with_attitude(steering(Direction::Sun));
+        assert!(matches!(
+            p.propagate(&s0, to),
+            Err(PropagationError::UndefinedAttitude(_))
+        ));
+        // Target without a site.
+        let mut p = p.with_attitude(steering(Direction::Target));
+        assert_eq!(
+            p.propagate(&s0, to),
+            Err(PropagationError::MissingOrientation)
+        );
+        // Not needed: ignored.
+        let mut p = two_body(Method::Dop853).with_attitude(steering(Direction::Sun));
+        assert!(p.propagate(&s0, to).is_ok());
+    }
+
+    #[test]
+    fn plate_drag_tracks_attitude() {
+        use crate::attitude::Direction;
+        use crate::force::{Drag, ExponentialAtmosphere, Plate, Vehicle};
+        let s0 = SpacecraftState::new(
+            Epoch::from_utc(2024, 1, 1, 0, 0, 0.0),
+            OrbitalElements {
+                semi_major_axis_km: 6378.137 + 250.0,
+                eccentricity: 0.0,
+                inclination_rad: 0.9,
+                raan_rad: 0.0,
+                arg_periapsis_rad: 0.0,
+                mean_anomaly_at_epoch: 0.0,
+                epoch_seconds: 0.0,
+            }
+            .state_at(GM, 0.0),
+            1000.0,
+        );
+        let to = s0.epoch.advanced_by_seconds(3.0 * 3600.0);
+        let decay = |vehicle: Vehicle, primary: DVec3, primary_to| {
+            let mut steering = steering(primary_to);
+            if let crate::attitude::Law::AlignConstrain(a) = &mut steering.profile.law {
+                a.primary = primary;
+            }
+            let mut p = two_body(Method::Dop853)
+                .with_orientation(EarthOrientation::default())
+                .with_force(Drag::new(ExponentialAtmosphere))
+                .with_vehicle(vehicle)
+                .with_attitude(steering);
+            let s = p.propagate(&s0, to).unwrap();
+            let sma = |s: &SpacecraftState| {
+                OrbitalElements::from_state(s.state_vector(), GM, 0.0).semi_major_axis_km
+            };
+            sma(&s0) - sma(&s)
+        };
+        let cannonball = |area| Vehicle {
+            drag_area_m2: area,
+            ..Default::default()
+        };
+        // A 1 m² x face and a 10 m² y face.
+        let plated = Vehicle {
+            plates: [(DVec3::X, 1.0), (DVec3::Y, 10.0)]
+                .map(|(normal, area_m2)| Plate {
+                    normal,
+                    area_m2,
+                    specular: 0.0,
+                    diffuse: 0.0,
+                })
+                .to_vec(),
+            ..Default::default()
+        };
+        let small = decay(cannonball(1.0), DVec3::X, Direction::Velocity);
+        let large = decay(cannonball(10.0), DVec3::X, Direction::Velocity);
+        // The flow is a few degrees off inertial velocity (co-rotating atmosphere).
+        let front = decay(plated.clone(), DVec3::X, Direction::Velocity);
+        assert!((front / small - 1.0).abs() < 0.05, "{front} vs {small}");
+        let side = decay(plated.clone(), DVec3::Y, Direction::Velocity);
+        assert!((side / large - 1.0).abs() < 0.05, "{side} vs {large}");
+        // x trailing, y zenith: no face sees the flow.
+        let none = decay(plated, DVec3::X, Direction::AntiVelocity);
+        assert!(none.abs() < 1e-3 * small, "{none} vs {small}");
     }
 }

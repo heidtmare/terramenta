@@ -445,7 +445,7 @@ pub fn batch(
     apriori_covariance: Option<&Matrix6>,
     settings: &BatchSettings,
 ) -> Result<BatchSolution, OdError> {
-    let vehicle = propagator.vehicle;
+    let vehicle = propagator.vehicle.clone();
     let out = run_batch(
         propagator,
         stations,

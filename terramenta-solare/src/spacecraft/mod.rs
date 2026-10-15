@@ -131,7 +131,7 @@ impl Spacecraft {
 
     /// Advances (or retreats) to `epoch`.
     pub fn step_to(&mut self, epoch: Epoch) -> Result<&SpacecraftState, SpacecraftError> {
-        self.state = advance(&self.state, self.vehicle, &mut self.propagation, epoch)?;
+        self.state = advance(&self.state, &self.vehicle, &mut self.propagation, epoch)?;
         Ok(&self.state)
     }
 
@@ -186,7 +186,7 @@ impl Spacecraft {
         }
         if let Propagation::Numerical(p) = &self.propagation {
             let mut p = p.clone();
-            p.vehicle = self.vehicle;
+            p.vehicle = self.vehicle.clone();
             return Ok(p.ephemeris(&self.state, to, step)?);
         }
         let span = to.seconds_since(self.state.epoch);
@@ -240,12 +240,14 @@ enum SamplePath<'a, F> {
 /// `s` carried to `epoch`.
 fn advance(
     s: &SpacecraftState,
-    vehicle: Vehicle,
+    vehicle: &Vehicle,
     propagation: &mut Propagation,
     epoch: Epoch,
 ) -> Result<SpacecraftState, SpacecraftError> {
     if let Propagation::Numerical(p) = propagation {
-        p.vehicle = vehicle;
+        if p.vehicle != *vehicle {
+            p.vehicle = vehicle.clone();
+        }
         return Ok(p.propagate(s, epoch)?);
     }
     let sv = state_vector_at(s, propagation, epoch)?;

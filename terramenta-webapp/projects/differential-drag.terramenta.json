@@ -1,0 +1,134 @@
+{
+  "$schema": "../schema/project.schema.json",
+  "terramenta": 3,
+  "name": "Differential drag",
+  "description": "Three identical 12 kg smallsats at 350 km, 51.6°, modelled as flat plates (2 dm² ends, 6 dm² sides, a 0.25 m² two-sided solar wing on ±z), each flying its attitude profile: 'Low drag' ends into the flow, 'Brake' wing into the flow, 'Raise' ends into the flow and thrusting 2 mN along body x (a body-frame finite burn) for two days. Drag and SRP see the area the attitude presents. EGM2008 8×8, Sun/Moon, SRP, Harris-Priester. Analysis plots semi-major axis; Spacecraft tab shows the profiles; editing one re-propagates its spacecraft.",
+  "ui": { "tab": "analysis" },
+  "frame": "eci",
+  "clock": { "epoch": "2026-06-01T00:00:00Z", "timeScale": 300, "paused": false },
+  "camera": { "lat": 30, "lon": 10, "altitudeKm": 25000 },
+  "spacecraft": [
+    {
+      "id": "low",
+      "label": "Low drag",
+      "pointColor": "#6bd6ff",
+      "lineColor": "#6bd6ffa6",
+      "leadingOrbits": 0.5,
+      "trailingOrbits": 0.5,
+      "propagation": {
+        "name": "LOWDRAG",
+        "initial": {
+          "epoch": "2026-06-01T00:00:00Z",
+          "elements": { "smaKm": 6728.137, "eccentricity": 0, "inclinationDeg": 51.6, "raanDeg": 30, "argPerigeeDeg": 0, "trueAnomalyDeg": 0 }
+        },
+        "durationS": 259200,
+        "stepS": 60,
+        "vehicle": {
+          "massKg": 12,
+          "dryMassKg": 11,
+          "plates": [
+            { "normal": [1, 0, 0], "areaM2": 0.02, "specular": 0.1, "diffuse": 0.3 },
+            { "normal": [-1, 0, 0], "areaM2": 0.02, "specular": 0.1, "diffuse": 0.3 },
+            { "normal": [0, 1, 0], "areaM2": 0.06, "specular": 0.1, "diffuse": 0.3 },
+            { "normal": [0, -1, 0], "areaM2": 0.06, "specular": 0.1, "diffuse": 0.3 },
+            { "normal": [0, 0, 1], "areaM2": 0.31, "specular": 0.05, "diffuse": 0.1 },
+            { "normal": [0, 0, -1], "areaM2": 0.31, "specular": 0.05, "diffuse": 0.1 }
+          ]
+        },
+        "forces": { "gravity": [8, 8], "drag": "harrisPriester" }
+      }
+    },
+    {
+      "id": "brake",
+      "label": "Brake",
+      "pointColor": "#ff8b6b",
+      "lineColor": "#ff8b6ba6",
+      "leadingOrbits": 0.5,
+      "trailingOrbits": 0.5,
+      "propagation": {
+        "name": "BRAKE",
+        "initial": {
+          "epoch": "2026-06-01T00:00:00Z",
+          "elements": { "smaKm": 6728.137, "eccentricity": 0, "inclinationDeg": 51.6, "raanDeg": 30, "argPerigeeDeg": 0, "trueAnomalyDeg": 0.5 }
+        },
+        "durationS": 259200,
+        "stepS": 60,
+        "vehicle": {
+          "massKg": 12,
+          "dryMassKg": 11,
+          "plates": [
+            { "normal": [1, 0, 0], "areaM2": 0.02, "specular": 0.1, "diffuse": 0.3 },
+            { "normal": [-1, 0, 0], "areaM2": 0.02, "specular": 0.1, "diffuse": 0.3 },
+            { "normal": [0, 1, 0], "areaM2": 0.06, "specular": 0.1, "diffuse": 0.3 },
+            { "normal": [0, -1, 0], "areaM2": 0.06, "specular": 0.1, "diffuse": 0.3 },
+            { "normal": [0, 0, 1], "areaM2": 0.31, "specular": 0.05, "diffuse": 0.1 },
+            { "normal": [0, 0, -1], "areaM2": 0.31, "specular": 0.05, "diffuse": 0.1 }
+          ]
+        },
+        "forces": { "gravity": [8, 8], "drag": "harrisPriester" }
+      }
+    },
+    {
+      "id": "raise",
+      "label": "Raise",
+      "pointColor": "#a6ff6b",
+      "lineColor": "#a6ff6ba6",
+      "leadingOrbits": 0.5,
+      "trailingOrbits": 0.5,
+      "propagation": {
+        "name": "RAISE",
+        "initial": {
+          "epoch": "2026-06-01T00:00:00Z",
+          "elements": { "smaKm": 6728.137, "eccentricity": 0, "inclinationDeg": 51.6, "raanDeg": 30, "argPerigeeDeg": 0, "trueAnomalyDeg": 1 }
+        },
+        "durationS": 259200,
+        "stepS": 60,
+        "vehicle": {
+          "massKg": 12,
+          "dryMassKg": 11,
+          "plates": [
+            { "normal": [1, 0, 0], "areaM2": 0.02, "specular": 0.1, "diffuse": 0.3 },
+            { "normal": [-1, 0, 0], "areaM2": 0.02, "specular": 0.1, "diffuse": 0.3 },
+            { "normal": [0, 1, 0], "areaM2": 0.06, "specular": 0.1, "diffuse": 0.3 },
+            { "normal": [0, -1, 0], "areaM2": 0.06, "specular": 0.1, "diffuse": 0.3 },
+            { "normal": [0, 0, 1], "areaM2": 0.31, "specular": 0.05, "diffuse": 0.1 },
+            { "normal": [0, 0, -1], "areaM2": 0.31, "specular": 0.05, "diffuse": 0.1 }
+          ]
+        },
+        "forces": { "gravity": [8, 8], "drag": "harrisPriester" },
+        "finiteBurns": [
+          { "start": "2026-06-01T06:00:00Z", "durationS": 172800, "thrustN": 0.002, "ispS": 1200, "direction": [1, 0, 0], "frame": "body" }
+        ]
+      }
+    }
+  ],
+  "attitudes": [
+    {
+      "spacecraft": "low",
+      "label": "Ends into the flow",
+      "primary": { "body": [1, 0, 0], "to": "velocity" },
+      "secondary": { "body": [0, 0, 1], "to": "sun" },
+      "stepS": 60
+    },
+    {
+      "spacecraft": "brake",
+      "label": "Wing into the flow",
+      "primary": { "body": [0, 0, 1], "to": "velocity" },
+      "secondary": { "body": [1, 0, 0], "to": "orbitNormal" },
+      "stepS": 60
+    },
+    {
+      "spacecraft": "raise",
+      "label": "Thrust along velocity",
+      "primary": { "body": [1, 0, 0], "to": "velocity" },
+      "secondary": { "body": [0, 0, 1], "to": "sun" },
+      "stepS": 60
+    }
+  ],
+  "analysis": {
+    "plots": [
+      { "id": "sma", "quantity": "smaKm", "spacecraft": ["low", "brake", "raise"] },
+      { "id": "alt", "quantity": "altitudeKm", "spacecraft": ["low", "brake"] }
+    ]
+  }
+}

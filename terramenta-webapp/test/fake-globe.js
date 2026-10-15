@@ -20,9 +20,11 @@ export function attachFake({ objects = {} } = {}) {
     limits: () => ({ maxTimeScale: 1e6 }),
     ephemerisObjects: (id) => objects[id] ?? null,
     propagationEnvironment: () => ({ kernel: false, eop: null, spaceWeather: null }),
-    /** Throws for a TLE whose first line is `"bad"`. `covariance` when asked for. */
+    /** Throws for a TLE whose first line is `"bad"`, and for plates or a body burn without `attitude`. `covariance` when asked for. */
     propagate: (options) => {
       if (options.initial.tle?.[0] === "bad") throw new Error("bad TLE");
+      const steered = options.vehicle?.plates?.length || options.finiteBurns?.some((burn) => burn.frame === "body");
+      if (steered && !options.attitude) throw new Error("plates or a body-frame burn require an attitude");
       const info = { samples: 10, finalMassKg: 500, start: "2026-01-01T00:00:00.000", stop: "2026-01-01T06:00:00.000" };
       if (!options.covariance) return info;
       // σ in-track grows 1 km per sample.

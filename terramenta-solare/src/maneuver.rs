@@ -1,6 +1,6 @@
 //! Impulsive and finite maneuvers; local orbital frames.
 
-use glam::{DMat3, DVec3};
+use glam::{DMat3, DQuat, DVec3};
 
 use crate::force::{ForceContext, ForceModel, G0_M_S2};
 use crate::time::Epoch;
@@ -98,6 +98,36 @@ impl ImpulsiveManeuver {
     }
 }
 
+/// Thrust direction frame: a local orbital frame, or body axes under the attitude.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BurnFrame {
+    Local(LocalFrame),
+    /// Body axes: needs [`crate::propagate::Propagator::attitude`].
+    Body,
+}
+
+impl Default for BurnFrame {
+    fn default() -> Self {
+        Self::Local(LocalFrame::default())
+    }
+}
+
+impl From<LocalFrame> for BurnFrame {
+    fn from(frame: LocalFrame) -> Self {
+        Self::Local(frame)
+    }
+}
+
+impl BurnFrame {
+    /// Frame axes in inertial coordinates; `None` for body axes without an attitude.
+    pub fn to_inertial(self, r: DVec3, v: DVec3, attitude: Option<DQuat>) -> Option<DMat3> {
+        match self {
+            Self::Local(frame) => Some(frame.to_inertial(r, v)),
+            Self::Body => attitude.map(DMat3::from_quat),
+        }
+    }
+}
+
 /// Constant-thrust burn over `[start, start + duration]`. Cuts off at `dry_mass_kg`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FiniteBurn {
@@ -107,7 +137,7 @@ pub struct FiniteBurn {
     pub isp_s: f64,
     /// Unit vector in `frame`.
     pub direction: DVec3,
-    pub frame: LocalFrame,
+    pub frame: BurnFrame,
 }
 
 impl FiniteBurn {
@@ -126,9 +156,13 @@ impl ForceModel for FiniteBurn {
         if !self.active(ctx) {
             return DVec3::ZERO;
         }
-        let dir =
-            self.frame.to_inertial(ctx.position_km, ctx.velocity_km_s) * self.direction.normalize();
-        self.thrust_n / ctx.mass_kg * 1e-3 * dir
+        let Some(axes) = self
+            .frame
+            .to_inertial(ctx.position_km, ctx.velocity_km_s, ctx.attitude)
+        else {
+            return DVec3::ZERO;
+        };
+        self.thrust_n / ctx.mass_kg * 1e-3 * (axes * self.direction.normalize())
     }
 
     fn mass_rate(&self, ctx: &ForceContext) -> f64 {
@@ -143,8 +177,12 @@ impl ForceModel for FiniteBurn {
         vec![self.start, self.end()]
     }
 
+    fn requires_attitude(&self) -> bool {
+        self.frame == BurnFrame::Body
+    }
+
     fn velocity_dependent(&self) -> bool {
-        self.frame != LocalFrame::Inertial
+        self.frame != BurnFrame::Local(LocalFrame::Inertial)
     }
 }
 

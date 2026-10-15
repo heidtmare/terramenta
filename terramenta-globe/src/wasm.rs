@@ -1059,13 +1059,17 @@ pub fn propagation_environment() -> JsValue {
 ///   start: "2024-03-01T00:00:00Z",           // default: initial epoch
 ///   durationS: 86400, stepS: 60,             // or stop: ISO UTC
 ///   vehicle: { massKg: 500, dryMassKg: 300, dragAreaM2: 4, dragCoefficient: 2.2,
-///              srpAreaM2: 4, reflectivity: 1.3 },
+///              srpAreaM2: 4, reflectivity: 1.3,
+///              // or flat plates (body axes) for drag area and SRP; need `attitude`
+///              plates: [{ normal: [1, 0, 0], areaM2: 2, specular: 0.2, diffuse: 0.3 }] },
 ///   forces: { gravity: [8, 8], thirdBody: true, srp: true, relativity: false,
 ///             drag: "exponential" },         // none | exponential | harrisPriester | nrlmsise00
 ///   integrator: { method: "dop853" },        // dop853 | rkf78 | rk4 (fixedStepS)
 ///   maneuvers: [{ epoch, deltaVKmS: [0.01, 0, 0], frame: "vnb", ispS: 300 }],
 ///   finiteBurns: [{ start, durationS: 120, thrustN: 20, ispS: 220,
-///                   direction: [1, 0, 0], frame: "vnb" }],
+///                   direction: [1, 0, 0], frame: "vnb" }],   // or "body": under `attitude`
+///   attitude: { primary: { body: [1, 0, 0], to: "velocity" },  // `attitude` law, flown
+///               secondary: { body: [0, 0, 1], to: "orbitNormal" } },
 ///   kvn: true,                               // false: no `oem` text; use addPropagated
 ///   covariance: {                            // optional, at start; OEM gets COVARIANCE blocks
 ///     frame: "rsw",                          // rsw (ric, rtn) | vnb | lvlh | gcrf

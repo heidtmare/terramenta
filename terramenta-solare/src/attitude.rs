@@ -133,6 +133,33 @@ impl Profile {
     }
 }
 
+/// A profile flown during propagation ([`crate::propagate::Propagator::attitude`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Steering {
+    pub profile: Profile,
+    /// [`Direction::Target`] site, fixed to the central body, km.
+    pub target_body_fixed_km: Option<DVec3>,
+}
+
+impl Steering {
+    pub fn new(profile: Profile) -> Self {
+        Self {
+            profile,
+            target_body_fixed_km: None,
+        }
+    }
+
+    /// Uses [`Direction::Target`].
+    pub fn uses_target(&self) -> bool {
+        match self.profile.law {
+            Law::AlignConstrain(a) => {
+                a.primary_to == Direction::Target || a.secondary_to == Direction::Target
+            }
+            Law::Inertial(_) => false,
+        }
+    }
+}
+
 /// Angle between body axis `body` and inertial unit `direction`, rad.
 pub fn off_axis_angle(q: DQuat, body: DVec3, direction: DVec3) -> f64 {
     (q * body.normalize()).angle_between(direction)

@@ -14,6 +14,7 @@
  */
 
 import { mountAttitude } from "./attitude-panel.js";
+import { flightOptions } from "./attitude.js";
 import * as environment from "./environment.js";
 import { mountStations } from "./events-panel.js";
 import { mountTargeting } from "./targeting-panel.js";
@@ -37,6 +38,8 @@ const FRAMES = [
   ["lvlh", "LVLH"],
   ["inertial", "GCRF"],
 ];
+/** Finite burns also thrust along body axes, under the spacecraft's attitude profile. */
+const BURN_FRAMES = [...FRAMES, ["body", "Body"]];
 const DRAG = [
   ["none", "None"],
   ["exponential", "Exponential"],
@@ -427,6 +430,7 @@ function mountEditor(getState) {
   const dragCoefficient = number({ placeholder: "default" });
   const srpAreaM2 = number({ placeholder: "default" });
   const reflectivity = number({ placeholder: "default" });
+  const plates = rowList(plateRow, "Add plate");
 
   const degree = number({ value: "8", min: "0", max: "20", step: "1" });
   const order = number({ value: "8", min: "0", max: "20", step: "1" });
@@ -512,6 +516,7 @@ function mountEditor(getState) {
     integrator.value = "dop853";
     maneuvers.clear();
     burns.clear();
+    plates.clear();
     sequenceText.value = "";
     covarianceFrame.value = "rsw";
     for (const input of [...positionSigma.inputs, ...velocitySigma.inputs, ...processNoise.inputs]) input.value = "";
@@ -564,6 +569,7 @@ function mountEditor(getState) {
     dragCoefficient.value = v.dragCoefficient ?? "";
     srpAreaM2.value = v.srpAreaM2 ?? "";
     reflectivity.value = v.reflectivity ?? "";
+    for (const plate of v.plates ?? []) plates.add(plate);
     const f = p.forces ?? {};
     [degree.value, order.value] = (f.gravity ?? [8, 8]).map(String);
     drag.value = f.drag ?? "exponential";
@@ -644,6 +650,8 @@ function mountEditor(getState) {
       srpAreaM2: optional(srpAreaM2),
       reflectivity: optional(reflectivity),
     });
+    const plated = plates.values();
+    if (plated.length) propagation.vehicle.plates = plated;
     propagation.forces = {
       gravity: [numeric(degree), numeric(order)],
       thirdBody: thirdBody.input.checked,
@@ -698,7 +706,7 @@ function mountEditor(getState) {
         { terramenta: PROJECT_VERSION, spacecraft: [{ id, ...display, propagation, ...(sequence ? { sequence } : {}) }] },
         { warn: () => {} },
       );
-      const info = globe.addSpacecraft(id, propagation, display, sequence);
+      const info = globe.addSpacecraft(id, propagation, display, flightOptions(id, propagation, sequence));
       const now = getState()?.sun.unixSeconds;
       const [from, to] = [utcSeconds(info.start), utcSeconds(info.stop)];
       if (now === undefined || now < Math.min(from, to) || now > Math.max(from, to)) globe.setClock(from);
@@ -741,6 +749,13 @@ function mountEditor(getState) {
     row("Cd", dragCoefficient),
     row("SRP m²", srpAreaM2),
     row("Cr", reflectivity),
+    el("h3", { class: "editor-title" }, "Plates"),
+    el(
+      "p",
+      { class: "detail" },
+      "Flat plates in body axes replace the drag and SRP areas and Cr; the spacecraft then flies its attitude profile.",
+    ),
+    plates.node,
     el("h3", { class: "editor-title" }, "Forces"),
     row("Gravity", el("div", { class: "vector two" }, degree, order)),
     row("Drag", drag),
@@ -791,6 +806,24 @@ function mountEditor(getState) {
   reset();
   return { node: details, edit };
 
+  function plateRow(plate = {}) {
+    const normal = vector(["body x", "y", "z"]);
+    (plate.normal ?? [1, 0, 0]).forEach((value, index) => (normal.inputs[index].value = String(value)));
+    const area = number({ value: plate.areaM2 ?? 1, min: "0" });
+    const specular = number({ value: plate.specular ?? "", min: "0", max: "1", placeholder: "0" });
+    const diffuse = number({ value: plate.diffuse ?? "", min: "0", max: "1", placeholder: "0" });
+    return {
+      fields: [row("Normal", normal.node), row("Area m²", area), row("Specular", specular), row("Diffuse", diffuse)],
+      value: () =>
+        compact({
+          normal: normal.inputs.map(numeric),
+          areaM2: numeric(area),
+          specular: optional(specular),
+          diffuse: optional(diffuse),
+        }),
+    };
+  }
+
   function maneuverRow(maneuver = {}) {
     const at = text({ value: maneuver.epoch ?? clockIso(), placeholder: "Epoch" });
     const frame = select(FRAMES, maneuver.frame ?? "vnb");
@@ -816,7 +849,7 @@ function mountEditor(getState) {
     const duration = number({ value: burn.durationS ?? 60 });
     const thrust = number({ value: burn.thrustN ?? 20 });
     const isp = number({ value: burn.ispS ?? 220 });
-    const frame = select(FRAMES, burn.frame ?? "vnb");
+    const frame = select(BURN_FRAMES, burn.frame ?? "vnb");
     const direction = vector(["V", "N", "B"]);
     (burn.direction ?? [1, 0, 0]).forEach((value, index) => (direction.inputs[index].value = String(value)));
     frame.onchange = () => relabel(direction, frame.value, "");
@@ -844,7 +877,13 @@ function mountEditor(getState) {
 }
 
 function relabel(vector, frame, unit = " m/s") {
-  const axes = { vnb: ["V", "N", "B"], rsw: ["R", "S", "W"], lvlh: ["LVLH x", "y", "z"], inertial: ["x", "y", "z"] }[frame];
+  const axes = {
+    vnb: ["V", "N", "B"],
+    rsw: ["R", "S", "W"],
+    lvlh: ["LVLH x", "y", "z"],
+    inertial: ["x", "y", "z"],
+    body: ["body x", "y", "z"],
+  }[frame];
   vector.inputs.forEach((input, index) => (input.placeholder = `${axes[index]}${unit}`));
 }
 

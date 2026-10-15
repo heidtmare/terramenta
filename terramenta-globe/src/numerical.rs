@@ -9,7 +9,9 @@ use std::sync::{Arc, LazyLock, RwLock};
 
 use bevy::math::{DMat3, DQuat, DVec3};
 use serde::{Deserialize, Serialize};
-use terramenta_solare::attitude::{self, AlignConstrain, Direction, Geometry, Law, Profile, Spin};
+use terramenta_solare::attitude::{
+    self, AlignConstrain, Direction, Geometry, Law, Profile, Spin, Steering,
+};
 use terramenta_solare::bodies::{GM_MOON_KM3_S2, GM_SUN_KM3_S2};
 use terramenta_solare::ccsds::{
     Aem, AemMetadata, AemSegment, Cdm, CdmObject, Header, Oem, OemCovariance, OemMetadata,
@@ -21,12 +23,12 @@ use terramenta_solare::earth::{EarthModel, TerrestrialTransform};
 use terramenta_solare::eop::{EopTable, FinalsKind};
 use terramenta_solare::events::{self, GroundStation, OrbitEventKind, Shadow};
 use terramenta_solare::force::{
-    Drag, EGM2008_GM_KM3_S2, ExponentialAtmosphere, HarrisPriester, Nrlmsise00, PointMass,
+    Drag, EGM2008_GM_KM3_S2, ExponentialAtmosphere, HarrisPriester, Nrlmsise00, Plate, PointMass,
     Relativity, SolarRadiationPressure, SphericalHarmonics, ThirdBody, Vehicle,
 };
 use terramenta_solare::frame::Relative;
 use terramenta_solare::interpolate::{Interpolation, SampledEphemeris};
-use terramenta_solare::maneuver::{FiniteBurn, ImpulsiveManeuver, LocalFrame};
+use terramenta_solare::maneuver::{BurnFrame, FiniteBurn, ImpulsiveManeuver, LocalFrame};
 use terramenta_solare::orbit::OrbitalElements;
 use terramenta_solare::propagate::{BodyOrientation, EarthOrientation, Integrator, Method};
 use terramenta_solare::sequence::{self, Quantity};
@@ -152,6 +154,10 @@ pub struct PropagationRequest {
     /// Linear covariance from the propagation start.
     #[serde(default)]
     pub covariance: Option<CovarianceOptions>,
+    /// Attitude flown for `vehicle.plates` and `"body"` finite burns (validated even without
+    /// them).
+    #[serde(default)]
+    pub attitude: Option<AttitudeLaw>,
 }
 
 /// Initial `[r, v]` covariance at the propagation start: sigmas or a full matrix.
@@ -332,6 +338,19 @@ pub struct VehicleOptions {
     pub drag_coefficient: Option<f64>,
     pub srp_area_m2: Option<f64>,
     pub reflectivity: Option<f64>,
+    /// Flat plates, body axes: replace `dragAreaM2`, `srpAreaM2`, `reflectivity`.
+    pub plates: Vec<PlateOptions>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PlateOptions {
+    pub normal: [f64; 3],
+    pub area_m2: f64,
+    #[serde(default)]
+    pub specular: f64,
+    #[serde(default)]
+    pub diffuse: f64,
 }
 
 impl Default for VehicleOptions {
@@ -343,20 +362,47 @@ impl Default for VehicleOptions {
             drag_coefficient: None,
             srp_area_m2: None,
             reflectivity: None,
+            plates: Vec::new(),
         }
     }
 }
 
 impl VehicleOptions {
-    fn resolve(&self) -> Vehicle {
+    fn resolve(&self) -> Result<Vehicle, String> {
         let d = Vehicle::default();
-        Vehicle {
+        let plates = self
+            .plates
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let normal = DVec3::from_array(p.normal)
+                    .try_normalize()
+                    .ok_or_else(|| format!("plates[{i}]: normal must be non-zero"))?;
+                let unit = |x: f64| (0.0..=1.0).contains(&x);
+                if !(p.area_m2.is_finite() && p.area_m2 >= 0.0) {
+                    return Err(format!("plates[{i}]: areaM2 must be ≥ 0"));
+                }
+                if !(unit(p.specular) && unit(p.diffuse) && unit(p.specular + p.diffuse)) {
+                    return Err(format!(
+                        "plates[{i}]: specular, diffuse and their sum must be in [0, 1]"
+                    ));
+                }
+                Ok(Plate {
+                    normal,
+                    area_m2: p.area_m2,
+                    specular: p.specular,
+                    diffuse: p.diffuse,
+                })
+            })
+            .collect::<Result<_, String>>()?;
+        Ok(Vehicle {
             dry_mass_kg: self.dry_mass_kg.unwrap_or(d.dry_mass_kg.min(self.mass_kg)),
             drag_area_m2: self.drag_area_m2.unwrap_or(d.drag_area_m2),
             drag_coefficient: self.drag_coefficient.unwrap_or(d.drag_coefficient),
             srp_area_m2: self.srp_area_m2.unwrap_or(d.srp_area_m2),
             reflectivity: self.reflectivity.unwrap_or(d.reflectivity),
-        }
+            plates,
+        })
     }
 }
 
@@ -499,8 +545,17 @@ fn local_frame(s: Option<&str>) -> Result<LocalFrame, String> {
         Some("rsw" | "ric") => LocalFrame::Rsw,
         Some("lvlh") => LocalFrame::Lvlh,
         Some("inertial" | "gcrf" | "eci") => LocalFrame::Inertial,
+        Some("body") => return Err("frame \"body\" is for finite burns only".into()),
         Some(other) => return Err(format!("unknown maneuver frame {other:?}")),
     })
+}
+
+/// [`local_frame`], or `"body"`.
+fn burn_frame(s: Option<&str>) -> Result<BurnFrame, String> {
+    match s {
+        Some(f) if f.eq_ignore_ascii_case("body") => Ok(BurnFrame::Body),
+        _ => local_frame(s).map(BurnFrame::Local),
+    }
 }
 
 /// Geocentric Sun and Moon: kernel when loaded, analytic otherwise.
@@ -579,7 +634,14 @@ pub(crate) fn propagator(
         })
     };
     let (sun, moon) = sun_and_moon(env);
-    if f.third_body || f.srp || matches!(f.drag, DragModel::HarrisPriester) {
+    if let Some(law) = &req.attitude {
+        p = p.with_attitude(steering(req, law)?);
+    }
+    if f.third_body
+        || f.srp
+        || req.attitude.is_some()
+        || matches!(f.drag, DragModel::HarrisPriester)
+    {
         p = p.with_sun(Shared(sun.clone()));
     }
     if f.third_body {
@@ -628,7 +690,7 @@ pub(crate) fn propagator(
             thrust_n: b.thrust_n,
             isp_s: b.isp_s,
             direction: b.direction.into(),
-            frame: local_frame(b.frame.as_deref())?,
+            frame: burn_frame(b.frame.as_deref())?,
         };
         let valid = |x: f64| x.is_finite() && x > 0.0;
         if !valid(burn.direction.length())
@@ -697,7 +759,7 @@ pub(crate) fn numerical_propagator(sc: &Spacecraft) -> Propagator {
         unreachable!("numerical from start");
     };
     let mut p = (**p).clone();
-    p.vehicle = sc.vehicle;
+    p.vehicle = sc.vehicle.clone();
     p
 }
 
@@ -741,13 +803,13 @@ pub(crate) fn spacecraft_at_start(
             ),
             numerical()?,
         )
-        .with_vehicle(req.vehicle.resolve()),
+        .with_vehicle(req.vehicle.resolve()?),
         Initial::Elements { epoch: e, elements } => Spacecraft::new(
             "",
             SpacecraftState::new(epoch(e)?, elements.state()?, mass),
             numerical()?,
         )
-        .with_vehicle(req.vehicle.resolve()),
+        .with_vehicle(req.vehicle.resolve()?),
     };
     let start = req
         .start
@@ -759,7 +821,7 @@ pub(crate) fn spacecraft_at_start(
     // maneuvers between it and `start` apply.
     sc.step_to(start).map_err(|e| e.to_string())?;
     if req.initial.epoch().is_none() {
-        sc.vehicle = req.vehicle.resolve();
+        sc.vehicle = req.vehicle.resolve()?;
         sc.set_propagation(numerical()?);
     }
     Ok((sc, start))
@@ -1678,6 +1740,13 @@ fn frame_name(frame: LocalFrame) -> &'static str {
     }
 }
 
+fn burn_frame_name(frame: BurnFrame) -> &'static str {
+    match frame {
+        BurnFrame::Local(f) => frame_name(f),
+        BurnFrame::Body => "body",
+    }
+}
+
 fn sequence_commands(
     commands: &[CommandOptions],
     path: &str,
@@ -1758,7 +1827,7 @@ fn sequence_commands(
                     thrust_n: b.thrust_n,
                     isp_s: b.isp_s,
                     direction: b.direction.into(),
-                    frame: local_frame(b.frame.as_deref())?,
+                    frame: burn_frame(b.frame.as_deref())?,
                 }
             } else {
                 let t = c.target.as_ref().expect("one given");
@@ -1867,7 +1936,7 @@ pub fn run_sequence(
             thrust_n: b.thrust_n,
             isp_s: b.isp_s,
             direction: b.direction.to_array(),
-            frame: Some(frame_name(b.frame).into()),
+            frame: Some(burn_frame_name(b.frame).into()),
         })
         .collect();
     object.insert(
@@ -1953,11 +2022,11 @@ pub fn run_sequence(
 
 // --- Attitude -------------------------------------------------------------------------
 
-/// `attitude` options: `quaternion`, or `primary` + `secondary` (align/constrain); `spin`
+/// An attitude law: `quaternion`, or `primary` + `secondary` (align/constrain); `spin`
 /// on top of either.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AttitudeRequest {
+pub struct AttitudeLaw {
     /// Body → GCRF, `[x, y, z, w]`.
     pub quaternion: Option<[f64; 4]>,
     pub primary: Option<PointingOptions>,
@@ -1965,6 +2034,14 @@ pub struct AttitudeRequest {
     pub spin: Option<SpinOptions>,
     /// Site for `"target"`.
     pub target: Option<SiteOptions>,
+}
+
+/// `attitude` options: an [`AttitudeLaw`], sensors and sampling.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttitudeRequest {
+    #[serde(flatten)]
+    pub law: AttitudeLaw,
     /// Body axes whose angle to a direction is reported per sample.
     #[serde(default)]
     pub sensors: Vec<PointingOptions>,
@@ -2081,7 +2158,7 @@ pub struct AttitudeSamples {
     pub teme: Vec<(f64, DQuat)>,
 }
 
-fn profile(att: &AttitudeRequest, start: Epoch) -> Result<Profile, String> {
+fn profile(att: &AttitudeLaw, start: Epoch) -> Result<Profile, String> {
     let law = match (&att.quaternion, &att.primary, &att.secondary) {
         (Some(q), None, None) => {
             let q = DQuat::from_array(*q);
@@ -2121,8 +2198,46 @@ struct Pointing {
     sensors: Vec<(DVec3, Direction)>,
 }
 
+/// [`AttitudeLaw::target`] in ITRF, km; `Err` when a direction needs it and there is none.
+fn site(law: &AttitudeLaw, needed: bool) -> Result<Option<DVec3>, String> {
+    match &law.target {
+        Some(t) if (-90.0..=90.0).contains(&t.lat_deg) && t.lon_deg.is_finite() => Ok(Some(
+            GroundStation {
+                latitude_rad: t.lat_deg.to_radians(),
+                longitude_rad: t.lon_deg.to_radians(),
+                altitude_km: t.alt_km,
+                ..GroundStation::default()
+            }
+            .position_itrf_km(),
+        )),
+        Some(_) => Err("target: bad latitude/longitude".into()),
+        None if needed => Err("direction \"target\" needs a target site".into()),
+        None => Ok(None),
+    }
+}
+
+/// The propagation's flown attitude; spin zero angle defaults to the propagation start.
+fn steering(req: &PropagationRequest, law: &AttitudeLaw) -> Result<Steering, String> {
+    let start = req
+        .start
+        .as_deref()
+        .or(req.initial.epoch())
+        .map(epoch)
+        .transpose()?;
+    let start = match (start, &law.spin) {
+        (Some(e), _) => e,
+        (None, Some(SpinOptions { epoch: Some(e), .. })) => epoch(e)?,
+        (None, Some(_)) => return Err("attitude spin needs an epoch (or a start)".into()),
+        (None, None) => Epoch::J2000,
+    };
+    let mut steering = Steering::new(profile(law, start).map_err(|e| format!("attitude: {e}"))?);
+    steering.target_body_fixed_km =
+        site(law, steering.uses_target()).map_err(|e| format!("attitude: {e}"))?;
+    Ok(steering)
+}
+
 fn pointing(att: &AttitudeRequest, start: Epoch) -> Result<Pointing, String> {
-    let profile = profile(att, start)?;
+    let profile = profile(&att.law, start)?;
     let uses_target = |d: Direction| d == Direction::Target;
     let wants_target = match profile.law {
         Law::AlignConstrain(a) => uses_target(a.primary_to) || uses_target(a.secondary_to),
@@ -2139,22 +2254,10 @@ fn pointing(att: &AttitudeRequest, start: Epoch) -> Result<Pointing, String> {
             ))
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let site = match &att.target {
-        Some(t) if (-90.0..=90.0).contains(&t.lat_deg) && t.lon_deg.is_finite() => Some(
-            GroundStation {
-                latitude_rad: t.lat_deg.to_radians(),
-                longitude_rad: t.lon_deg.to_radians(),
-                altitude_km: t.alt_km,
-                ..GroundStation::default()
-            }
-            .position_itrf_km(),
-        ),
-        Some(_) => return Err("target: bad latitude/longitude".into()),
-        None if wants_target || sensors.iter().any(|&(_, d)| uses_target(d)) => {
-            return Err("direction \"target\" needs a target site".into());
-        }
-        None => None,
-    };
+    let site = site(
+        &att.law,
+        wants_target || sensors.iter().any(|&(_, d)| uses_target(d)),
+    )?;
     Ok(Pointing {
         profile,
         site,
@@ -3083,6 +3186,114 @@ mod tests {
             Quantity::SmaKm.of(end),
             last.elements.sma_km
         );
+    }
+
+    /// Plates and body-frame burns fly `attitude`; without them it is ignored.
+    #[test]
+    fn attitude_couples_plates_and_body_burns() {
+        let base = serde_json::json!({
+            "initial": { "epoch": "2026-03-20T00:00:00Z",
+                         "elements": { "smaKm": 6628.137, "eccentricity": 0, "inclinationDeg": 51.6,
+                                       "raanDeg": 0, "argPerigeeDeg": 0, "trueAnomalyDeg": 0 } },
+            "durationS": 21600, "stepS": 600,
+            "vehicle": { "massKg": 500, "dryMassKg": 300, "dragAreaM2": 1 },
+            "forces": { "gravity": [0, 0], "thirdBody": false, "srp": true, "drag": "exponential" } });
+        let flown = |patch: serde_json::Value| {
+            let mut json = base.clone();
+            json_merge(&mut json, patch);
+            let req: PropagationRequest = serde_json::from_value(json).unwrap();
+            propagate(&req).map(|p| Quantity::SmaKm.of(p.states.last().unwrap()))
+        };
+        let ram = serde_json::json!({
+            "primary": { "body": [1, 0, 0], "to": "velocity" },
+            "secondary": { "body": [0, 0, 1], "to": "orbitNormal" } });
+        let plates = |front: f64| {
+            serde_json::json!([{ "normal": [1, 0, 0], "areaM2": front },
+                               { "normal": [0, 1, 0], "areaM2": 10 }])
+        };
+        let cannonball = flown(serde_json::json!({})).unwrap();
+        let attitude_only = flown(serde_json::json!({ "attitude": ram })).unwrap();
+        assert_eq!(cannonball, attitude_only, "ignored without plates");
+        let front =
+            flown(serde_json::json!({ "vehicle": { "plates": plates(1.0) }, "attitude": ram }))
+                .unwrap();
+        let side = flown(
+            serde_json::json!({ "vehicle": { "plates": plates(1.0) }, "attitude": {
+            "primary": { "body": [0, 1, 0], "to": "velocity" },
+            "secondary": { "body": [0, 0, 1], "to": "orbitNormal" } } }),
+        )
+        .unwrap();
+        let start = 6628.137;
+        assert!(
+            ((start - front) / (start - cannonball) - 1.0).abs() < 0.1,
+            "{front} {cannonball}"
+        );
+        assert!((start - side) > 5.0 * (start - front), "{side} {front}");
+        assert!(
+            flown(serde_json::json!({ "vehicle": { "plates": plates(1.0) } }))
+                .unwrap_err()
+                .contains("require an attitude")
+        );
+        assert!(
+            flown(
+                serde_json::json!({ "vehicle": { "plates": [{ "normal": [0, 0, 0], "areaM2": 1 }] },
+                                      "attitude": ram })
+            )
+            .unwrap_err()
+            .contains("normal")
+        );
+
+        // A body-x burn pointed along velocity is a VNB burn.
+        let burn = |frame: &str| {
+            serde_json::json!({ "forces": { "drag": "none", "srp": false },
+                "finiteBurns": [{ "start": "2026-03-20T00:10:00Z", "durationS": 300, "thrustN": 200,
+                                  "ispS": 300, "direction": [1, 0, 0], "frame": frame }],
+                "attitude": ram })
+        };
+        let vnb = flown(burn("vnb")).unwrap();
+        let body = flown(burn("body")).unwrap();
+        assert!(
+            vnb - start > 50.0 && (body - vnb).abs() < 1e-6,
+            "{body} {vnb}"
+        );
+        let mut no_attitude = burn("body");
+        no_attitude.as_object_mut().unwrap().remove("attitude");
+        assert!(
+            flown(no_attitude)
+                .unwrap_err()
+                .contains("require an attitude")
+        );
+        let impulsive = serde_json::json!({ "maneuvers": [{ "epoch": "2026-03-20T00:10:00Z",
+            "deltaVKmS": [0.01, 0, 0], "frame": "body" }] });
+        assert!(flown(impulsive).unwrap_err().contains("finite burns only"));
+
+        // Sequences resolve body-frame burns with their frame.
+        let mut propagation = base.clone();
+        json_merge(&mut propagation, burn("body"));
+        let object = propagation.as_object_mut().unwrap();
+        object.remove("finiteBurns");
+        object.remove("durationS");
+        let commands: Vec<CommandOptions> = serde_json::from_str(
+            r#"[{ "finiteBurn": { "durationS": 300, "thrustN": 200, "ispS": 300,
+                                  "direction": [1, 0, 0], "frame": "body" } },
+                { "propagate": { "durationS": 600 } }]"#,
+        )
+        .unwrap();
+        let out = run_sequence(&propagation, &commands).unwrap();
+        assert_eq!(out.propagation["finiteBurns"][0]["frame"], "body");
+        assert!(out.propagation.get("attitude").is_some());
+    }
+
+    /// Recursive object merge, `patch` over `json`.
+    fn json_merge(json: &mut serde_json::Value, patch: serde_json::Value) {
+        match (json, patch) {
+            (serde_json::Value::Object(a), serde_json::Value::Object(b)) => {
+                for (k, v) in b {
+                    json_merge(a.entry(k).or_insert(serde_json::Value::Null), v);
+                }
+            }
+            (a, b) => *a = b,
+        }
     }
 
     #[test]

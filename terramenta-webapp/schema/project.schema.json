@@ -820,7 +820,12 @@
             "dragAreaM2": { "type": "number", "minimum": 0 },
             "dragCoefficient": { "type": "number", "minimum": 0 },
             "srpAreaM2": { "type": "number", "minimum": 0 },
-            "reflectivity": { "type": "number", "minimum": 0 }
+            "reflectivity": { "type": "number", "minimum": 0 },
+            "plates": {
+              "description": "Flat plates, body axes, under the spacecraft's attitude profile: replace dragAreaM2, srpAreaM2, reflectivity.",
+              "type": "array",
+              "items": { "$ref": "#/$defs/plate" }
+            }
           }
         },
         "forces": {
@@ -882,6 +887,17 @@
         "processNoiseKm2S3": { "$ref": "#/$defs/sigma3", "description": "White acceleration spectral density per axis, km²/s³." }
       }
     },
+    "plate": {
+      "type": "object",
+      "required": ["normal", "areaM2"],
+      "additionalProperties": false,
+      "properties": {
+        "normal": { "$ref": "#/$defs/vector3", "description": "Outward, body axes." },
+        "areaM2": { "type": "number", "minimum": 0 },
+        "specular": { "type": "number", "minimum": 0, "maximum": 1, "description": "Default 0." },
+        "diffuse": { "type": "number", "minimum": 0, "maximum": 1, "description": "Default 0; absorbed 1 − specular − diffuse." }
+      }
+    },
     "sigma3": { "type": "array", "items": { "type": "number", "minimum": 0 }, "minItems": 3, "maxItems": 3 },
     "maneuver": {
       "description": "Impulsive.",
@@ -913,8 +929,8 @@
         "ispS": { "type": "number", "exclusiveMinimum": 0 },
         "direction": { "$ref": "#/$defs/vector3" },
         "frame": {
-          "enum": ["vnb", "rsw", "ric", "lvlh", "inertial", "gcrf", "eci"],
-          "description": "Default vnb."
+          "enum": ["vnb", "rsw", "ric", "lvlh", "inertial", "gcrf", "eci", "body"],
+          "description": "Default vnb; body: body axes under the spacecraft's attitude profile."
         }
       }
     },
@@ -972,7 +988,7 @@
         "thrustN": { "type": "number", "exclusiveMinimum": 0 },
         "ispS": { "type": "number", "exclusiveMinimum": 0 },
         "direction": { "$ref": "#/$defs/vector3" },
-        "frame": { "enum": ["vnb", "rsw", "ric", "lvlh", "inertial", "gcrf", "eci"], "description": "Default vnb." }
+        "frame": { "enum": ["vnb", "rsw", "ric", "lvlh", "inertial", "gcrf", "eci", "body"], "description": "Default vnb; body: under the attitude profile." }
       }
     },
     "sequenceTarget": {

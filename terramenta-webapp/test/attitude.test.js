@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { beforeEach, test } from "node:test";
 import * as globe from "../src/globe.js";
 import {
+  flightOptions,
+  needsAttitude,
   attitudeAem,
   attitudeResult,
   attitudesSection,
@@ -39,7 +41,21 @@ const NADIR = {
 };
 const { station: _station, ...UNSITED } = NADIR;
 const SVALBARD = { id: "svalbard", latDeg: 78.23, lonDeg: 15.39, altKm: 0.5 };
-
+const STATE = {
+  view: "globe",
+  frame: { mode: "eci" },
+  sun: { unixSeconds: 0, timeScale: 1, paused: false, shaded: true },
+  camera: { center: { lat: 0, lon: 0 }, altitudeKm: 20_000 },
+  imagery: { enabled: true, layerIndex: 0 },
+  vectorTiles: { enabled: false, layerIndex: 0, style: { pointColor: "#fff", pointSizePx: 4, lineColor: "#fff", lineWidthPx: 1, fillColor: "#fff" } },
+  overlays: { enabled: true, picking: false, layers: [] },
+  ephemerides: { enabled: true, layers: [] },
+  missions: [],
+  placemarks: { enabled: true },
+  gnc: { enabled: false, eciAxes: false, ecefAxes: false, graticule: false, graticuleStepDeg: 15, sidereal: false, track: false, trackOrbits: 1 },
+  hud: { visible: false, helpVisible: false },
+  keyboard: true,
+};
 let calls;
 beforeEach(() => {
   calls = attachFake();
@@ -139,21 +155,8 @@ test("projects: references checked; capture keeps profiles of present spacecraft
   setAttitude(NADIR);
   setAttitude({ ...NADIR, spacecraft: "gone" });
   assert.deepEqual(attitudesSection({ spacecraftIds: new Set(["sat"]) }), { attitudes: [NADIR] });
-  const state = {
-    view: "globe",
-    frame: { mode: "eci" },
-    sun: { unixSeconds: 0, timeScale: 1, paused: false, shaded: true },
-    camera: { center: { lat: 0, lon: 0 }, altitudeKm: 20_000 },
-    imagery: { enabled: true, layerIndex: 0 },
-    vectorTiles: { enabled: false, layerIndex: 0, style: { pointColor: "#fff", pointSizePx: 4, lineColor: "#fff", lineWidthPx: 1, fillColor: "#fff" } },
-    overlays: { enabled: true, picking: false, layers: [] },
-    ephemerides: { enabled: true, layers: [] },
-    missions: [],
-    placemarks: { enabled: true },
-    gnc: { enabled: false, eciAxes: false, ecefAxes: false, graticule: false, graticuleStepDeg: 15, sidereal: false, track: false, trackOrbits: 1 },
-    hud: { visible: false, helpVisible: false },
-    keyboard: true,
-  };
+  const state = STATE;
+
   addStation(SVALBARD);
   const captured = captureProject(state, { name: "Test" });
   assert.deepEqual(captured.attitudes, [NADIR]);
@@ -181,4 +184,44 @@ test("sensors without a direction are drawn with their footprint, not sampled", 
   assert.equal(attitudeResult("sat").result.sensorAnglesDeg.length, 1);
   assert.equal(fovName(imager.fov), "10° × 2°");
   assert.equal(fovName({ halfAngleDeg: 20 }), "cone 20°");
+});
+
+test("plates and body burns fly the profile; editing it re-flies, saving drops it", () => {
+  addStation(SVALBARD);
+  const plated = { ...PROPAGATION, vehicle: { massKg: 500, plates: [{ normal: [1, 0, 0], areaM2: 2 }] } };
+  assert.equal(needsAttitude(PROPAGATION), false);
+  assert.equal(needsAttitude(plated), true);
+  assert.equal(needsAttitude({ ...PROPAGATION, finiteBurns: [{ frame: "body" }] }), true);
+  assert.equal(needsAttitude(PROPAGATION, [{ target: { sequence: [{ finiteBurn: { frame: "body" } }] } }]), true);
+  assert.deepEqual(flightOptions("sat", plated), {});
+
+  assert.throws(() => globe.addSpacecraft("sat", plated, {}, flightOptions("sat", plated)), /require an attitude/);
+  assert.match(globe.recordedSources().spacecraft.get("sat").error, /attitude/);
+  setAttitude(NADIR);
+  const entry = globe.recordedSources().spacecraft.get("sat");
+  assert.equal(entry.error, null);
+  assert.deepEqual(entry.propagation.attitude, {
+    primary: NADIR.primary,
+    secondary: NADIR.secondary,
+    target: { latDeg: 78.23, lonDeg: 15.39, altKm: 0.5 },
+  });
+  assert.equal(entry.base.attitude, undefined);
+  const captured = captureProject(STATE, { name: "Test" });
+  assert.doesNotThrow(() => parseProject(captured));
+  const saved = captured.spacecraft[0];
+  assert.equal(saved.propagation.attitude, undefined);
+  assert.deepEqual(saved.propagation.vehicle, plated.vehicle);
+
+  // Re-adding from the flown propagation keeps it (OD, targeting).
+  globe.addSpacecraft("sat", entry.propagation, {});
+  assert.deepEqual(globe.recordedSources().spacecraft.get("sat").propagation.attitude, entry.propagation.attitude);
+
+  removeAttitude("sat");
+  assert.match(globe.recordedSources().spacecraft.get("sat").error, /attitude/);
+  // Uncoupled spacecraft are not re-flown.
+  globe.addSpacecraft("other", PROPAGATION, {});
+  const before = globe.recordedSources().spacecraft.get("other");
+  setAttitude({ ...NADIR, spacecraft: "other" });
+  assert.equal(globe.recordedSources().spacecraft.get("other"), before);
+  assert.equal(before.propagation.attitude, undefined);
 });

@@ -1,6 +1,7 @@
 //! Atmospheric drag, co-rotating atmosphere.
 //!
 //! `a = −½ ρ (C_D A / m) |v_r| v_r`, `v_r` = velocity relative to the body-fixed frame.
+//! With plates, `A` is the area facing `v_r` under the attitude.
 
 use std::sync::Arc;
 
@@ -226,11 +227,17 @@ impl ForceModel for Drag {
         }
         let v_rel = bf.rotation().transpose() * fixed.velocity_km_s;
         let v = ctx.vehicle;
+        let area = match ctx.attitude {
+            Some(q) if !v.plates.is_empty() => {
+                let Some(flow) = (q.inverse() * v_rel).try_normalize() else {
+                    return DVec3::ZERO;
+                };
+                v.plates.iter().map(|p| p.projected_area_m2(flow)).sum()
+            }
+            _ => v.drag_area_m2,
+        };
         // ρ [kg/m³] · v² [km²/s² → 1e6 m²/s²] / m → m/s² → 1e-3 km/s²: net 1e3.
-        -0.5 * rho * v.drag_coefficient * v.drag_area_m2 / ctx.mass_kg
-            * v_rel.length()
-            * v_rel
-            * 1e3
+        -0.5 * rho * v.drag_coefficient * area / ctx.mass_kg * v_rel.length() * v_rel * 1e3
     }
 
     fn requires_body_fixed(&self) -> bool {

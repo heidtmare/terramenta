@@ -17,7 +17,7 @@
 use glam::DVec3;
 
 use crate::force::EGM2008_GM_KM3_S2;
-use crate::maneuver::{FiniteBurn, ImpulsiveManeuver, LocalFrame};
+use crate::maneuver::{BurnFrame, FiniteBurn, ImpulsiveManeuver, LocalFrame};
 use crate::propagate::{PropagationError, Propagator, SpacecraftState};
 use crate::targeting::{self, Variable};
 use crate::time::Epoch;
@@ -235,7 +235,7 @@ pub enum Action {
         isp_s: f64,
         /// Unit vector in `frame`.
         direction: DVec3,
-        frame: LocalFrame,
+        frame: BurnFrame,
     },
     Target(Box<Target>),
 }
@@ -949,7 +949,7 @@ mod tests {
             thrust_n: 400.0,
             isp_s: 300.0,
             direction: DVec3::X,
-            frame: LocalFrame::Vnb,
+            frame: LocalFrame::Vnb.into(),
         };
         let out = run(
             &two_body(),
