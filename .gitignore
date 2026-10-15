@@ -20,3 +20,7 @@
 
 # Kernels and EOP for terramenta-solare, fetched by terramenta-solare/scripts/fetch-data.sh.
 /terramenta-solare/data
+
+# Frames captured by docs/tour.mjs, and its Playwright install.
+/docs/tour-frames
+/node_modules
