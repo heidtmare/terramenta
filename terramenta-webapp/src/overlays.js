@@ -25,6 +25,7 @@ import { COVERAGE_LAYER } from "./coverage.js";
 import { STATION_LAYER } from "./events.js";
 import { CATALOGUE, DEFAULT_FEED } from "./feeds.js";
 import { duration } from "./format.js";
+import { OVERLAY_COLORS as PALETTE } from "./palette.js";
 import { button, setUnlessFocused, toggle } from "./widgets.js";
 
 /**
@@ -35,7 +36,6 @@ import { button, setUnlessFocused, toggle } from "./widgets.js";
  * and bright. Layers cycle through them so that a second one does not arrive
  * looking exactly like the first.
  */
-const PALETTE = ["#ff9e3d", "#7fd4ff", "#ffe066", "#ff7aa2", "#9df08a"];
 
 /** Next palette colour: by how many overlays the open project has. */
 const nextColor = () => PALETTE[globe.recordedSources().overlays.size % PALETTE.length];

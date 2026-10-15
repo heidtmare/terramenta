@@ -23,6 +23,7 @@
 
 import { savedStations } from "./events.js";
 import * as globe from "./globe.js";
+import { SENSOR_COLOR } from "./palette.js";
 
 export const DIRECTIONS = {
   nadir: "Nadir",
@@ -35,7 +36,7 @@ export const DIRECTIONS = {
   antiSun: "Anti-sun",
   target: "Target",
 };
-export const SENSOR_COLOR = "#ffcc33";
+export { SENSOR_COLOR };
 export const DEFAULT_STEP_S = 60;
 
 let profiles = [];

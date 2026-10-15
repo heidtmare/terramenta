@@ -21,11 +21,11 @@ import { mountTargeting } from "./targeting-panel.js";
 import * as globe from "./globe.js";
 import { download, el, row, section } from "./dom.js";
 import { clock, duration, utcSeconds } from "./format.js";
+import { SPACECRAFT_COLORS as PALETTE } from "./palette.js";
 import { PROJECT_VERSION, layerDisplay, parseProject } from "./project.js";
 import { segmentRows } from "./sequence.js";
 import { button, rowList, toggle } from "./widgets.js";
 
-const PALETTE = ["#ffb86b", "#ff8fa3", "#c3ff7a", "#ffe66b", "#7affea"];
 const nextColor = () => PALETTE[globe.recordedSources().spacecraft.size % PALETTE.length];
 
 const MU_EARTH = 398_600.4418;
