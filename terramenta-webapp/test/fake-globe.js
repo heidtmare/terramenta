@@ -124,6 +124,47 @@ export function attachFake({ objects = {} } = {}) {
         })),
       };
     },
+    /** Batch: two iterations; EKF: history. One residual per station and tracking type; truth error when simulated. Throws without observations. */
+    determineOrbit: ({ propagation, stations = [], simulate, tdm, estimator = "batch", solveFor = [], exportTdm }) => {
+      if (!simulate && !tdm) throw new Error("no observations");
+      const t0 = Date.parse("2026-01-01T00:00:00Z") / 1000;
+      const residuals = (simulate?.tracking ?? [{ type: "range" }]).flatMap((t, index) =>
+        (t.type.startsWith("position") ? [null] : t.station ? [t.station] : stations.map((s) => s.id)).map((station) => ({
+          time: t0 + 60 * index,
+          ...(station ? { station } : {}),
+          type: t.type,
+          observed: 1000,
+          residual: 0.002 * (index + 1),
+          ...(estimator === "ekf" ? { postFit: 0.001 } : {}),
+          sigma: 0.01,
+          edited: false,
+        })),
+      );
+      const epoch = estimator === "ekf" ? "2026-01-01T06:00:00.000000000Z" : propagation.initial.epoch;
+      return {
+        estimator,
+        converged: true,
+        epoch: Date.parse(epoch) / 1000,
+        positionKm: [7000, 0, 0],
+        velocityKmS: [0, 3, 7],
+        sigmaRsw: [0.01, 0.03, 0.01, 1e-5, 1e-5, 1e-5],
+        covariance: Array.from({ length: 21 }, (_, i) => ([0, 2, 5, 9, 14, 20].includes(i) ? 1e-4 : 0)),
+        parameters: solveFor.map(({ parameter }) => ({ parameter, apriori: 2.2, value: 2.4, sigma: 0.05 })),
+        iterations: estimator === "batch" ? [{ rms: 40, accepted: residuals.length, edited: 0, correctionKm: 10, correctionKmS: 0.01 }, { rms: 1, accepted: residuals.length, edited: 0, correctionKm: 0.001, correctionKmS: 1e-6 }] : [],
+        residuals,
+        rms: 1,
+        observations: residuals.length,
+        edited: 0,
+        ...(estimator === "ekf" ? { history: { times: [t0, t0 + 60], sigmaRsw: [[1, 2, 1, 0, 0, 0], [0.01, 0.03, 0.01, 0, 0, 0]] } } : {}),
+        ...(simulate ? { truthErrorRsw: [0.005, -0.01, 0.002, 0, 0, 0] } : {}),
+        estimate: {
+          initial: { epoch, positionKm: [7000, 0, 0], velocityKmS: [0, 3, 7] },
+          covariance: { frame: "gcrf", lowerTriangle: [] },
+          vehicle: Object.fromEntries(solveFor.map(({ parameter }) => [parameter, 2.4])),
+        },
+        ...(exportTdm ? { tdm: "CCSDS_TDM_VERS = 2.0\n" } : {}),
+      };
+    },
   };
   const module = new Proxy(
     {},
@@ -147,5 +188,5 @@ export const commands = (calls) =>
   calls
     .map(([name]) => name)
     .filter(
-      (name) => !(name in { layers: 0, vectorLayers: 0, limits: 0, ephemerisObjects: 0, propagationEnvironment: 0, findEvents: 0, target: 0, attitude: 0, coverage: 0, conjunctions: 0 }),
+      (name) => !(name in { layers: 0, vectorLayers: 0, limits: 0, ephemerisObjects: 0, propagationEnvironment: 0, findEvents: 0, target: 0, attitude: 0, coverage: 0, conjunctions: 0, determineOrbit: 0 }),
     );

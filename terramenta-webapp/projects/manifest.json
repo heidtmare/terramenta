@@ -43,5 +43,10 @@
     "file": "conjunction-screening.terramenta.json",
     "name": "Conjunction screening",
     "description": "Satellite vs a crossing debris object and the Celestrak visual catalogue: TCA, miss distance, Pc, CDM export."
+  },
+  {
+    "file": "orbit-determination.terramenta.json",
+    "name": "Orbit determination",
+    "description": "Simulated radar and GNSS tracking of a 450 km satellite: batch least squares with Cd, EKF, single-station fit; residuals, 1σ vs truth error, TDM export."
   }
 ]

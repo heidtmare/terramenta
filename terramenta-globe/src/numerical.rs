@@ -53,7 +53,7 @@ pub struct Environment {
 
 static ENVIRONMENT: LazyLock<RwLock<Environment>> = LazyLock::new(Default::default);
 
-fn environment() -> std::sync::RwLockReadGuard<'static, Environment> {
+pub(crate) fn environment() -> std::sync::RwLockReadGuard<'static, Environment> {
     ENVIRONMENT.read().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -176,7 +176,7 @@ pub struct CovarianceOptions {
 
 impl CovarianceOptions {
     /// `(frame, P₀ in frame, noise)`.
-    fn resolve(&self) -> Result<(LocalFrame, Matrix6, Option<ProcessNoise>), String> {
+    pub(crate) fn resolve(&self) -> Result<(LocalFrame, Matrix6, Option<ProcessNoise>), String> {
         let frame = match self
             .frame
             .as_deref()
@@ -473,7 +473,7 @@ pub struct CovarianceInfo {
 }
 
 /// Now, UTC, `YYYY-MM-DDThh:mm:ss.sss` (CCSDS `CREATION_DATE`).
-fn creation_date() -> String {
+pub(crate) fn creation_date() -> String {
     #[cfg(target_arch = "wasm32")]
     let iso = String::from(js_sys::Date::new_0().to_iso_string());
     #[cfg(not(target_arch = "wasm32"))]
@@ -486,7 +486,7 @@ fn creation_date() -> String {
     iso.trim_end_matches('Z').chars().take(23).collect()
 }
 
-fn epoch(s: &str) -> Result<Epoch, String> {
+pub(crate) fn epoch(s: &str) -> Result<Epoch, String> {
     TimeSystem::Utc
         .parse_epoch(s)
         .ok_or_else(|| format!("bad UTC epoch {s:?}"))
@@ -538,7 +538,10 @@ impl Ephemeris for Shared {
     }
 }
 
-fn propagator(req: &PropagationRequest, env: &Environment) -> Result<Propagator, String> {
+pub(crate) fn propagator(
+    req: &PropagationRequest,
+    env: &Environment,
+) -> Result<Propagator, String> {
     let i = &req.integrator;
     let method = match i.method.to_ascii_lowercase().as_str() {
         "dop853" => Method::Dop853,
@@ -644,6 +647,64 @@ fn propagator(req: &PropagationRequest, env: &Environment) -> Result<Propagator,
 
 pub fn propagate(req: &PropagationRequest) -> Result<Propagated, String> {
     let env = environment();
+    let (sc, start) = spacecraft_at_start(req, &env)?;
+    let stop = match (&req.stop, req.duration_s) {
+        (Some(s), _) => epoch(s)?,
+        (None, Some(d)) => start.advanced_by_seconds(d),
+        (None, None) => return Err("need stop or durationS".into()),
+    };
+    let step = req.step_s.abs();
+    if step.is_nan() || step <= 0.0 || stop.seconds_since(start).abs() / step > MAX_SAMPLES as f64 {
+        return Err(format!(
+            "stepS must be positive and yield ≤ {MAX_SAMPLES} samples"
+        ));
+    }
+    let (states, covariances) = match &req.covariance {
+        None => (
+            sc.samples(stop, step).map_err(|e| e.to_string())?,
+            Vec::new(),
+        ),
+        Some(options) => {
+            let (frame, p0, noise) = options.resolve()?;
+            let mut p = numerical_propagator(&sc);
+            let s0 = *sc.state();
+            let p0 = covariance::from_local(&p0, frame, s0.position_km, s0.velocity_km_s);
+            let mut linear = CovariancePropagation::new(p0, noise);
+            let (mut states, mut covariances) = (Vec::new(), Vec::new());
+            p.propagate_stm_with(&s0, stop, step, |s, phi| {
+                let t = s.epoch.seconds_since(s0.epoch);
+                covariances.push(linear.sample(t, phi, s.position_km, s.velocity_km_s));
+                states.push(*s);
+            })
+            .map_err(|e| e.to_string())?;
+            (states, covariances)
+        }
+    };
+    let name = req.name.clone().unwrap_or_else(|| "SPACECRAFT".into());
+    Ok(Propagated {
+        object_id: req.object_id.clone().unwrap_or_else(|| name.clone()),
+        name,
+        naif_id: req.naif_id.unwrap_or(DEFAULT_NAIF_ID),
+        states,
+        covariances,
+    })
+}
+
+/// The Cowell propagator of a spacecraft from [`spacecraft_at_start`], with its vehicle.
+pub(crate) fn numerical_propagator(sc: &Spacecraft) -> Propagator {
+    let Propagation::Numerical(p) = sc.propagation() else {
+        unreachable!("numerical from start");
+    };
+    let mut p = (**p).clone();
+    p.vehicle = sc.vehicle;
+    p
+}
+
+/// The spacecraft at `start` (default: initial epoch), numerical from there, and `start`.
+pub(crate) fn spacecraft_at_start(
+    req: &PropagationRequest,
+    env: &Environment,
+) -> Result<(Spacecraft, Epoch), String> {
     let mass = req.vehicle.mass_kg;
     if mass.is_nan() || mass <= 0.0 {
         return Err("vehicle.massKg must be positive".into());
@@ -656,7 +717,7 @@ pub fn propagate(req: &PropagationRequest) -> Result<Propagated, String> {
             .unwrap_or_default();
         Spacecraft::from_sgp4("", s.with_eop(eop), mass).map_err(|e| e.to_string())
     };
-    let numerical = || Ok::<_, String>(Propagation::Numerical(Box::new(propagator(req, &env)?)));
+    let numerical = || Ok::<_, String>(Propagation::Numerical(Box::new(propagator(req, env)?)));
     let mut sc = match &req.initial {
         Initial::Tle { tle } => {
             sgp4(Sgp4Ephemeris::from_tle(&tle[0], &tle[1]).map_err(|e| e.to_string())?)?
@@ -693,17 +754,6 @@ pub fn propagate(req: &PropagationRequest) -> Result<Propagated, String> {
         .map(epoch)
         .transpose()?
         .unwrap_or(sc.epoch());
-    let stop = match (&req.stop, req.duration_s) {
-        (Some(s), _) => epoch(s)?,
-        (None, Some(d)) => start.advanced_by_seconds(d),
-        (None, None) => return Err("need stop or durationS".into()),
-    };
-    let step = req.step_s.abs();
-    if step.is_nan() || step <= 0.0 || stop.seconds_since(start).abs() / step > MAX_SAMPLES as f64 {
-        return Err(format!(
-            "stepS must be positive and yield ≤ {MAX_SAMPLES} samples"
-        ));
-    }
     // SGP4 carries TLE/OMM to `start`; a state is numerical from its own epoch so
     // maneuvers between it and `start` apply.
     sc.step_to(start).map_err(|e| e.to_string())?;
@@ -711,39 +761,7 @@ pub fn propagate(req: &PropagationRequest) -> Result<Propagated, String> {
         sc.vehicle = req.vehicle.resolve();
         sc.set_propagation(numerical()?);
     }
-    let (states, covariances) = match &req.covariance {
-        None => (
-            sc.samples(stop, step).map_err(|e| e.to_string())?,
-            Vec::new(),
-        ),
-        Some(options) => {
-            let (frame, p0, noise) = options.resolve()?;
-            let Propagation::Numerical(p) = sc.propagation() else {
-                unreachable!("numerical from start");
-            };
-            let mut p = (**p).clone();
-            p.vehicle = sc.vehicle;
-            let s0 = *sc.state();
-            let p0 = covariance::from_local(&p0, frame, s0.position_km, s0.velocity_km_s);
-            let mut linear = CovariancePropagation::new(p0, noise);
-            let (mut states, mut covariances) = (Vec::new(), Vec::new());
-            p.propagate_stm_with(&s0, stop, step, |s, phi| {
-                let t = s.epoch.seconds_since(s0.epoch);
-                covariances.push(linear.sample(t, phi, s.position_km, s.velocity_km_s));
-                states.push(*s);
-            })
-            .map_err(|e| e.to_string())?;
-            (states, covariances)
-        }
-    };
-    let name = req.name.clone().unwrap_or_else(|| "SPACECRAFT".into());
-    Ok(Propagated {
-        object_id: req.object_id.clone().unwrap_or_else(|| name.clone()),
-        name,
-        naif_id: req.naif_id.unwrap_or(DEFAULT_NAIF_ID),
-        states,
-        covariances,
-    })
+    Ok((sc, start))
 }
 
 /// [`propagate`] without covariance, for analyses of the trajectory alone.
@@ -764,7 +782,7 @@ fn arcs<T>(states: &[(Epoch, T)]) -> impl Iterator<Item = &[(Epoch, T)]> {
 
 impl Propagated {
     /// Time-ordered states.
-    fn ordered_states(&self) -> Vec<(Epoch, StateVector)> {
+    pub(crate) fn ordered_states(&self) -> Vec<(Epoch, StateVector)> {
         self.ordered()
             .into_iter()
             .map(|(e, (s, _))| (e, s))
@@ -949,7 +967,7 @@ fn default_event_step() -> f64 {
     30.0
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StationOptions {
     pub id: String,
@@ -965,7 +983,7 @@ pub struct StationOptions {
 }
 
 impl StationOptions {
-    fn station(&self) -> Result<GroundStation, String> {
+    pub(crate) fn station(&self) -> Result<GroundStation, String> {
         let bad = |what: &str| Err(format!("station {:?}: bad {what}", self.id));
         if !(-90.0..=90.0).contains(&self.lat_deg) || !self.lon_deg.is_finite() {
             return bad("latitude/longitude");
