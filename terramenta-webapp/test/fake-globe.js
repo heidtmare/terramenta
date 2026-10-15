@@ -120,6 +120,13 @@ export function attachFake({ objects = {} } = {}) {
       const times = [0, 1, 2, 3].map((i) => t0 + i * 3600);
       return { times, coords: times.map((_, i) => [((150 + 30 * i + 180) % 360) - 180, 10 * i, 400]), stepS };
     },
+    /** Flat ground 120 m; a 3° ridge from 80° to 100° azimuth. Throws on a short mosaic. */
+    terrainHorizon: ({ tiles, azimuthStepDeg = 1 }, rgba) => {
+      if (rgba.length !== 4 * tiles.columns * tiles.rows * tiles.tileSize ** 2) throw new Error("bad mosaic");
+      const horizon = [];
+      for (let az = 0; az < 360; az += azimuthStepDeg) horizon.push([az, az >= 80 && az <= 100 ? 3 : -0.05]);
+      return { groundM: 120, horizon };
+    },
     /** Two cells per resolution step; the first covered when any spacecraft is given. Throws with no spacecraft. */
     coverage: ({ spacecraft = [], resolution = 3, stepS = 60, boundaries }) => {
       if (!spacecraft.length) throw new Error("coverage needs a spacecraft");
@@ -233,5 +240,5 @@ export const commands = (calls) =>
   calls
     .map(([name]) => name)
     .filter(
-      (name) => !(name in { layers: 0, vectorLayers: 0, limits: 0, ephemerisObjects: 0, propagationEnvironment: 0, findEvents: 0, target: 0, attitude: 0, coverage: 0, groundTrack: 0, conjunctions: 0, determineOrbit: 0 }),
+      (name) => !(name in { layers: 0, vectorLayers: 0, limits: 0, ephemerisObjects: 0, propagationEnvironment: 0, findEvents: 0, target: 0, attitude: 0, coverage: 0, groundTrack: 0, terrainHorizon: 0, conjunctions: 0, determineOrbit: 0 }),
     );

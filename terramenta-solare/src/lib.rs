@@ -51,6 +51,7 @@ pub mod spice;
 pub mod spk;
 pub mod sun;
 pub mod targeting;
+pub mod terrain;
 pub mod time;
 pub mod tle;
 

@@ -1279,6 +1279,133 @@ pub fn find_events(propagated: &Propagated, req: &EventRequest) -> Result<Events
     Ok(out)
 }
 
+// --- Terrain --------------------------------------------------------------------------
+
+/// Terrain horizon mask from a Terrarium tile mosaic.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerrainHorizonRequest {
+    pub lat_deg: f64,
+    pub lon_deg: f64,
+    pub tiles: TileMosaic,
+    #[serde(default = "default_azimuth_step")]
+    pub azimuth_step_deg: f64,
+    #[serde(default = "default_terrain_range")]
+    pub max_range_km: f64,
+    /// Default: one pixel at the station.
+    #[serde(default)]
+    pub step_km: Option<f64>,
+    #[serde(default = "default_observer_height")]
+    pub height_above_ground_m: f64,
+    #[serde(default)]
+    pub refraction: f64,
+    /// Heights below this are raised to it, m; default 0 (sea surface over bathymetry).
+    /// `null`: none.
+    #[serde(default = "default_floor")]
+    pub floor_m: Option<f64>,
+}
+
+fn default_floor() -> Option<f64> {
+    Some(0.0)
+}
+
+/// XYZ tile block; pixels passed separately as RGBA, row-major, north-west first.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TileMosaic {
+    pub zoom: u8,
+    pub x0: u32,
+    pub y0: u32,
+    pub columns: u32,
+    pub rows: u32,
+    #[serde(default = "default_tile_size")]
+    pub tile_size: u32,
+}
+
+fn default_azimuth_step() -> f64 {
+    1.0
+}
+
+fn default_terrain_range() -> f64 {
+    50.0
+}
+
+fn default_observer_height() -> f64 {
+    2.0
+}
+
+fn default_tile_size() -> u32 {
+    256
+}
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct TerrainHorizon {
+    /// DEM height at the station, m (DEM datum).
+    pub ground_m: f64,
+    /// `[azimuthDeg, elevationDeg]`, as [`StationOptions::horizon`].
+    pub horizon: Vec<[f64; 2]>,
+}
+
+pub fn terrain_horizon(req: &TerrainHorizonRequest, rgba: &[u8]) -> Result<TerrainHorizon, String> {
+    use terramenta_solare::terrain::{self, HorizonOptions, MercatorTiles};
+    let t = &req.tiles;
+    if t.zoom > 20 || t.columns * t.rows > 1024 {
+        return Err("tiles: zoom ≤ 20, at most 1024 tiles".into());
+    }
+    if !(0.05..=90.0).contains(&req.azimuth_step_deg)
+        || !(0.0..=500.0).contains(&req.max_range_km)
+        || req.max_range_km == 0.0
+    {
+        return Err("azimuthStepDeg in [0.05, 90], maxRangeKm in (0, 500]".into());
+    }
+    let mut dem = MercatorTiles::from_terrarium_rgba(
+        t.zoom,
+        (t.x0, t.y0),
+        (t.columns, t.rows),
+        t.tile_size,
+        rgba,
+    )
+    .map_err(|e| e.to_string())?;
+    if let Some(floor) = req.floor_m {
+        let floor = floor as f32;
+        // `f32::max` would fill voids (NaN).
+        for h in dem.heights_m.iter_mut().filter(|h| **h < floor) {
+            *h = floor;
+        }
+    }
+    let (lat, lon) = (req.lat_deg.to_radians(), req.lon_deg.to_radians());
+    let step_km = req
+        .step_km
+        .unwrap_or_else(|| dem.pixel_m(lat) * 1e-3)
+        .max(req.max_range_km / 20_000.0);
+    let horizon = terrain::horizon_mask(
+        &dem,
+        lat,
+        lon,
+        &HorizonOptions {
+            azimuth_step_rad: req.azimuth_step_deg.to_radians(),
+            max_range_km: req.max_range_km,
+            step_km,
+            observer_height_m: req.height_above_ground_m,
+            refraction: req.refraction,
+        },
+    )
+    .ok_or("no DEM height at the station")?;
+    Ok(TerrainHorizon {
+        ground_m: horizon.ground_m,
+        horizon: horizon
+            .mask
+            .iter()
+            .map(|&(az, el)| {
+                // 1e-4° keeps the mask compact in project files.
+                let r = |x: f64| (x.to_degrees() * 1e4).round() / 1e4;
+                [r(az).min(359.9999), r(el)]
+            })
+            .collect(),
+    })
+}
+
 // --- Targeting ------------------------------------------------------------------------
 
 /// `target` options.
@@ -4063,5 +4190,26 @@ mod tests {
         assert!(screen(&req, &[]).unwrap().conjunctions.is_empty());
         req.secondaries[1].omm = Some(serde_json::json!({}));
         assert!(screen(&req, &[]).unwrap_err().contains("one of"));
+    }
+
+    #[test]
+    fn terrain_horizon_from_terrarium() {
+        // 2 × 2 tiles at zoom 10 around (0, 0): flat 500 m.
+        let (x0, y0, columns, rows) = terramenta_solare::terrain::tile_range(0.0, 0.0, 20.0, 10);
+        let n = (columns * rows) as usize * 256 * 256;
+        let v = 500.0 + 32768.0;
+        let px = [(v / 256.0f64).floor() as u8, (v % 256.0) as u8, 0, 255];
+        let rgba: Vec<u8> = px.iter().copied().cycle().take(4 * n).collect();
+        let req: TerrainHorizonRequest = serde_json::from_value(serde_json::json!({
+            "latDeg": 0.0, "lonDeg": 0.0, "azimuthStepDeg": 10, "maxRangeKm": 15,
+            "tiles": { "zoom": 10, "x0": x0, "y0": y0, "columns": columns, "rows": rows },
+        }))
+        .unwrap();
+        let out = terrain_horizon(&req, &rgba).unwrap();
+        assert!((out.ground_m - 500.0).abs() < 1e-6);
+        assert_eq!(out.horizon.len(), 36);
+        assert_eq!(out.horizon[9][0], 90.0);
+        assert!(out.horizon.iter().all(|&[_, el]| (-0.1..0.0).contains(&el)));
+        assert!(terrain_horizon(&req, &rgba[4..]).is_err());
     }
 }
