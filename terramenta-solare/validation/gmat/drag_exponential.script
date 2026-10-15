@@ -1,0 +1,62 @@
+% terramenta-solare GMAT reference: drag_exponential. Run via scripts/gmat-reference.sh.
+SolarSystem.EphemerisSource = 'SPICE';
+SolarSystem.SPKFilename = '@SPK@';
+Earth.NutationUpdateInterval = 0;
+Earth.EquatorialRadius = 6378.137;
+Earth.Flattening = 0.0033528106647474805;
+Sun.Mu = 132712440018;
+Luna.Mu = 4902.800118;
+
+Create Spacecraft Sat;
+Sat.DateFormat = UTCGregorian;
+Sat.Epoch = '01 Mar 2024 00:00:00.000';
+Sat.CoordinateSystem = EarthICRF;
+Sat.DisplayStateType = Cartesian;
+Sat.X = 6778.137;
+Sat.Y = 0;
+Sat.Z = 0;
+Sat.VX = 0;
+Sat.VY = 4.7;
+Sat.VZ = 6.0;
+Sat.DryMass = 850;
+Sat.Cd = 2.2;
+Sat.DragArea = 15;
+Sat.Cr = 1.8;
+Sat.SRPArea = 20;
+
+Create ForceModel FM;
+FM.CentralBody = Earth;
+FM.PrimaryBodies = {Earth};
+FM.ErrorControl = RSSStep;
+FM.GravityField.Earth.Degree = 0;
+FM.GravityField.Earth.Order = 0;
+FM.GravityField.Earth.PotentialFile = '@COF@';
+FM.GravityField.Earth.TideModel = 'None';
+FM.SRP = Off;
+FM.RelativisticCorrection = Off;
+FM.Drag.AtmosphereModel = Exponential;
+
+Create Propagator P;
+P.FM = FM;
+P.Type = PrinceDormand78;
+P.InitialStepSize = 30;
+P.Accuracy = 1e-13;
+P.MinStep = 0;
+P.MaxStep = 120;
+P.MaxStepAttempts = 100;
+
+Create ReportFile R;
+R.Filename = '@OUT@';
+R.Precision = 17;
+R.WriteHeaders = false;
+R.LeftJustify = On;
+R.ZeroFill = Off;
+
+Create Variable i;
+
+BeginMissionSequence;
+Report R Sat.TAIModJulian Sat.EarthICRF.X Sat.EarthICRF.Y Sat.EarthICRF.Z Sat.EarthICRF.VX Sat.EarthICRF.VY Sat.EarthICRF.VZ;
+For i = 1:144
+   Propagate P(Sat) {Sat.ElapsedSecs = 600};
+   Report R Sat.TAIModJulian Sat.EarthICRF.X Sat.EarthICRF.Y Sat.EarthICRF.Z Sat.EarthICRF.VX Sat.EarthICRF.VY Sat.EarthICRF.VZ;
+EndFor;
