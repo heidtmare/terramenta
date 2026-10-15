@@ -126,6 +126,7 @@ const UNTRACKED = new Set([
   "propagateSpk",
   "findEvents",
   "target",
+  "runSequence",
   "attitude",
   "showAttitude",
   "hideAttitude",
@@ -191,7 +192,12 @@ const sources = {
   overlays: new Map(),
   ephemerides: new Map(),
   missions: new Map(),
-  /** `{propagation, display, info, error}` per `addSpacecraft` id, failed ones included. */
+  /**
+   * `{propagation, display, info, error, sequence?, base?, run?}` per
+   * `addSpacecraft` id, failed ones included. `propagation` is what flies (a
+   * sequence's resolved one); `base` the one given with `sequence`, `run` its
+   * `runSequence` result.
+   */
   spacecraft: new Map(),
   /** Ephemeris layer ids whose selection was set explicitly. */
   selected: new Set(),
@@ -753,18 +759,34 @@ export const conjunctions = (options) => required().conjunctions(options);
 export const determineOrbit = (options) => required().determineOrbit(options);
 
 /**
+ * Mission sequence from `propagation`'s initial state: `{propagation,
+ * segments: [{label?, kind, depth, start, stop, massKg, deltaVKmS?, elements,
+ * target?}], deltaVKmS, finalMassKg, converged}`, `propagation` with burns and
+ * stop resolved. Synchronous; throws on bad input or an unreached stop.
+ * Commands: `sequence.js`; full option list: `terramenta-globe/src/wasm.rs`,
+ * `runSequence`.
+ */
+export const runSequence = (propagation, sequence) => required().runSequence(propagation, sequence);
+
+/**
  * Propagates `propagation` (`propagate` options; `kvn` ignored) and puts the
  * result up as ephemeris layer `id` with `display` (`addEphemeris` options,
  * `url`/`text` ignored); replaces a layer of that id. Returns `propagate`'s
- * info. Recorded even if propagation throws — the spec is kept for saving, the
- * old layer removed — then rethrows. With `propagation.covariance`, draws the
- * position ellipsoid at `display.uncertaintySigma` (default 3; 0 hides) in the
- * point colour.
+ * info. With `sequence`, flies `runSequence(propagation, sequence)`'s resolved
+ * propagation instead. Recorded even if propagation throws — the spec is kept
+ * for saving, the old layer removed — then rethrows. With
+ * `propagation.covariance`, draws the position ellipsoid at
+ * `display.uncertaintySigma` (default 3; 0 hides) in the point colour.
  */
-export function addSpacecraft(id, propagation, display = {}) {
+export function addSpacecraft(id, propagation, display = {}, sequence = undefined) {
   const entry = { propagation, display, info: null, error: null };
+  if (sequence) Object.assign(entry, { sequence, base: propagation, run: null });
   try {
-    entry.info = required().propagate({ ...propagation, kvn: false });
+    if (sequence) {
+      entry.run = required().runSequence(propagation, sequence);
+      entry.propagation = entry.run.propagation;
+    }
+    entry.info = required().propagate({ ...entry.propagation, kvn: false });
   } catch (error) {
     entry.error = error.message ?? String(error);
     required().removeEphemeris(id);

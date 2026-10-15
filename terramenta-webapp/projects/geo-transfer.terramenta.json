@@ -1,0 +1,74 @@
+{
+  "$schema": "../schema/project.schema.json",
+  "terramenta": 3,
+  "name": "GEO transfer sequence",
+  "description": "Mission sequence from a 300 km, 28.5° parking orbit: coast to the ascending node; target the transfer burn for 42 164 km radius at the descending node (apoapsis, less J2 drift); coast there; target the apogee burn (all three VNB components) for a 42 164 km semi-major axis, 0° inclination and 0° flight-path angle (circular); drift a day. EGM2008 8×8, Sun/Moon, SRP, Harris-Priester. Spacecraft tab: segment table (click a row to jump the clock), Edit shows the sequence JSON. Analysis plots semi-major axis and inclination.",
+  "ui": { "tab": "spacecraft" },
+  "frame": "eci",
+  "clock": { "epoch": "2026-03-20T00:00:00Z", "timeScale": 600, "paused": false },
+  "camera": { "lat": 15, "lon": -60, "altitudeKm": 120000 },
+  "spacecraft": [
+    {
+      "id": "geo",
+      "label": "GEO transfer",
+      "pointColor": "#ffe66b",
+      "lineColor": "#ffe66ba6",
+      "leadingOrbits": 0,
+      "trailingOrbits": 1,
+      "propagation": {
+        "name": "GEOSAT",
+        "objectId": "2026-900A",
+        "initial": {
+          "epoch": "2026-03-20T00:00:00Z",
+          "elements": { "smaKm": 6678.137, "eccentricity": 0, "inclinationDeg": 28.5, "raanDeg": 80, "argPerigeeDeg": 0, "trueAnomalyDeg": 200 }
+        },
+        "stepS": 60,
+        "vehicle": { "massKg": 6000, "dryMassKg": 1500, "dragAreaM2": 12, "srpAreaM2": 20 },
+        "forces": { "gravity": [8, 8], "drag": "harrisPriester" }
+      },
+      "sequence": [
+        { "label": "coast-to-node", "propagate": { "to": "ascendingNode" } },
+        {
+          "label": "TOI",
+          "target": {
+            "variables": [{ "command": "toi-burn", "parameter": "dv1" }],
+            "goals": [{ "quantity": "radiusKm", "value": 42164, "tolerance": 0.1 }],
+            "sequence": [
+              { "label": "toi-burn", "maneuver": { "deltaVKmS": [2.3, 0, 0], "frame": "vnb", "ispS": 320 } },
+              { "label": "transfer", "propagate": { "to": "descendingNode" } }
+            ]
+          }
+        },
+        {
+          "label": "GOI",
+          "target": {
+            "variables": [
+              { "command": "goi-burn", "parameter": "dv1" },
+              { "command": "goi-burn", "parameter": "dv2" },
+              { "command": "goi-burn", "parameter": "dv3" }
+            ],
+            "goals": [
+              { "quantity": "smaKm", "value": 42164, "tolerance": 1 },
+              { "quantity": "inclinationDeg", "value": 0, "tolerance": 0.01 },
+              { "quantity": "flightPathAngleDeg", "value": 0, "tolerance": 0.001 }
+            ],
+            "sequence": [{ "label": "goi-burn", "maneuver": { "deltaVKmS": [1.4, -0.8, 0], "frame": "vnb", "ispS": 320 } }]
+          }
+        },
+        { "label": "drift", "propagate": { "durationS": 86400 } }
+      ]
+    }
+  ],
+  "timeline": {
+    "events": [
+      { "id": "toi", "label": "Slow for TOI", "at": { "event": "geo.burn1", "offsetS": -300 }, "actions": { "timeScale": 30 } },
+      { "id": "after-toi", "label": "Transfer coast", "at": { "event": "geo.burn1", "offsetS": 300 }, "actions": { "timeScale": 600 } }
+    ]
+  },
+  "analysis": {
+    "plots": [
+      { "id": "sma", "quantity": "smaKm", "spacecraft": ["geo"] },
+      { "id": "inc", "quantity": "inclinationDeg", "spacecraft": ["geo"] }
+    ]
+  }
+}

@@ -78,7 +78,7 @@ Relative URLs resolve against the app root (the directory holding
 | `overlays` | `{enabled, picking, layers: [{id, ...addOverlay options}]}` | One of `url`/`text` per layer |
 | `ephemerides` | `{enabled, layers: [{id, ...addEphemeris options}]}` | OMM JSON or KVN OEM |
 | `environment` | `{eop, spaceWeather, kernel}` | URLs; see [Spacecraft](#spacecraft) |
-| `spacecraft` | `[{id, ...addEphemeris display options, uncertaintySigma, propagation}]` | `propagation`: `propagate` options; one of `stop`/`durationS`; `initial` a TLE, OMM, GCRF state or `{epoch, elements}`; optional `covariance`. `uncertaintySigma`: ellipsoid scale, default 3, 0 hides. Id unique across `ephemerides` |
+| `spacecraft` | `[{id, ...addEphemeris display options, uncertaintySigma, propagation}]` | `propagation`: `propagate` options; one of `stop`/`durationS`; `initial` a TLE, OMM, GCRF state or `{epoch, elements}`; optional `covariance`. `uncertaintySigma`: ellipsoid scale, default 3, 0 hides. Id unique across `ephemerides`. Optional `sequence`: see [Mission sequence](#mission-sequence) |
 | `missions` | `[{id, ...addMission options}]` | |
 | `placemarks.enabled`, `keyboard` | bool | |
 | `gnc` | `{enabled, eciAxes, ecefAxes, graticule, graticuleStepDeg, sidereal, track, trackOrbits, focus: {layer, noradId}}` | |
@@ -281,6 +281,28 @@ options)`, which re-runs the propagation.
 - Spans open at either end are clipped to the propagation span. Results are
   cached per spacecraft entry and invalidated by any station or option edit.
 - **CSV**: `utc, end_utc, event, station, max_elevation_deg`, time-ordered.
+
+## Mission sequence
+
+[`sequence.js`](src/sequence.js); runner in `terramenta-solare` `sequence` via
+`globe.runSequence(propagation, sequence)`.
+
+- A spacecraft's `sequence` is an ordered command list run from its
+  propagation's `initial` state at `start`; the propagation then has no
+  `stop`, `durationS`, `maneuvers` or `finiteBurns`. Commands: optional
+  `label` plus one of `propagate`, `maneuver`, `finiteBurn`, `target` (schema
+  `sequenceCommand`).
+- The run resolves burn epochs, Δv and stop into the flown propagation; it is
+  what the layer, reports, events, coverage, conjunctions, OD and timeline
+  (`<id>.burnN`, `<id>.finiteN`) use. Saving writes the source propagation and
+  sequence. Burn references are counted from the sequence before it runs.
+- Validation: one action per command, one stop per propagate, unique labels,
+  target variables naming a labelled command of the right kind in their own
+  `sequence`.
+- Spacecraft tab: the editor takes the sequence as JSON (LEO → GEO template);
+  each sequenced spacecraft lists its segments (span, Δv, altitude, e, i,
+  target convergence); a row sets the clock to its start.
+- Example: `projects/geo-transfer.terramenta.json`.
 
 ## Targeting
 
@@ -571,6 +593,7 @@ src/
   timeline.js            Timeline: scene/project/director events, resolution, runner
   analysis.js            Project analysis: saved plots and porkchop studies
   events.js              Ground stations, event options, findEvents cache, searched timeline events
+  sequence.js            Mission sequence validation, burn counts, segment rows
   targeting.js           Project targets, solve/apply via globe.target
   attitude.js            Project attitude profiles, sampling and drawing via globe.attitude
   coverage.js            Project coverage studies, globe.coverage runs, shading, CSV/GeoJSON

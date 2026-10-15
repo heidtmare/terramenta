@@ -109,6 +109,7 @@ from a real failure.
 | `propagate(options)` `propagateSpk(options)` | Numerical propagation → OEM text / SPK bytes |
 | `findEvents(propagation, options)` | Ground-station contacts, Earth eclipses, apsides, nodes over a propagation |
 | `target(propagation, options)` | Differential correction of a propagation's burns to meet orbit goals |
+| `runSequence(propagation, sequence)` | Mission sequence (propagate to stop conditions, maneuvers, finite burns, nested targets) resolved to a flat propagation plus segment report |
 | `attitude(propagation, options)` | Attitude under a pointing law over a propagation: quaternions, LVLH Euler angles, sensor angles, AEM |
 | `showAttitude(id, options)` / `hideAttitude(id)` | Draw the last `attitude` result on ephemeris layer `id`: body axes, sensor boresights, field-of-view footprints |
 | `showUncertainty(id, options)` / `hideUncertainty(id)` | Draw the last `propagate` covariance on ephemeris layer `id`: position ellipsoid at `sigma` |
@@ -560,6 +561,39 @@ const { converged, values, goals, maneuvers, finiteBurns } = globe.target(sameOp
   `speedKmS`, `periodMin`, `perigeeAltKm`, `apogeeAltKm`,
   `flightPathAngleDeg`, `massKg`, at `end`, `burnN`, `burnN.before`,
   `finiteN`, `finiteN.end` or a UTC epoch. Not converging is not an error.
+
+```js
+const { propagation: flown, segments, deltaVKmS, converged } = globe.runSequence(
+  { initial, vehicle, forces, stepS: 60 },               // no stop/durationS/burns
+  [
+    { propagate: { to: "ascendingNode" } },
+    { label: "TOI", target: {
+        variables: [{ command: "toi-burn", parameter: "dv1" }],
+        goals: [{ quantity: "radiusKm", value: 42164, tolerance: 0.1 }],
+        sequence: [
+          { label: "toi-burn", maneuver: { deltaVKmS: [2.4, 0, 0], frame: "vnb", ispS: 320 } },
+          { propagate: { to: "descendingNode" } },
+        ] } },
+    { propagate: { quantity: "altitudeKm", value: 35786, direction: "increasing" } },
+    { finiteBurn: { durationS: 600, thrustN: 400, ispS: 320, direction: [1, 0, 0] } },
+    { propagate: { durationS: 86400 } },
+  ],
+);
+globe.propagate(flown);  // maneuvers, finiteBurns, stop resolved
+```
+
+- `runSequence` runs `terramenta_solare::sequence` from the propagation's state
+  at `start` with its force model. Stops: `durationS`, `epoch`, `to`
+  (`periapsis`/`apoapsis`: radial velocity through 0; nodes: argument of
+  latitude through 0°/180°), or `quantity` + `value` (+ `direction`,
+  `count`); crossings bracketed every `stepS` (60), refined to 0.1 ms, searched
+  up to `maxDurationS` (30 d), ignored within 10 ms of the segment start.
+  `target` varies labelled commands in its own `sequence` (`dv1`–`dv3`,
+  `durationS` of a finite burn or `durationS` propagate) until goals hold at
+  its end, then runs it with the solution; targets nest. Quantities as
+  `target` plus `radialVelocityKmS`, `argLatitudeDeg`, `latitudeDeg`.
+  Segments: `{label, kind, depth, start, stop, massKg, deltaVKmS, elements,
+  target}`. A trailing maneuver does not fly (end epoch exclusive).
 
 ```js
 const { times, quaternions, eulerDeg, sensorAnglesDeg, aem } = globe.attitude(sameOptions, {

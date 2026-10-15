@@ -40,6 +40,7 @@ this example).*
 | [`space_weather`](src/space_weather.rs) | `SpaceWeather`: CelesTrak `SW-All.csv` (observed, daily and monthly prediction) or constant; NRLMSISE-00 drivers. |
 | [`moon`](src/moon.rs) | Analytic geocentric Moon (Montenbruck & Gill), EME2000; third body without kernels. |
 | [`maneuver`](src/maneuver.rs) | `ImpulsiveManeuver` (rocket-equation mass), `FiniteBurn` (thrust, Isp, ṁ; cut-off at dry mass), `LocalFrame::{Inertial, Vnb, Rsw, Lvlh}`. |
+| [`sequence`](src/sequence.rs) | Mission sequence: `Propagate` to epoch/duration/`Quantity` crossing (apsides, nodes, any osculating quantity; bracket + Illinois, propagated stop state), `Maneuver`, `FiniteBurn`, nested `Target` (labelled `Parameter`s, goals at body end). `run` → segments, flown burns, end state. |
 | [`targeting`](src/targeting.rs) | `solve`: Newton differential correction, forward-difference Jacobian, minimum-norm / least-squares steps, per-variable step cap, backtracking. |
 | [`attitude`](src/attitude.rs) | `Profile`: `AlignConstrain` (TRIAD, primary exact, secondary constrained) or inertial `DQuat`, optional body-axis `Spin`. `Direction`: nadir, zenith, ±velocity, ±orbit normal, ±Sun, target, inertial. `lvlh_euler_321`, `off_axis_angle`, `slerp`. Quaternions body → inertial. |
 | [`events`](src/events.rs) | Grid + Brent root finding on scalar event functions; `GroundStation` look angles, terrain `horizon` mask and `contacts`, conical `eclipses`, apsides/nodes (`orbit_events`). |

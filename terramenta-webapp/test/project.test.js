@@ -420,6 +420,99 @@ test("spacecraft are typed and cross-checked", () => {
   assert.deepEqual(parse(v({ spacecraft: [spacecraft("a")], gnc: { focus: { layer: "a", noradId: 1 } } })).warnings, []);
 });
 
+const SEQUENCE = [
+  {
+    label: "toi",
+    target: {
+      variables: [{ command: "burn", parameter: "dv1" }],
+      goals: [{ quantity: "radiusKm", value: 42164, tolerance: 0.1 }],
+      sequence: [{ label: "burn", maneuver: { deltaVKmS: [2.4, 0, 0] } }, { propagate: { to: "apoapsis" } }],
+    },
+  },
+  { propagate: { durationS: 600 } },
+];
+const sequenced = (id, sequence = SEQUENCE) => {
+  const entry = spacecraft(id, {}, {});
+  delete entry.propagation.durationS;
+  return { ...entry, sequence };
+};
+
+test("sequences are typed and cross-checked", () => {
+  assert.deepEqual(parse(v({ spacecraft: [sequenced("a")] })).warnings, []);
+  assert.deepEqual(
+    errorsOf(
+      v({
+        spacecraft: [
+          { ...spacecraft("a"), sequence: SEQUENCE },
+          sequenced("b", [
+            { propagate: { durationS: 60, to: "apoapsis" } },
+            { label: "x", maneuver: { deltaVKmS: [0, 0, 0] }, propagate: { to: "periapsis" } },
+            { label: "x", propagate: { quantity: "altitudeKm" } },
+            {
+              target: {
+                variables: [{ command: "x", parameter: "dv1" }, { command: "c", parameter: "durationS" }],
+                goals: [{ quantity: "smaKm", value: 7000, tolerance: 1 }],
+                sequence: [{ label: "c", propagate: { to: "apoapsis" } }],
+              },
+            },
+          ]),
+        ],
+      }),
+    ),
+    [
+      "spacecraft[0].propagation: no stop, durationS, maneuvers or finiteBurns with a sequence",
+      "spacecraft[1].sequence[0].propagate: exactly one of durationS, epoch, to, quantity",
+      "spacecraft[1].sequence[1]: exactly one of propagate, maneuver, finiteBurn, target",
+      'spacecraft[1].sequence[2].label: duplicate "x"',
+      "spacecraft[1].sequence[2].propagate: quantity needs value",
+      'spacecraft[1].sequence[3].target.variables[0]: no command "x" in this target\'s sequence',
+      'spacecraft[1].sequence[3].target.variables[1]: "c" has no durationS',
+    ],
+  );
+  assert.deepEqual(errorsOf(v({ spacecraft: [sequenced("c", [{ propagate: { to: "perigee" } }])] })), [
+    'spacecraft[0].sequence[0].propagate.to: expected one of periapsis, apoapsis, ascendingNode, descendingNode, got "perigee"',
+  ]);
+});
+
+test("a sequenced spacecraft flies its resolved propagation and saves its sequence", async () => {
+  const project = parse(
+    v({
+      spacecraft: [sequenced("geo")],
+      timeline: { events: [{ id: "toi", at: { event: "geo.burn1" }, actions: { timeScale: 1 } }] },
+    }),
+  ).project;
+  assert.deepEqual(
+    errorsOf(v({ ...project, timeline: { events: [{ id: "x", at: { event: "geo.burn2" }, actions: { timeScale: 1 } }] } })),
+    ['timeline.events[0].at.event: spacecraft "geo" has 1 impulsive burns'],
+  );
+  applyProject(project);
+  await applySpacecraft(project);
+  const run = calls.find(([name]) => name === "runSequence");
+  assert.deepEqual(run[2], SEQUENCE);
+  const flown = calls.find(([name]) => name === "propagate")[1];
+  assert.equal(flown.maneuvers.length, 1);
+  assert.equal(flown.stop, "2026-01-01T04:00:00.000Z");
+  const entry = globe.recordedSources().spacecraft.get("geo");
+  assert.equal(entry.run.segments.length, 4);
+  assert.equal(entry.propagation, entry.run.propagation);
+
+  const captured = captureProject(snapshot());
+  assert.deepEqual(captured.spacecraft[0].sequence, SEQUENCE);
+  assert.equal(captured.spacecraft[0].propagation.maneuvers, undefined);
+  assert.equal(captured.spacecraft[0].propagation.stop, undefined);
+  assert.deepEqual(parse(JSON.parse(JSON.stringify(captured))).warnings, []);
+});
+
+test("a failed sequence is recorded with its source", async () => {
+  const project = parse(v({ spacecraft: [sequenced("bad", [{ propagate: { to: "apoapsis" } }])] })).project;
+  project.spacecraft[0].sequence[0].propagate.to = "bad";
+  await applySpacecraft(project);
+  const entry = globe.recordedSources().spacecraft.get("bad");
+  assert.equal(entry.error, "unknown to");
+  assert.ok(!calls.some(([name]) => name === "propagate"));
+  assert.deepEqual(captureProject(snapshot()).spacecraft[0].sequence, [{ propagate: { to: "bad" } }]);
+});
+
 test("applying spacecraft: environment first, failures kept, focus after", async () => {
   const fetched = [];
   globalThis.fetch = async (url) => {

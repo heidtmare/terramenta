@@ -1235,6 +1235,48 @@ pub fn find_events(propagation: JsValue, options: JsValue) -> Result<JsValue, Js
     Ok(to_js(&found))
 }
 
+/// Mission sequence from `propagation`'s initial state at `start` (as [`propagate`]; no
+/// `maneuvers`/`finiteBurns`, `stop`/`durationS` ignored). Commands run in order; each has an
+/// optional `label` and one action.
+///
+/// ```js
+/// const { propagation: resolved, segments, deltaVKmS, finalMassKg, converged } = runSequence(propagation, [
+///   { propagate: { durationS: 600 } },             // or epoch: ISO UTC
+///   { propagate: { to: "ascendingNode" } },        // periapsis | apoapsis | ascendingNode | descendingNode
+///   { propagate: { quantity: "altitudeKm", value: 400, direction: "decreasing",
+///                  count: 1, stepS: 60, maxDurationS: 2592000 } },
+///   { label: "toi", target: {
+///       variables: [{ command: "toi-burn", parameter: "dv1" }],   // dv1–dv3 | durationS
+///       goals: [{ quantity: "radiusKm", value: 42164, tolerance: 0.01 }], // at sequence end
+///       sequence: [
+///         { label: "toi-burn", maneuver: { deltaVKmS: [2.4, 0, 0], frame: "vnb", ispS: 310 } },
+///         { propagate: { to: "apoapsis" } },
+///       ],
+///       maxIterations: 25 } },
+///   { finiteBurn: { durationS: 120, thrustN: 400, ispS: 300, direction: [1, 0, 0], frame: "vnb" } },
+/// ]);
+/// propagate(resolved);  // maneuvers/finiteBurns/stop resolved; any analysis takes it
+/// // segments: [{ label, kind, depth, start, stop, massKg, deltaVKmS, elements, target }]
+/// ```
+///
+/// Quantities as [`target`] goals, plus `radialVelocityKmS`, `argLatitudeDeg`, `latitudeDeg`.
+/// Throws on bad input or an unreached stop; a non-converged target is not an error.
+#[wasm_bindgen(js_name = runSequence)]
+pub fn run_sequence(propagation: JsValue, sequence: JsValue) -> Result<JsValue, JsError> {
+    let json = |v: &JsValue| -> Result<String, JsError> {
+        js_sys::JSON::stringify(v)
+            .map(String::from)
+            .map_err(|_| JsError::new("options are not JSON-serialisable"))
+    };
+    let propagation: serde_json::Value =
+        serde_json::from_str(&json(&propagation)?).map_err(|e| JsError::new(&e.to_string()))?;
+    let commands: Vec<crate::numerical::CommandOptions> =
+        serde_json::from_str(&json(&sequence)?).map_err(|e| JsError::new(&e.to_string()))?;
+    let out =
+        crate::numerical::run_sequence(&propagation, &commands).map_err(|e| JsError::new(&e))?;
+    Ok(to_js(&out))
+}
+
 /// Differential correction of `propagation`'s burns (as [`propagate`]) to meet `options.goals`.
 ///
 /// ```js
