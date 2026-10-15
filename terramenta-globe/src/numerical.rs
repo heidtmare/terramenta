@@ -1147,6 +1147,50 @@ impl Terrestrial {
     }
 }
 
+/// Sub-satellite points every `step_s` over the propagated span (and at its end):
+/// ITRF, WGS-84 geodetic, IAU 2006/2000A with loaded EOP.
+#[derive(Serialize, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct GroundTrack {
+    /// Unix seconds (UTC).
+    pub times: Vec<f64>,
+    /// `[lonDeg, latDeg, heightKm]`, longitude in [−180, 180).
+    pub coords: Vec<[f64; 3]>,
+}
+
+pub fn ground_track(propagated: &Propagated, step_s: f64) -> Result<GroundTrack, String> {
+    let states = propagated.ordered_states();
+    if states.len() < 2 {
+        return Ok(GroundTrack::default());
+    }
+    let (start, stop) = (states[0].0, states[states.len() - 1].0);
+    let span = stop.seconds_since(start);
+    if step_s.is_nan() || step_s <= 0.0 || span / step_s > MAX_EVENT_SAMPLES {
+        return Err(format!(
+            "stepS must be positive and yield ≤ {MAX_EVENT_SAMPLES} samples"
+        ));
+    }
+    let ephemeris = SampledEphemeris::new(states, Interpolation::default());
+    let env = environment();
+    let mut earth = Terrestrial::new(&env, start);
+    let n = (span / step_s).floor() as usize;
+    let mut offsets: Vec<f64> = (0..=n).map(|k| k as f64 * step_s).collect();
+    if offsets[n] < span {
+        offsets.push(span);
+    }
+    let mut out = GroundTrack::default();
+    for t in offsets {
+        let e = start.advanced_by_seconds(t);
+        let (lat, lon, h) = terramenta_solare::earth::ecef_to_geodetic(
+            earth.rotation(e) * ephemeris.position_at(e),
+        );
+        let lon = (lon.to_degrees() + 180.0).rem_euclid(360.0) - 180.0;
+        out.times.push(e.to_unix_seconds());
+        out.coords.push([lon, lat.to_degrees(), h]);
+    }
+    Ok(out)
+}
+
 /// Contacts, eclipses (Earth, conical), apsides and nodes (GCRF equator) over the
 /// propagated span. Interpolates the propagated states (Hermite 7), so the propagation
 /// step bounds accuracy.
@@ -3522,6 +3566,32 @@ mod tests {
             let req = request(&format!("{{{base}, {extra}}}"));
             assert!(propagate(&req).is_err(), "{extra}");
         }
+    }
+
+    /// Circular 51.6° LEO: latitude within ±51.6°, height ≈ 400 km over the ellipsoid,
+    /// longitude in [−180, 180), last sample at the span end.
+    #[test]
+    fn ground_track_of_leo() {
+        let v = (398_600.441_8_f64 / 6778.137).sqrt();
+        let (s, c) = 51.6_f64.to_radians().sin_cos();
+        let req = request(&format!(
+            r#"{{ "initial": {{ "epoch": "2024-03-01T00:00:00Z",
+                   "positionKm": [6778.137, 0, 0], "velocityKmS": [0, {}, {}] }},
+                 "durationS": 5430, "stepS": 60, "forces": {{ "gravity": [2, 0] }} }}"#,
+            v * c,
+            v * s
+        ));
+        let out = propagate(&req).unwrap();
+        let track = ground_track(&out, 600.0).unwrap();
+        assert_eq!(track.times.len(), 11);
+        assert!((track.times[10] - track.times[0] - 5430.0).abs() < 1e-6);
+        let max_lat = track.coords.iter().map(|c| c[1].abs()).fold(0.0, f64::max);
+        assert!(max_lat < 51.7 && max_lat > 45.0, "{max_lat}");
+        for [lon, _, h] in &track.coords {
+            assert!((-180.0..180.0).contains(lon));
+            assert!((370.0..435.0).contains(h), "{h}");
+        }
+        assert!(ground_track(&out, 0.0).is_err());
     }
 
     /// Circular 51.6° LEO for a day: one umbra per orbit inside its penumbra, two apsides

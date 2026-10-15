@@ -150,7 +150,7 @@ spacecraft, Coverage, Conjunctions and Orbit determination while it has neither 
 | | Propagation environment (*closed*) | EOP, space weather, kernel: URL or local file, coverage |
 | **Timeline** | Timeline | Directed on/off; searched events shown/hidden (remembered, default hidden); previous/next event; strip (click to set the clock) and list of every event with time, source, actions, Go, Remove (project events). Add event: label, at clock or an event plus offset, actions from the current scene (rate, paused, view, frame, camera, focus) |
 | **Analysis** | Plots | Saved plots: one quantity against time per spacecraft, burn markers, clock cursor (click to set the clock), CSV, remove. Add plot: quantity, spacecraft, label |
-| | Spacecraft reports | Per spacecraft: span, samples, start/end/min/max of altitude, SMA, eccentricity, inclination, period, perigee/apogee, and 1σ radial/in-track/cross-track/RSS with covariance; Δv budget per burn; CSV. CZML of all spacecraft |
+| | Spacecraft reports | Per spacecraft: span, samples, start/end/min/max of altitude, SMA, eccentricity, inclination, period, perigee/apogee, and 1σ radial/in-track/cross-track/RSS with covariance; Δv budget per burn; CSV. CZML of all spacecraft; STAC catalog (zip) of spacecraft and coverage results |
 | | Events | Search options (eclipses, apsides, nodes, step). Per spacecraft: contact and umbra totals; contacts (station, AOS, duration, max elevation) and eclipses (entry, umbra, total) — click a row to set the clock; CSV |
 | | Conjunctions | Per study: primary, secondaries and layers, threshold, radius, step, assumed σ; run/re-run, CSV, edit, remove; found/screened/filtered, layers not loaded; top 20 by Pc: TCA, object, miss (speed on hover), Pc (σ on hover), Pc max, CDM. Row: clock to TCA, catalogue object pinned. Editor: name, primary, spacecraft, catalogue layers, threshold, radius, step, catalogue σ |
 | | Orbit determination | Per study: a priori, estimator, stations, tracking source, solve-for; run/re-run, apply, residual CSV, TDM, edit, remove; converged/iterations, RMS, observations and edits; estimate epoch, RSW 1σ, error against the truth (simulated); parameters; iterations; per station and type count, mean, RMS; residual/σ chart (EKF: post-fit) and EKF posterior 1σ chart (click to set the clock). Editor: name, a priori, estimator, stations, truth, tracking types with σ, step, seed, TDM URL or file, Cd/Cr with σ, edit σ |
@@ -256,6 +256,13 @@ Satellites.
 - **CZML**: all spacecraft, `INERTIAL` frame (ICRF ≈ GCRF), metres, one
   Lagrange position interval per OEM segment so burns are not interpolated
   across; document clock spans the data.
+- **STAC** ([`stac.js`](src/stac.js), pure): *STAC catalog (zip)* writes a
+  self-contained STAC 1.1.0 catalog (relative links, store-only ZIP):
+  `spacecraft/` items with the ground track (`globe.groundTrack`, ≤ ~2000
+  points, split at the antimeridian) as geometry and OEM + CZML assets;
+  `coverage/` items for studies with a result, study bounds as geometry,
+  cells GeoJSON + CSV assets, `terramenta:*` summary properties (`stale` when
+  inputs changed since the run). Times as `start_datetime`/`end_datetime`.
 - **Saved** under `analysis`: `plots` (`quantity` is a `reports.js`
   `PLOT_QUANTITIES` key) and `porkchops` (dates `YYYY-MM-DD`, UTC; `steps` 2–101,
   default 33).
@@ -623,7 +630,8 @@ src/
   conjunction-panel.js   Analysis tab conjunctions section: ranked table, CDM/CSV, editor
   od-panel.js            Analysis tab orbit determination section: estimate, residuals, charts, editor
   timeline-panel.js      Timeline tab: strip, event list, add event
-  reports-panel.js       Analysis tab: plots, spacecraft reports, CSV/CZML export
+  reports-panel.js       Analysis tab: plots, spacecraft reports, CSV/CZML/STAC export
+  stac.js                STAC 1.1 catalog and store-only ZIP writer
   chart.js               SVG builder and time-series line chart
   feature.js             Picking, click handling, placemark calculations
   readout.js             Telemetry panel
