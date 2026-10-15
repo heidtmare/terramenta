@@ -139,7 +139,9 @@ overlay and mission presets first.
   [`globe.wgsl`](assets/shaders/globe.wgsl): terminator, city lights on the
   night side, ocean specular, animated clouds, limb haze. There is no Bevy
   `DirectionalLight`; one sun-direction uniform drives all lighting, keeping
-  the planet to one draw call.
+  the planet to one draw call. Imagery tiles ([`tile.wgsl`](assets/shaders/tile.wgsl))
+  repeat the lighting terms, sampling the base night texture by geographic
+  position for city lights and inferring water from blueness for specular.
 - **Atmosphere.** Additive back-face shell
   ([`atmosphere.wgsl`](assets/shaders/atmosphere.wgsl)) with density rising
   toward the limb and a twilight arc past the terminator.
@@ -969,7 +971,7 @@ assets/shaders/
   globe.wgsl       Surface lighting, city lights, specular, clouds, haze
   atmosphere.wgsl  Additive atmosphere shell
   starfield.wgsl   Procedural stars
-  tile.wgsl        Streamed imagery tile
+  tile.wgsl        Streamed imagery tile: lighting, city lights, specular
   vector.wgsl      Pixel-sized markers, lines, fills
   icon.wgsl        Placemark icons
   sun.wgsl         Solar surface

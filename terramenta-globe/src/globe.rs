@@ -11,7 +11,6 @@ use bevy::shader::ShaderRef;
 
 use crate::frame::{FrameSet, ReferenceFrame};
 use crate::geo::equirectangular_sphere;
-use crate::imagery::ImagerySettings;
 use crate::starfield::{self, Starfield, StarfieldMaterial};
 use crate::sun::Sun;
 
@@ -21,8 +20,10 @@ pub const GLOBE_RADIUS: f32 = 1.0;
 pub const ATMOSPHERE_RADIUS: f32 = GLOBE_RADIUS * 1.025;
 /// Far enough away to read as "infinitely distant" without leaving the far plane.
 const STARFIELD_RADIUS: f32 = 400.0;
-/// How brightly the base globe's city lights burn on its night side.
-const NIGHT_INTENSITY: f32 = 1.6;
+/// How brightly city lights burn on the night side, on the globe and on tiles.
+pub const NIGHT_INTENSITY: f32 = 1.6;
+/// City lights; also sampled by imagery tiles.
+pub const NIGHT_TEXTURE: &str = "textures/earth_night.jpg";
 
 /// Marks the entity carrying the Earth surface mesh.
 #[derive(Component)]
@@ -188,7 +189,7 @@ fn spawn_globe(
         MeshMaterial3d(globe_materials.add(GlobeMaterial {
             uniform: GlobeUniform::default(),
             day_texture: Some(assets.load("textures/earth_day.jpg")),
-            night_texture: Some(assets.load("textures/earth_night.jpg")),
+            night_texture: Some(assets.load(NIGHT_TEXTURE)),
             cloud_texture: Some(assets.load("textures/earth_clouds.jpg")),
         })),
         Transform::IDENTITY,
@@ -222,7 +223,6 @@ fn drive_materials(
     time: Res<Time>,
     sun: Res<Sun>,
     frame: Res<ReferenceFrame>,
-    imagery: Res<ImagerySettings>,
     mut globe_materials: ResMut<Assets<GlobeMaterial>>,
     mut atmosphere_materials: ResMut<Assets<AtmosphereMaterial>>,
 ) {
@@ -231,21 +231,13 @@ fn drive_materials(
     // to be carried into whichever frame the scene is being drawn in.
     let sun_direction = frame.earth_to_world() * sun.direction_ecef;
 
-    // The city lights belong to the Blue Marble night texture, and nothing in a
-    // streamed layer knows about them: where imagery covers the globe they would
-    // burn through a scene that has its own idea of what the ground looks like,
-    // and where it has not arrived yet they would light only the gaps. So the
-    // night side goes dark for as long as imagery is on.
-    let night_intensity = if imagery.enabled {
-        0.0
-    } else {
-        NIGHT_INTENSITY
-    };
+    // Tiles draw the same lights (`tile.wgsl`), so gaps in streamed imagery
+    // match the tiles around them.
     let sun_shading = sun.shading();
 
     for (_, material) in globe_materials.iter_mut() {
         material.uniform.sun_direction = sun_direction;
-        material.uniform.night_intensity = night_intensity;
+        material.uniform.night_intensity = NIGHT_INTENSITY;
         material.uniform.sun_shading = sun_shading;
         // Clouds drift a little faster than the planet turns beneath them.
         material.uniform.cloud_offset = (elapsed * 0.002).fract();

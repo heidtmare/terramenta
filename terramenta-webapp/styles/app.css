@@ -1,6 +1,6 @@
 /*
  * The interface sits on top of the globe, so it is mostly transparency and
- * restraint: a dark, slightly blue monospace overlay that reads against
+ * restraint: a dark, slightly blue overlay that reads against
  * daylight imagery and against the night side without changing.
  */
 
@@ -23,6 +23,17 @@
   --event: #a6ff6b;
   --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --radius: 4px;
+  --radius-lg: 10px;
+  --radius-pill: 999px;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  /* Floating surfaces: drop shadow plus a top-edge highlight. */
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(207, 224, 255, 0.06);
+  --sheen: linear-gradient(180deg, rgba(207, 224, 255, 0.05), rgba(207, 224, 255, 0) 6rem);
+  --ease: 0.15s ease;
   --gutter: 16px;
   --panel-width: 23rem;
 }
@@ -96,10 +107,11 @@ canvas {
   max-height: calc(100vh - var(--gutter) * 2);
   display: flex;
   flex-direction: column;
-  padding: 0.7rem 0.9rem;
-  background: var(--surface);
+  padding: var(--space-3) var(--space-4);
+  background: var(--sheen), var(--surface);
   border: 1px solid var(--line);
-  border-radius: 2px;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
   backdrop-filter: blur(12px);
 }
 
@@ -110,15 +122,47 @@ canvas {
   flex: 0 0 auto;
 }
 
+#masthead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.logo {
+  flex: 0 0 auto;
+  width: 2.4rem;
+  height: 2.4rem;
+  overflow: visible;
+}
+
+.logo-meridian {
+  fill: none;
+  stroke: rgba(207, 224, 255, 0.45);
+  stroke-width: 0.7;
+}
+
+.logo-orbit {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 1.1;
+  opacity: 0.85;
+}
+
+.logo-satellite {
+  fill: var(--cursor);
+}
+
 #masthead h1 {
   margin: 0;
   font-size: 0.95rem;
+  line-height: 1.3;
   letter-spacing: 0.32em;
   text-transform: uppercase;
 }
 
 #masthead p {
-  margin: 0 0 0.7rem;
+  margin: 0;
   color: var(--ink-faint);
   letter-spacing: 0.08em;
 }
@@ -303,14 +347,15 @@ canvas {
   top: var(--gutter);
   right: var(--gutter);
   z-index: 1;
-  padding: 0.4rem 0.8rem;
+  padding: 0.4rem 0.9rem;
   font: inherit;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--ink);
-  background: var(--surface);
+  background: var(--sheen), var(--surface);
   border: 1px solid var(--line);
-  border-radius: 2px;
+  border-radius: var(--radius-pill);
+  box-shadow: var(--shadow);
   cursor: pointer;
   backdrop-filter: blur(8px);
 }
@@ -333,8 +378,9 @@ canvas {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--surface);
+  background: var(--sheen), var(--surface);
   border-left: 1px solid var(--line);
+  box-shadow: -10px 0 30px rgba(0, 0, 0, 0.35);
   backdrop-filter: blur(12px);
   transition: transform 0.25s ease;
 }
@@ -408,8 +454,8 @@ body.panel-collapsed #panel {
 }
 
 .section {
-  padding-bottom: 1.1rem;
-  margin-bottom: 1.1rem;
+  padding-bottom: var(--space-4);
+  margin-bottom: var(--space-4);
   border-bottom: 1px solid var(--line);
 }
 
@@ -419,15 +465,15 @@ body.panel-collapsed #panel {
 }
 
 .section:not([open]) {
-  padding-bottom: 0.6rem;
-  margin-bottom: 0.6rem;
+  padding-bottom: var(--space-2);
+  margin-bottom: var(--space-2);
 }
 
 .section > summary {
   display: flex;
   align-items: center;
-  gap: 0.45rem;
-  margin-bottom: 0.7rem;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
   list-style: none;
   cursor: pointer;
 }
@@ -488,8 +534,8 @@ body.panel-collapsed #panel {
   display: grid;
   grid-template-columns: 5.5rem 1fr;
   align-items: center;
-  gap: 0.5rem;
-  margin-bottom: 0.45rem;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
 }
 
 .row-label {
@@ -504,7 +550,7 @@ body.panel-collapsed #panel {
   color: var(--ink);
   background: var(--surface-raised);
   border: 1px solid var(--line);
-  border-radius: 2px;
+  border-radius: var(--radius);
 }
 
 .select:focus,
@@ -519,8 +565,8 @@ body.panel-collapsed #panel {
 .places {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.35rem;
-  margin-top: 0.6rem;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
 }
 
 .button,
@@ -531,7 +577,7 @@ body.panel-collapsed #panel {
   color: var(--ink-dim);
   background: var(--surface-raised);
   border: 1px solid var(--line);
-  border-radius: 2px;
+  border-radius: var(--radius);
   cursor: pointer;
 }
 
@@ -544,16 +590,36 @@ body.panel-collapsed #panel {
 .places .button {
   /* Nine places in a column this narrow: let them pack rather than stretch. */
   flex: 0 1 auto;
+  padding: 0.25rem 0.7rem;
+  border-radius: var(--radius-pill);
   font-size: 0.92em;
   color: var(--ink-faint);
 }
 
+/* Segmented pill: a sunken track, the selected option a raised pill on it. */
 .choice {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.35rem;
+  gap: 2px;
+  padding: 2px;
+  background: var(--surface-sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
 }
 
+.choice .choice-option {
+  padding: 0.3rem 0.6rem;
+  background: none;
+  border-color: transparent;
+  border-radius: var(--radius-pill);
+}
+
+.choice .choice-option:hover {
+  border-color: transparent;
+  background: var(--surface-raised);
+}
+
+.choice .choice-option.selected,
 .choice-option.selected {
   color: var(--on-accent);
   background: var(--accent);
@@ -597,6 +663,28 @@ body.panel-collapsed #panel {
   font-variant-numeric: tabular-nums;
 }
 
+/* Hover and selection fade rather than snap. */
+.button,
+.choice-option,
+.panel-tab,
+.swatch,
+.select,
+.coordinate,
+#panel-toggle,
+.report-table td,
+.report-table th {
+  transition:
+    color var(--ease),
+    background-color var(--ease),
+    border-color var(--ease),
+    box-shadow var(--ease);
+}
+
+.button:active,
+.choice-option:active {
+  transform: translateY(1px);
+}
+
 /* --- GeoJSON overlays ----------------------------------------------------- */
 
 /* The period box is a number and a unit, not a sentence. */
@@ -616,8 +704,8 @@ body.panel-collapsed #panel {
 
 .layers {
   display: grid;
-  gap: 0.5rem;
-  margin-top: 0.8rem;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
 }
 
 .layers.empty {
@@ -627,7 +715,7 @@ body.panel-collapsed #panel {
 .layer {
   /* Grid items default to min-width: auto; a nowrap title would widen the pane. */
   min-width: 0;
-  padding: 0.5rem 0.6rem;
+  padding: var(--space-2) var(--space-3);
   background: var(--surface-raised);
   border: 1px solid var(--line);
   /* A status stripe down the side — loading/searching/waiting, ready/enroute,
@@ -635,7 +723,7 @@ body.panel-collapsed #panel {
      to read anything to see which. Shared between an overlay's own statuses
      and a mission's, since both are drawn as `.layer` rows. */
   border-left: 2px solid var(--ink-faint);
-  border-radius: 2px;
+  border-radius: var(--radius);
 }
 
 .layer[data-status="ready"],
@@ -719,7 +807,7 @@ body.panel-collapsed #panel {
   padding: 0;
   background: none;
   border: 1px solid var(--line);
-  border-radius: 2px;
+  border-radius: var(--radius);
   cursor: pointer;
 }
 
@@ -902,7 +990,7 @@ body.panel-collapsed #panel {
 .porkchop-chart-wrap {
   margin-top: 0.7rem;
   border: 1px solid var(--line);
-  border-radius: 2px;
+  border-radius: var(--radius);
   background: var(--surface-sunken);
 }
 
@@ -963,7 +1051,17 @@ body.panel-collapsed #panel {
 
 @media (prefers-reduced-motion: reduce) {
   #panel,
-  #status {
+  #status,
+  .button,
+  .choice-option,
+  .panel-tab,
+  .swatch,
+  .select,
+  .coordinate,
+  #panel-toggle,
+  .report-table td,
+  .report-table th,
+  .timeline-marker {
     transition: none;
   }
 
@@ -1011,7 +1109,7 @@ body.layout-flight .buttons .button:disabled {
   margin: 0.5rem 0;
   padding: 0.5rem 0.6rem;
   border: 1px solid var(--accent);
-  border-radius: 6px;
+  border-radius: var(--radius);
 }
 
 /* A file dragged over the page. */
@@ -1023,7 +1121,7 @@ body.dropping::after {
   display: grid;
   place-items: center;
   border: 2px dashed var(--accent);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   background: var(--surface);
   color: var(--ink);
   pointer-events: none;
@@ -1085,22 +1183,88 @@ textarea.coordinate {
 
 .timeline-strip {
   position: relative;
-  height: 1.6rem;
-  margin-top: 0.8rem;
-  background: var(--surface-raised);
+  height: 2.2rem;
+  margin-top: var(--space-3);
+  background: var(--surface-sunken);
   border: 1px solid var(--line);
-  border-radius: 2px;
+  border-radius: var(--radius);
   cursor: pointer;
+  transition: border-color var(--ease);
 }
 
+.timeline-strip:hover {
+  border-color: var(--ink-faint);
+}
+
+/* Start of the range up to the clock. */
+.timeline-elapsed {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  background: linear-gradient(90deg, rgba(127, 178, 255, 0), rgba(127, 178, 255, 0.14));
+  border-radius: var(--radius) 0 0 var(--radius);
+  pointer-events: none;
+}
+
+.timeline-tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--line);
+  pointer-events: none;
+}
+
+.timeline-axis {
+  position: relative;
+  height: 1.1rem;
+  margin-top: var(--space-1);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--ink-faint);
+}
+
+.timeline-axis[hidden] {
+  display: none;
+}
+
+.timeline-tick-label {
+  position: absolute;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+/* A bar with a round head, so events read as pins rather than hairlines. */
 .timeline-marker {
   position: absolute;
-  top: 0.3rem;
+  top: 0.55rem;
   bottom: 0.3rem;
   width: 2px;
   margin-left: -1px;
   background: var(--ink-dim);
+  border-radius: 1px;
   pointer-events: none;
+}
+
+.timeline-marker::before {
+  content: "";
+  position: absolute;
+  top: -0.25rem;
+  left: 50%;
+  width: 0.4rem;
+  height: 0.4rem;
+  margin-left: -0.2rem;
+  border-radius: 50%;
+  background: inherit;
+}
+
+.timeline-marker.event {
+  top: 1.1rem;
+}
+
+.timeline-marker.event::before {
+  display: none;
 }
 
 .timeline-marker.project,
@@ -1124,19 +1288,22 @@ textarea.coordinate {
   width: 2px;
   margin-left: -1px;
   background: var(--cursor);
+  box-shadow: 0 0 6px var(--cursor);
   pointer-events: none;
+}
+
+.timeline-cursor::before {
+  content: "";
+  position: absolute;
+  top: -0.2rem;
+  left: 50%;
+  margin-left: -0.3rem;
+  border: 0.3rem solid transparent;
+  border-top-color: var(--cursor);
 }
 
 .timeline-cursor.outside {
   opacity: 0.35;
-}
-
-.timeline-span {
-  display: flex;
-  justify-content: space-between;
-  margin-top: 0.25rem;
-  font-size: 0.72rem;
-  color: var(--ink-faint);
 }
 
 .timeline-event .mission-title,
@@ -1164,8 +1331,7 @@ textarea.coordinate {
   gap: 0.25rem 0.75rem;
 }
 
-.timeline-strip[hidden],
-.timeline-span[hidden] {
+.timeline-strip[hidden] {
   display: none;
 }
 
@@ -1180,7 +1346,7 @@ textarea.coordinate {
 .chart-wrap {
   margin-top: 0.4rem;
   border: 1px solid var(--line);
-  border-radius: 2px;
+  border-radius: var(--radius);
   background: var(--surface-sunken);
 }
 
@@ -1336,7 +1502,7 @@ textarea.coordinate {
 .ramp-legend .ramp {
   flex: 1 1 auto;
   height: 0.5rem;
-  border-radius: 2px;
+  border-radius: var(--radius);
 }
 
 /* --- Numeric text: monospace ------------------------------------------------ */
@@ -1345,7 +1511,6 @@ textarea.coordinate {
 textarea.coordinate,
 .slider-value,
 .report-table,
-.object-detail,
-.timeline-span {
+.object-detail {
   font-family: var(--font-mono);
 }
