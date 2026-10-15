@@ -25,6 +25,11 @@
     "description": "Sun-synchronous LEO over five ground stations: contacts, eclipses and nodes; timeline keyed to the first Svalbard pass."
   },
   {
+    "file": "geo-transfer.terramenta.json",
+    "name": "GEO transfer sequence",
+    "description": "Mission sequence: coast to node, targeted transfer burn, coast, targeted circularization and plane change, drift; segment table."
+  },
+  {
     "file": "targeted-transfer.terramenta.json",
     "name": "Targeted transfer",
     "description": "Differential correction of rough first-guess burns: Hohmann Δv and timing, low-thrust burn duration."

@@ -32,6 +32,7 @@ import { DIRECTORS } from "./director.js";
 import { eventTimeline } from "./events.js";
 import { utcSeconds } from "./format.js";
 import * as globe from "./globe.js";
+import { flownShape } from "./sequence.js";
 
 export const MISSION_PHASES = ["departure", "escape", "arrival", "capture"];
 const REFERENCE = /^([^.]+)\.(start|end|burn([1-9]\d*)|finite([1-9]\d*)(\.end)?|departure|escape|arrival|capture)$/;
@@ -143,7 +144,7 @@ export function timelineSection(scene) {
  */
 export function timelineErrors(project, { missionIds, layerIds }) {
   if (!project.timeline) return [];
-  const spacecraft = new Map((project.spacecraft ?? []).map(({ id, propagation }) => [id, propagation]));
+  const spacecraft = new Map((project.spacecraft ?? []).map((entry) => [entry.id, flownShape(entry)]));
   const stationIds = new Set((project.groundStations ?? []).map((station) => station.id));
   return problems(project.timeline, { spacecraft, stationIds, missionIds, layerIds }).map(
     ({ path, message }) => `${path}: ${message}`,

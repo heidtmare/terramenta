@@ -44,6 +44,7 @@ pub mod od;
 pub mod orbit;
 pub mod planets;
 pub mod propagate;
+pub mod sequence;
 pub mod space_weather;
 pub mod spacecraft;
 pub mod spice;

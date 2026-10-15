@@ -6,8 +6,10 @@
  * A spacecraft is a `propagate` request plus ephemeris display options
  * (`globe.addSpacecraft`), saved under the project's `spacecraft`. The editor
  * builds the request, validates it as a project entry (`parseProject`), and
- * propagates; editing an existing one re-propagates under its id. Rows are
- * rebuilt from `globe.recordedSources().spacecraft`, so failed ones show too.
+ * propagates; editing an existing one re-propagates under its id. A mission
+ * sequence (`sequence.js`, JSON) replaces duration and burns: it resolves them.
+ * Rows are rebuilt from `globe.recordedSources().spacecraft`, so failed ones
+ * show too.
  * Units in the editor: km, km/s, m/s for Δv, s, kg, N.
  */
 
@@ -17,8 +19,9 @@ import { mountStations } from "./events-panel.js";
 import { mountTargeting } from "./targeting-panel.js";
 import * as globe from "./globe.js";
 import { download, el, row, section } from "./dom.js";
-import { clock, utcSeconds } from "./format.js";
+import { clock, duration, utcSeconds } from "./format.js";
 import { PROJECT_VERSION, layerDisplay, parseProject } from "./project.js";
+import { segmentRows } from "./sequence.js";
 import { button, rowList, toggle } from "./widgets.js";
 
 const PALETTE = ["#ffb86b", "#ff8fa3", "#c3ff7a", "#ffe66b", "#7affea"];
@@ -47,6 +50,35 @@ const INTEGRATORS = [
 ];
 /** Project covariance frames → editor `FRAMES` keys. */
 const COVARIANCE_FRAMES = { ric: "rsw", rtn: "rsw", gcrf: "inertial", eci: "inertial" };
+/** Editor template: LEO → GEO; transfer at the ascending node, circularize and plane change at the descending node. */
+const SEQUENCE_TEMPLATE = [
+  { propagate: { to: "ascendingNode" } },
+  {
+    label: "TOI",
+    target: {
+      variables: [{ command: "toi-burn", parameter: "dv1" }],
+      goals: [{ quantity: "radiusKm", value: 42164, tolerance: 0.1 }],
+      sequence: [
+        { label: "toi-burn", maneuver: { deltaVKmS: [2.4, 0, 0], frame: "vnb", ispS: 320 } },
+        { propagate: { to: "descendingNode" } },
+      ],
+    },
+  },
+  {
+    label: "GOI",
+    target: {
+      variables: ["dv1", "dv2", "dv3"].map((parameter) => ({ command: "goi-burn", parameter })),
+      goals: [
+        { quantity: "smaKm", value: 42164, tolerance: 1 },
+        { quantity: "inclinationDeg", value: 0, tolerance: 0.01 },
+        { quantity: "flightPathAngleDeg", value: 0, tolerance: 0.001 },
+      ],
+      sequence: [{ label: "goi-burn", maneuver: { deltaVKmS: [1.4, -0.8, 0], frame: "vnb", ispS: 320 } }],
+    },
+  },
+  { propagate: { durationS: 86400 } },
+];
+
 const INITIAL = [
   ["elements", "Keplerian elements"],
   ["state", "GCRF state"],
@@ -189,6 +221,8 @@ function spacecraftRow(id, editor) {
   const trails = toggle("Orbit trails", (value) => globe.setEphemerisTrails(id, value));
   const detail = el("p", { class: "detail" }, "—");
   const error = el("p", { class: "detail error", hidden: true });
+  const segments = el("details", { class: "sequence-report", hidden: true });
+  let shownRun = null;
 
   const node = el(
     "div",
@@ -196,6 +230,7 @@ function spacecraftRow(id, editor) {
     el("div", { class: "layer-head" }, visible.node, color),
     detail,
     error,
+    segments,
     trails.node,
     el(
       "div",
@@ -225,6 +260,11 @@ function spacecraftRow(id, editor) {
       error.textContent = spacecraft.error ?? "";
       node.dataset.status = spacecraft.error ? "failed" : layer ? "ready" : "loading";
       detail.textContent = spacecraft.info ? describeInfo(spacecraft, state) : "Not propagated";
+      segments.hidden = !spacecraft.run;
+      if (spacecraft.run && spacecraft.run !== shownRun) {
+        shownRun = spacecraft.run;
+        segments.replaceChildren(...sequenceReport(spacecraft.run));
+      }
     },
   };
 }
@@ -241,6 +281,39 @@ function describeInfo({ info, propagation }, state) {
     `${clock(start)} → ${clock(stop)} · ${info.samples} samples · ${info.finalMassKg.toFixed(1)} kg` +
     `${burns ? ` · ${burns} burn${burns > 1 ? "s" : ""}` : ""}${spread} · ${where}`
   );
+}
+
+/** Summary and segment table of a `runSequence` result; a row sets the clock to its start. */
+function sequenceReport(run) {
+  const status = `${run.segments.length} segments · Δv ${(run.deltaVKmS * 1000).toFixed(1)} m/s` +
+    `${run.converged ? "" : " · a target did not converge"}`;
+  const fixed = (value, digits) => (value === null ? "" : value.toFixed(digits));
+  const rows = segmentRows(run).map((segment) =>
+    el(
+      "tr",
+      { class: "pick", title: `${clock(segment.start)} → ${clock(segment.stop)}`, onclick: () => globe.setClock(segment.start) },
+      el("td", { style: `padding-left: ${0.4 + segment.depth}em` }, segment.name),
+      el("td", {}, segment.durationS > 0 ? duration(segment.durationS) : ""),
+      el("td", {}, fixed(segment.deltaVMS, 1)),
+      el("td", {}, segment.altitudeKm.toFixed(0)),
+      el("td", {}, segment.eccentricity.toFixed(4)),
+      el("td", {}, segment.inclinationDeg.toFixed(2)),
+      el("td", { class: segment.status?.startsWith("NOT") ? "error" : "" }, segment.status ?? segment.massKg.toFixed(1)),
+    ),
+  );
+  return [
+    el("summary", { class: run.converged ? "" : "error" }, `Sequence · ${status}`),
+    el(
+      "div",
+      { class: "table-wrap" },
+      el(
+        "table",
+        { class: "report-table" },
+        el("thead", {}, el("tr", {}, ...["Segment", "Span", "Δv m/s", "Alt km", "e", "i °", "kg / target"].map((text) => el("th", {}, text)))),
+        el("tbody", {}, ...rows),
+      ),
+    ),
+  ];
 }
 
 function length(km) {
@@ -367,6 +440,20 @@ function mountEditor(getState) {
   const maneuvers = rowList(maneuverRow, "Add impulsive burn");
   const burns = rowList(finiteBurnRow, "Add finite burn");
 
+  const sequenceText = el("textarea", {
+    class: "coordinate",
+    rows: 10,
+    spellcheck: false,
+    placeholder: "Mission sequence: JSON array of commands (blank: none)",
+  });
+  /** Shown without a sequence; a sequence resolves duration and burns. */
+  const manual = [];
+  const showSequence = () => {
+    const sequenced = sequenceText.value.trim() !== "";
+    for (const node of manual) node.hidden = sequenced;
+  };
+  sequenceText.oninput = showSequence;
+
   const covarianceFrame = select(FRAMES, "rsw");
   const positionSigma = vector([]);
   const velocitySigma = vector([]);
@@ -425,6 +512,7 @@ function mountEditor(getState) {
     integrator.value = "dop853";
     maneuvers.clear();
     burns.clear();
+    sequenceText.value = "";
     covarianceFrame.value = "rsw";
     for (const input of [...positionSigma.inputs, ...velocitySigma.inputs, ...processNoise.inputs]) input.value = "";
     ellipsoidSigma.value = "3";
@@ -434,6 +522,7 @@ function mountEditor(getState) {
     error.hidden = true;
     fillCircular();
     showInitial();
+    showSequence();
   }
 
   function edit(id, spacecraft, layer) {
@@ -441,7 +530,7 @@ function mountEditor(getState) {
     editing = id;
     editingDisplay = layer ? layerDisplay(layer) : spacecraft.display;
     title.textContent = `Edit ${id}`;
-    const p = spacecraft.propagation;
+    const p = spacecraft.base ?? spacecraft.propagation;
     name.value = editingDisplay.label ?? p.name ?? id;
     const initial = p.initial;
     if (initial.tle) {
@@ -485,6 +574,8 @@ function mountEditor(getState) {
     fixedStepS.value = p.integrator?.fixedStepS ?? "";
     for (const maneuver of p.maneuvers ?? []) maneuvers.add(maneuver);
     for (const burn of p.finiteBurns ?? []) burns.add(burn);
+    sequenceText.value = spacecraft.sequence ? JSON.stringify(spacecraft.sequence, null, 2) : "";
+    showSequence();
     const c = p.covariance ?? {};
     covarianceFrame.value = COVARIANCE_FRAMES[c.frame] ?? c.frame ?? "rsw";
     const fill = (vector, values, scale) =>
@@ -500,7 +591,7 @@ function mountEditor(getState) {
     details.scrollIntoView({ block: "nearest" });
   }
 
-  /** The editor as `{id, display, propagation}`; throws a message. */
+  /** The editor as `{id, display, propagation, sequence?}`; throws a message. */
   function read() {
     const label = name.value.trim() || "Spacecraft";
     const id = editing ?? uniqueId(label);
@@ -532,8 +623,17 @@ function mountEditor(getState) {
         velocityKmS: velocity.inputs.map(numeric),
       };
     }
+    let sequence;
+    if (sequenceText.value.trim()) {
+      try {
+        sequence = JSON.parse(sequenceText.value);
+      } catch (caught) {
+        throw new Error(`Sequence: not JSON (${caught.message})`);
+      }
+      if (!Array.isArray(sequence)) throw new Error("Sequence: expected an array of commands");
+    }
     assign(propagation, "start", start.value.trim() || undefined);
-    const hours = optional(durationH);
+    const hours = sequence ? undefined : optional(durationH);
     assign(propagation, "durationS", hours === undefined ? undefined : hours * 3600);
     assign(propagation, "stepS", optional(stepS));
     propagation.vehicle = compact({
@@ -552,9 +652,9 @@ function mountEditor(getState) {
       relativity: relativity.input.checked,
     };
     propagation.integrator = compact({ method: integrator.value, fixedStepS: optional(fixedStepS) });
-    const impulsive = maneuvers.values();
+    const impulsive = sequence ? [] : maneuvers.values();
     if (impulsive.length) propagation.maneuvers = impulsive;
-    const finite = burns.values();
+    const finite = sequence ? [] : burns.values();
     if (finite.length) propagation.finiteBurns = finite;
     const covariance = readCovariance();
     if (covariance) propagation.covariance = covariance;
@@ -566,7 +666,7 @@ function mountEditor(getState) {
     const sigma = optional(ellipsoidSigma);
     delete display.uncertaintySigma;
     if (covariance && sigma !== undefined && sigma !== 3) display.uncertaintySigma = sigma;
-    return { id, display, propagation };
+    return { id, display, propagation, sequence };
   }
 
   /** Editor fields → `propagation.covariance` (km), or `undefined` when none is set. */
@@ -592,13 +692,13 @@ function mountEditor(getState) {
   function propagate() {
     error.hidden = true;
     try {
-      const { id, display, propagation } = read();
+      const { id, display, propagation, sequence } = read();
       // Same rules as a project file.
       parseProject(
-        { terramenta: PROJECT_VERSION, spacecraft: [{ id, ...display, propagation }] },
+        { terramenta: PROJECT_VERSION, spacecraft: [{ id, ...display, propagation, ...(sequence ? { sequence } : {}) }] },
         { warn: () => {} },
       );
-      const info = globe.addSpacecraft(id, propagation, display);
+      const info = globe.addSpacecraft(id, propagation, display, sequence);
       const now = getState()?.sun.unixSeconds;
       const [from, to] = [utcSeconds(info.start), utcSeconds(info.stop)];
       if (now === undefined || now < Math.min(from, to) || now > Math.max(from, to)) globe.setClock(from);
@@ -611,6 +711,14 @@ function mountEditor(getState) {
     }
   }
 
+  const durationRow = row("Duration", el("div", { class: "period" }, durationH, el("span", {}, "hours")));
+  const burnFields = [
+    el("h3", { class: "editor-title" }, "Impulsive burns (Δv m/s)"),
+    maneuvers.node,
+    el("h3", { class: "editor-title" }, "Finite burns"),
+    burns.node,
+  ];
+  manual.push(durationRow, ...burnFields);
   const details = el(
     "details",
     { class: "editor" },
@@ -624,7 +732,7 @@ function mountEditor(getState) {
     tleFields,
     ommFields,
     row("Start", start),
-    row("Duration", el("div", { class: "period" }, durationH, el("span", {}, "hours"))),
+    durationRow,
     row("Step", el("div", { class: "period" }, stepS, el("span", {}, "seconds"))),
     el("h3", { class: "editor-title" }, "Vehicle"),
     row("Mass kg", massKg),
@@ -641,10 +749,23 @@ function mountEditor(getState) {
     relativity.node,
     row("Integrator", integrator),
     row("RK4 step", fixedStepS),
-    el("h3", { class: "editor-title" }, "Impulsive burns (Δv m/s)"),
-    maneuvers.node,
-    el("h3", { class: "editor-title" }, "Finite burns"),
-    burns.node,
+    ...burnFields,
+    el("h3", { class: "editor-title" }, "Mission sequence"),
+    sequenceText,
+    el(
+      "div",
+      { class: "buttons" },
+      button("LEO → GEO template", () => {
+        sequenceText.value = JSON.stringify(SEQUENCE_TEMPLATE, null, 2);
+        showSequence();
+      }),
+    ),
+    el(
+      "p",
+      { class: "detail" },
+      "Commands in order: propagate (durationS | epoch | to periapsis/apoapsis/ascendingNode/descendingNode | " +
+        "quantity + value), maneuver, finiteBurn, target {variables, goals, sequence}. Replaces duration and burns.",
+    ),
     el("h3", { class: "editor-title" }, "Uncertainty (1σ at start)"),
     row("Frame", covarianceFrame),
     row("Position", positionSigma.node),

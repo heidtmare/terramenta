@@ -25,6 +25,7 @@ import { odErrors, odStudies } from "./od.js";
 import { applyEnvironment, recordedEnvironment } from "./environment.js";
 import { STATION_LAYER, eventsErrors, eventsSection, savedStations } from "./events.js";
 import { validate } from "./schema.js";
+import { flownShape, sequenceErrors } from "./sequence.js";
 import { targetsErrors, targetsSection } from "./targeting.js";
 import { timelineErrors, timelineSection } from "./timeline.js";
 import SCHEMA from "../schema/project.schema.json" with { type: "json" };
@@ -228,8 +229,13 @@ function referenceErrors(project) {
     if (ephemerisIds.has(spacecraft.id)) {
       errors.push(`spacecraft[${index}].id: "${spacecraft.id}" is also an ephemeris layer`);
     }
-    const { stop, durationS } = spacecraft.propagation;
-    if ((stop === undefined) === (durationS === undefined)) {
+    const { stop, durationS, maneuvers, finiteBurns } = spacecraft.propagation;
+    if (spacecraft.sequence) {
+      if (stop !== undefined || durationS !== undefined || maneuvers?.length || finiteBurns?.length) {
+        errors.push(`spacecraft[${index}].propagation: no stop, durationS, maneuvers or finiteBurns with a sequence`);
+      }
+      errors.push(...sequenceErrors(spacecraft.sequence, `spacecraft[${index}].sequence`));
+    } else if ((stop === undefined) === (durationS === undefined)) {
       errors.push(`spacecraft[${index}].propagation: exactly one of stop and durationS`);
     }
   });
@@ -358,9 +364,9 @@ export function applyProject(project) {
 export async function applySpacecraft(project, isCurrent = () => true) {
   if (project.environment) await applyEnvironment(project.environment, resolveUrl);
   if (!project.spacecraft || !isCurrent()) return;
-  for (const { id, propagation, ...display } of project.spacecraft) {
+  for (const { id, propagation, sequence, ...display } of project.spacecraft) {
     try {
-      globe.quietly(() => globe.addSpacecraft(id, propagation, display));
+      globe.quietly(() => globe.addSpacecraft(id, propagation, display, sequence));
     } catch (error) {
       console.warn(`Project: spacecraft "${id}" did not propagate`, error);
     }
@@ -489,11 +495,12 @@ export function captureProject(state, base = {}) {
   const environment = recordedEnvironment();
   if (environment) project.environment = environment;
   // In add order; a failed one (no layer) keeps its recorded display options.
-  const spacecraft = [...sources.spacecraft].map(([id, { propagation, display }]) => {
+  const spacecraft = [...sources.spacecraft].map(([id, { propagation, display, sequence, base }]) => {
     const layer = spacecraftLayers.get(id);
     // Not a layer property: from the recorded display.
     const sigma = display.uncertaintySigma === undefined ? {} : { uncertaintySigma: display.uncertaintySigma };
-    return { id, ...(layer ? layerDisplay(layer) : display), ...sigma, propagation };
+    const saved = sequence ? { propagation: base, sequence } : { propagation };
+    return { id, ...(layer ? layerDisplay(layer) : display), ...sigma, ...saved };
   });
   if (spacecraft.length) project.spacecraft = spacecraft;
 
@@ -527,7 +534,7 @@ export function captureProject(state, base = {}) {
   }
   Object.assign(project, eventsSection());
   const timeline = timelineSection({
-    spacecraft: new Map(spacecraft.map(({ id, propagation }) => [id, propagation])),
+    spacecraft: new Map(spacecraft.map((entry) => [entry.id, flownShape(entry)])),
     stationIds: new Set((project.groundStations ?? []).map((station) => station.id)),
     missionIds,
     layerIds: new Set([...project.ephemerides.layers.map((layer) => layer.id), ...sources.spacecraft.keys()]),

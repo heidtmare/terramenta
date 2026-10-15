@@ -61,6 +61,43 @@ export function attachFake({ objects = {} } = {}) {
         finiteBurns: structuredClone(propagation.finiteBurns ?? []),
       };
     },
+    /**
+     * One propagate segment per command, an hour each; one 100 m/s burn per
+     * maneuver at its segment start. Throws on `{propagate: {to: "bad"}}`.
+     */
+    runSequence: (propagation, sequence) => {
+      const t0 = Date.parse("2026-01-01T00:00:00Z") / 1000;
+      const iso = (t) => new Date(t * 1000).toISOString();
+      const flat = (commands) => commands.flatMap((c) => (c.target ? [c, ...flat(c.target.sequence)] : [c]));
+      const commands = flat(sequence);
+      if (commands.some((c) => c.propagate?.to === "bad")) throw new Error("unknown to");
+      const elements = { smaKm: 7000, eccentricity: 0, inclinationDeg: 28.5, raanDeg: 0, argPerigeeDeg: 0, trueAnomalyDeg: 0, altitudeKm: 621.9 };
+      const segments = commands.map((c, i) => {
+        const kind = ["propagate", "maneuver", "finiteBurn", "target"].find((key) => c[key]);
+        return {
+          ...(c.label ? { label: c.label } : {}),
+          kind,
+          depth: 0,
+          start: t0 + 3600 * i,
+          stop: t0 + 3600 * (i + 1),
+          massKg: 500,
+          ...(kind === "maneuver" ? { deltaVKmS: 0.1 } : {}),
+          elements,
+          ...(kind === "target" ? { target: { converged: true, iterations: 3, history: [9, 1, 0.1], values: [0.1], goals: [] } } : {}),
+        };
+      });
+      const maneuvers = segments
+        .filter((s) => s.kind === "maneuver")
+        .map((s) => ({ epoch: iso(s.start), deltaVKmS: [0.1, 0, 0], frame: "vnb" }));
+      const { durationS: _, ...rest } = propagation;
+      return {
+        propagation: { ...rest, stop: iso(t0 + 3600 * commands.length), maneuvers, finiteBurns: [] },
+        segments,
+        deltaVKmS: 0.1 * maneuvers.length,
+        finalMassKg: 500,
+        converged: true,
+      };
+    },
     /** One sample per `stepS` over an hour; sensors 10°…; LVLH Euler zero. Throws on `to: "bad"`. */
     attitude: (propagation, options) => {
       if ([options.primary, ...(options.sensors ?? [])].some((p) => p?.to === "bad")) throw new Error("unknown direction");

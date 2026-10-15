@@ -29,6 +29,7 @@ use terramenta_solare::interpolate::{Interpolation, SampledEphemeris};
 use terramenta_solare::maneuver::{FiniteBurn, ImpulsiveManeuver, LocalFrame};
 use terramenta_solare::orbit::OrbitalElements;
 use terramenta_solare::propagate::{BodyOrientation, EarthOrientation, Integrator, Method};
+use terramenta_solare::sequence::{self, Quantity};
 use terramenta_solare::space_weather::SpaceWeather;
 use terramenta_solare::spacecraft::{Propagation, Spacecraft};
 use terramenta_solare::spice::{self, KernelEphemeris, anise::prelude::Almanac, naif};
@@ -1240,71 +1241,6 @@ pub struct GoalResult {
     pub error: f64,
 }
 
-const QUANTITY_NAMES: [&str; 14] = [
-    "altitudeKm",
-    "radiusKm",
-    "speedKmS",
-    "smaKm",
-    "eccentricity",
-    "inclinationDeg",
-    "raanDeg",
-    "argPerigeeDeg",
-    "trueAnomalyDeg",
-    "periodMin",
-    "perigeeAltKm",
-    "apogeeAltKm",
-    "flightPathAngleDeg",
-    "massKg",
-];
-
-/// Two-body osculating quantity about Earth (EGM2008 GM); altitudes above the equatorial
-/// radius. Matches the webapp's `reports.js`.
-fn quantity(name: &str, s: &SpacecraftState) -> f64 {
-    let (r, v) = (s.position_km, s.velocity_km_s);
-    let mu = EGM2008_GM_KM3_S2;
-    let (radius, speed) = (r.length(), v.length());
-    let h = r.cross(v);
-    let rv = r.dot(v);
-    let e_vec = ((speed * speed - mu / radius) * r - rv * v) / mu;
-    let e = e_vec.length();
-    let a = -mu / (2.0 * (speed * speed / 2.0 - mu / radius));
-    let node = bevy::math::DVec3::new(-h.y, h.x, 0.0);
-    let wrap = |x: f64| x.rem_euclid(360.0);
-    let angle = |a: bevy::math::DVec3, b: bevy::math::DVec3| {
-        (a.dot(b) / (a.length() * b.length()))
-            .clamp(-1.0, 1.0)
-            .acos()
-            .to_degrees()
-    };
-    match name {
-        "altitudeKm" => radius - EARTH_RADIUS_KM,
-        "radiusKm" => radius,
-        "speedKmS" => speed,
-        "smaKm" => a,
-        "eccentricity" => e,
-        "inclinationDeg" => (h.z / h.length()).clamp(-1.0, 1.0).acos().to_degrees(),
-        "raanDeg" => wrap(node.y.atan2(node.x).to_degrees()),
-        "argPerigeeDeg" => {
-            let w = angle(node, e_vec);
-            wrap(if e_vec.z < 0.0 { -w } else { w })
-        }
-        "trueAnomalyDeg" => {
-            let nu = angle(e_vec, r);
-            if rv < 0.0 { 360.0 - nu } else { nu }
-        }
-        "periodMin" => 2.0 * std::f64::consts::PI * (a.powi(3) / mu).sqrt() / 60.0,
-        "perigeeAltKm" => a * (1.0 - e) - EARTH_RADIUS_KM,
-        "apogeeAltKm" => a * (1.0 + e) - EARTH_RADIUS_KM,
-        "flightPathAngleDeg" => (rv / (radius * speed)).clamp(-1.0, 1.0).asin().to_degrees(),
-        "massKg" => s.mass_kg,
-        _ => f64::NAN,
-    }
-}
-
-fn is_angle(name: &str) -> bool {
-    matches!(name, "raanDeg" | "argPerigeeDeg" | "trueAnomalyDeg")
-}
-
 /// Goal epoch in `req`, or `None` for the end of the propagation.
 fn goal_epoch(at: &str, req: &PropagationRequest) -> Result<Option<Epoch>, String> {
     let index = |s: &str, n: usize| -> Result<usize, String> {
@@ -1404,7 +1340,7 @@ pub fn target(req: &PropagationRequest, target: &TargetRequest) -> Result<Target
         variables.push(variable);
     }
     for (k, g) in target.goals.iter().enumerate() {
-        if !QUANTITY_NAMES.contains(&g.quantity.as_str()) {
+        if Quantity::from_name(&g.quantity).is_none() {
             return Err(format!("goals[{k}]: unknown quantity {:?}", g.quantity));
         }
         if g.tolerance.is_nan() || g.tolerance <= 0.0 || !g.value.is_finite() {
@@ -1514,11 +1450,8 @@ pub fn target(req: &PropagationRequest, target: &TargetRequest) -> Result<Target
                         SpacecraftState::new(*e, sv, states[i].mass_kg)
                     }
                 };
-                let achieved = quantity(&g.quantity, &state);
-                let mut error = achieved - g.value;
-                if is_angle(&g.quantity) {
-                    error = (error + 180.0).rem_euclid(360.0) - 180.0;
-                }
+                let q = Quantity::from_name(&g.quantity).expect("validated");
+                let (achieved, error) = (q.of(&state), q.error(&state, g.value));
                 Ok((achieved, error))
             })
             .collect()
@@ -1560,6 +1493,461 @@ pub fn target(req: &PropagationRequest, target: &TargetRequest) -> Result<Target
         goals,
         maneuvers: solved.maneuvers,
         finite_burns: solved.finite_burns,
+    })
+}
+
+// --- Mission sequence -----------------------------------------------------------------
+
+/// `runSequence` command: optional `label`, and one of `propagate`, `maneuver`,
+/// `finiteBurn`, `target`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CommandOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub propagate: Option<PropagateOptions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maneuver: Option<SequenceManeuverOptions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finite_burn: Option<SequenceBurnOptions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<SequenceTargetOptions>,
+}
+
+/// One of `durationS`, `epoch` (UTC), `to` (`periapsis` | `apoapsis` | `ascendingNode` |
+/// `descendingNode`), or `quantity` + `value` (+ `direction`: `increasing` | `decreasing` |
+/// `either`, default either). Crossings: `count`-th occurrence, bracketed every `stepS`,
+/// searched up to `maxDurationS`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PropagateOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_s: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epoch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direction: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_s: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_duration_s: Option<f64>,
+}
+
+/// Impulse at the current epoch.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SequenceManeuverOptions {
+    pub delta_v_km_s: [f64; 3],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isp_s: Option<f64>,
+}
+
+/// Thrust from the current epoch for `durationS`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SequenceBurnOptions {
+    pub duration_s: f64,
+    pub thrust_n: f64,
+    pub isp_s: f64,
+    pub direction: [f64; 3],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame: Option<String>,
+}
+
+/// Varies labelled commands in `sequence` until `goals` hold at its end.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SequenceTargetOptions {
+    pub variables: Vec<SequenceVariable>,
+    pub goals: Vec<SequenceGoal>,
+    pub sequence: Vec<CommandOptions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_iterations: Option<usize>,
+}
+
+/// `parameter`: `dv1`–`dv3` (maneuver, km/s in its frame) or `durationS` (finite burn, or
+/// a `durationS` propagate). Defaults: perturbation 1e-5 km/s / 1 s, maxStep 0.5 km/s / 600 s.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SequenceVariable {
+    pub command: String,
+    pub parameter: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub perturbation: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_step: Option<f64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SequenceGoal {
+    pub quantity: String,
+    pub value: f64,
+    pub tolerance: f64,
+}
+
+/// `runSequence` result.
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SequenceResult {
+    /// The input propagation with `maneuvers`, `finiteBurns` and `stop` resolved; feeds
+    /// `propagate` and every other analysis unchanged.
+    pub propagation: serde_json::Value,
+    /// Run order; a target's body follows it at `depth + 1`.
+    pub segments: Vec<SegmentInfo>,
+    /// Impulsive plus finite (rocket equation), km/s.
+    pub delta_v_km_s: f64,
+    pub final_mass_kg: f64,
+    /// Every target converged.
+    pub converged: bool,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SegmentInfo {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// `propagate` | `maneuver` | `finiteBurn` | `target`.
+    pub kind: &'static str,
+    pub depth: usize,
+    /// Unix s.
+    pub start: f64,
+    pub stop: f64,
+    pub mass_kg: f64,
+    /// Maneuver or finite burn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delta_v_km_s: Option<f64>,
+    /// At `stop`, osculating.
+    pub elements: SegmentElements,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<TargetInfo>,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SegmentElements {
+    pub sma_km: f64,
+    pub eccentricity: f64,
+    pub inclination_deg: f64,
+    pub raan_deg: f64,
+    pub arg_perigee_deg: f64,
+    pub true_anomaly_deg: f64,
+    pub altitude_km: f64,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetInfo {
+    pub converged: bool,
+    pub iterations: usize,
+    pub history: Vec<f64>,
+    /// Request order.
+    pub values: Vec<f64>,
+    pub goals: Vec<SequenceGoalResult>,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SequenceGoalResult {
+    pub quantity: String,
+    pub value: f64,
+    pub achieved: f64,
+    pub error: f64,
+}
+
+const DEFAULT_SEQUENCE_STEP_S: f64 = 60.0;
+const DEFAULT_MAX_DURATION_S: f64 = 30.0 * 86_400.0;
+
+fn frame_name(frame: LocalFrame) -> &'static str {
+    match frame {
+        LocalFrame::Inertial => "inertial",
+        LocalFrame::Vnb => "vnb",
+        LocalFrame::Rsw => "rsw",
+        LocalFrame::Lvlh => "lvlh",
+    }
+}
+
+fn sequence_commands(
+    commands: &[CommandOptions],
+    path: &str,
+) -> Result<Vec<sequence::Command>, String> {
+    use sequence::{Action, Direction, Goal, Parameter, Stop, Target, TargetVariable};
+    commands
+        .iter()
+        .enumerate()
+        .map(|(k, c)| {
+            let at = format!("{path}[{k}]");
+            let given = [
+                c.propagate.is_some(),
+                c.maneuver.is_some(),
+                c.finite_burn.is_some(),
+                c.target.is_some(),
+            ];
+            if given.iter().filter(|g| **g).count() != 1 {
+                return Err(format!(
+                    "{at}: need one of propagate, maneuver, finiteBurn, target"
+                ));
+            }
+            let action = if let Some(p) = &c.propagate {
+                let stops = [
+                    p.duration_s.is_some(),
+                    p.epoch.is_some(),
+                    p.to.is_some(),
+                    p.quantity.is_some(),
+                ];
+                if stops.iter().filter(|g| **g).count() != 1 {
+                    return Err(format!(
+                        "{at}.propagate: need one of durationS, epoch, to, quantity"
+                    ));
+                }
+                let stop = if let Some(d) = p.duration_s {
+                    Stop::Duration(d)
+                } else if let Some(e) = &p.epoch {
+                    Stop::Epoch(epoch(e)?)
+                } else if let Some(to) = &p.to {
+                    match to.as_str() {
+                        "periapsis" => Stop::periapsis(),
+                        "apoapsis" => Stop::apoapsis(),
+                        "ascendingNode" => Stop::ascending_node(),
+                        "descendingNode" => Stop::descending_node(),
+                        other => return Err(format!("{at}.propagate.to: unknown {other:?}")),
+                    }
+                } else {
+                    let name = p.quantity.as_deref().unwrap_or_default();
+                    let quantity = Quantity::from_name(name)
+                        .ok_or(format!("{at}.propagate.quantity: unknown {name:?}"))?;
+                    let value = p
+                        .value
+                        .ok_or(format!("{at}.propagate: quantity needs value"))?;
+                    let direction = match p.direction.as_deref() {
+                        None | Some("either") => Direction::Either,
+                        Some("increasing") => Direction::Increasing,
+                        Some("decreasing") => Direction::Decreasing,
+                        Some(other) => {
+                            return Err(format!("{at}.propagate.direction: unknown {other:?}"));
+                        }
+                    };
+                    Stop::crossing(quantity, value, direction)
+                };
+                Action::Propagate {
+                    stop,
+                    count: p.count.unwrap_or(1),
+                    step_s: p.step_s.unwrap_or(DEFAULT_SEQUENCE_STEP_S),
+                    max_duration_s: p.max_duration_s.unwrap_or(DEFAULT_MAX_DURATION_S),
+                }
+            } else if let Some(m) = &c.maneuver {
+                Action::Maneuver {
+                    delta_v_km_s: m.delta_v_km_s.into(),
+                    frame: local_frame(m.frame.as_deref())?,
+                    isp_s: m.isp_s,
+                }
+            } else if let Some(b) = &c.finite_burn {
+                Action::FiniteBurn {
+                    duration_s: b.duration_s,
+                    thrust_n: b.thrust_n,
+                    isp_s: b.isp_s,
+                    direction: b.direction.into(),
+                    frame: local_frame(b.frame.as_deref())?,
+                }
+            } else {
+                let t = c.target.as_ref().expect("one given");
+                let variables = t
+                    .variables
+                    .iter()
+                    .enumerate()
+                    .map(|(j, v)| {
+                        let (parameter, perturbation, max_step) = match v.parameter.as_str() {
+                            "dv1" => (Parameter::DeltaV(0), 1e-5, 0.5),
+                            "dv2" => (Parameter::DeltaV(1), 1e-5, 0.5),
+                            "dv3" => (Parameter::DeltaV(2), 1e-5, 0.5),
+                            "durationS" => (Parameter::Duration, 1.0, 600.0),
+                            other => {
+                                return Err(format!(
+                                    "{at}.target.variables[{j}]: unknown parameter {other:?}"
+                                ));
+                            }
+                        };
+                        Ok(TargetVariable {
+                            command: v.command.clone(),
+                            parameter,
+                            perturbation: v.perturbation.unwrap_or(perturbation),
+                            max_step: v.max_step.unwrap_or(max_step),
+                        })
+                    })
+                    .collect::<Result<_, String>>()?;
+                let goals = t
+                    .goals
+                    .iter()
+                    .enumerate()
+                    .map(|(j, g)| {
+                        Ok(Goal {
+                            quantity: Quantity::from_name(&g.quantity).ok_or(format!(
+                                "{at}.target.goals[{j}]: unknown quantity {:?}",
+                                g.quantity
+                            ))?,
+                            value: g.value,
+                            tolerance: g.tolerance,
+                        })
+                    })
+                    .collect::<Result<_, String>>()?;
+                Action::Target(Box::new(Target {
+                    variables,
+                    goals,
+                    body: sequence_commands(&t.sequence, &format!("{at}.target.sequence"))?,
+                    max_iterations: t.max_iterations.unwrap_or_else(default_max_iterations),
+                }))
+            };
+            Ok(sequence::Command {
+                label: c.label.clone(),
+                action,
+            })
+        })
+        .collect()
+}
+
+/// Runs `commands` from `propagation`'s state at `start` (its `stop`/`durationS` ignored;
+/// `maneuvers`/`finiteBurns` must be empty). A maneuver as the last command is reported but
+/// not in the resolved propagation (maneuvers at the stop epoch do not fire).
+pub fn run_sequence(
+    propagation: &serde_json::Value,
+    commands: &[CommandOptions],
+) -> Result<SequenceResult, String> {
+    let mut req: PropagationRequest =
+        serde_json::from_value(propagation.clone()).map_err(|e| format!("propagation: {e}"))?;
+    if !req.maneuvers.is_empty() || !req.finite_burns.is_empty() {
+        return Err("propagation: maneuvers and finiteBurns come from the sequence".into());
+    }
+    if commands.is_empty() {
+        return Err("sequence is empty".into());
+    }
+    let commands = sequence_commands(commands, "sequence")?;
+    req.covariance = None;
+    let env = environment();
+    let (sc, _) = spacecraft_at_start(&req, &env)?;
+    drop(env);
+    let run = sequence::run(&numerical_propagator(&sc), *sc.state(), &commands)
+        .map_err(|e| e.to_string())?;
+
+    let mut resolved = propagation.clone();
+    let object = resolved
+        .as_object_mut()
+        .ok_or("propagation: expected an object")?;
+    object.remove("durationS");
+    object.insert(
+        "stop".into(),
+        serde_json::Value::String(utc_iso(run.end.epoch)),
+    );
+    let maneuvers: Vec<ManeuverOptions> = run
+        .maneuvers
+        .iter()
+        .map(|m| ManeuverOptions {
+            epoch: utc_iso(m.epoch),
+            delta_v_km_s: m.delta_v_km_s.to_array(),
+            frame: Some(frame_name(m.frame).into()),
+            isp_s: m.isp_s,
+        })
+        .collect();
+    let burns: Vec<FiniteBurnOptions> = run
+        .finite_burns
+        .iter()
+        .map(|b| FiniteBurnOptions {
+            start: utc_iso(b.start),
+            duration_s: b.duration_s,
+            thrust_n: b.thrust_n,
+            isp_s: b.isp_s,
+            direction: b.direction.to_array(),
+            frame: Some(frame_name(b.frame).into()),
+        })
+        .collect();
+    object.insert(
+        "maneuvers".into(),
+        serde_json::to_value(maneuvers).expect("serializable"),
+    );
+    object.insert(
+        "finiteBurns".into(),
+        serde_json::to_value(burns).expect("serializable"),
+    );
+
+    let g0 = terramenta_solare::force::G0_M_S2 * 1e-3;
+    let mut total = 0.0;
+    let mut converged = true;
+    let segments = run
+        .segments
+        .iter()
+        .map(|s| {
+            let e = &s.end;
+            let (kind, delta_v, target) = match &s.kind {
+                sequence::SegmentKind::Propagate => ("propagate", None, None),
+                sequence::SegmentKind::Maneuver(_, dv) => ("maneuver", Some(dv.length()), None),
+                sequence::SegmentKind::FiniteBurn(b) => (
+                    "finiteBurn",
+                    Some(b.isp_s * g0 * (s.start.mass_kg / s.end.mass_kg).ln()),
+                    None,
+                ),
+                sequence::SegmentKind::Target(t) => {
+                    converged &= t.converged;
+                    let goals = t
+                        .goals
+                        .iter()
+                        .map(|g| SequenceGoalResult {
+                            quantity: g.quantity.name().into(),
+                            value: g.value,
+                            achieved: g.achieved,
+                            error: g.error,
+                        })
+                        .collect();
+                    (
+                        "target",
+                        None,
+                        Some(TargetInfo {
+                            converged: t.converged,
+                            iterations: t.iterations,
+                            history: t.history.clone(),
+                            values: t.values.clone(),
+                            goals,
+                        }),
+                    )
+                }
+            };
+            total += delta_v.unwrap_or(0.0);
+            SegmentInfo {
+                label: s.label.clone(),
+                kind,
+                depth: s.depth,
+                start: s.start.epoch.to_unix_seconds(),
+                stop: e.epoch.to_unix_seconds(),
+                mass_kg: e.mass_kg,
+                delta_v_km_s: delta_v,
+                elements: SegmentElements {
+                    sma_km: Quantity::SmaKm.of(e),
+                    eccentricity: Quantity::Eccentricity.of(e),
+                    inclination_deg: Quantity::InclinationDeg.of(e),
+                    raan_deg: Quantity::RaanDeg.of(e),
+                    arg_perigee_deg: Quantity::ArgPerigeeDeg.of(e),
+                    true_anomaly_deg: Quantity::TrueAnomalyDeg.of(e),
+                    altitude_km: Quantity::AltitudeKm.of(e),
+                },
+                target,
+            }
+        })
+        .collect();
+    Ok(SequenceResult {
+        propagation: resolved,
+        segments,
+        delta_v_km_s: total,
+        final_mass_kg: run.end.mass_kg,
+        converged,
     })
 }
 
@@ -2640,6 +3028,85 @@ mod tests {
         serde_json::from_str(json).unwrap()
     }
 
+    /// LEO → GEO: targeted TOI, coast to apoapsis, targeted circularization + plane change.
+    /// The resolved propagation reproduces the sequence's end state.
+    #[test]
+    fn sequence_geo_transfer_resolves_to_a_reproducible_propagation() {
+        let propagation: serde_json::Value = serde_json::from_str(
+            r#"{ "initial": { "epoch": "2026-03-20T00:00:00Z",
+                   "elements": { "smaKm": 6678.137, "eccentricity": 0, "inclinationDeg": 28.5,
+                                 "raanDeg": 0, "argPerigeeDeg": 0, "trueAnomalyDeg": 0 } },
+                 "durationS": 60, "stepS": 120, "vehicle": { "massKg": 3000 },
+                 "forces": { "gravity": [0, 0], "thirdBody": false, "srp": false, "drag": "none" } }"#,
+        )
+        .unwrap();
+        let commands: Vec<CommandOptions> = serde_json::from_str(
+            r#"[
+              { "label": "toi", "target": {
+                  "variables": [{ "command": "toi-burn", "parameter": "dv1" }],
+                  "goals": [{ "quantity": "radiusKm", "value": 42164, "tolerance": 0.01 }],
+                  "sequence": [
+                    { "label": "toi-burn", "maneuver": { "deltaVKmS": [2, 0, 0], "frame": "vnb", "ispS": 310 } },
+                    { "propagate": { "to": "apoapsis" } } ] } },
+              { "label": "goi", "target": {
+                  "variables": [{ "command": "goi-burn", "parameter": "dv1" },
+                                { "command": "goi-burn", "parameter": "dv2" }],
+                  "goals": [{ "quantity": "eccentricity", "value": 0, "tolerance": 1e-5 },
+                            { "quantity": "inclinationDeg", "value": 0, "tolerance": 1e-3 }],
+                  "sequence": [
+                    { "label": "goi-burn", "maneuver": { "deltaVKmS": [1.5, 0, 0], "frame": "vnb", "ispS": 310 } } ] } },
+              { "propagate": { "durationS": 3600 } }
+            ]"#,
+        )
+        .unwrap();
+        let out = run_sequence(&propagation, &commands).unwrap();
+        assert!(out.converged, "{:?}", out.segments);
+        // TOI ≈ 2.43 km/s; GOI with 28.5° plane change ≈ 1.80 km/s.
+        assert!(
+            (out.delta_v_km_s - 4.23).abs() < 0.03,
+            "{}",
+            out.delta_v_km_s
+        );
+        let last = out.segments.last().unwrap();
+        assert!((last.elements.sma_km - 42_164.0).abs() < 1.0);
+        assert!(last.elements.inclination_deg < 2e-3);
+        assert!(out.propagation.get("durationS").is_none());
+
+        let req: PropagationRequest = serde_json::from_value(out.propagation.clone()).unwrap();
+        assert_eq!(req.maneuvers.len(), 2);
+        let p = propagate(&req).unwrap();
+        let end = p.states.last().unwrap();
+        assert!((end.mass_kg - out.final_mass_kg).abs() < 1e-6);
+        assert!(
+            (Quantity::SmaKm.of(end) - last.elements.sma_km).abs() < 0.05,
+            "{} vs {}",
+            Quantity::SmaKm.of(end),
+            last.elements.sma_km
+        );
+    }
+
+    #[test]
+    fn sequence_rejects_ambiguous_commands() {
+        let propagation = serde_json::json!({
+            "initial": { "epoch": "2026-03-20T00:00:00Z",
+                         "positionKm": [7000, 0, 0], "velocityKmS": [0, 7.5, 0] } });
+        let both: Vec<CommandOptions> =
+            serde_json::from_str(r#"[{ "propagate": { "durationS": 60, "to": "apoapsis" } }]"#)
+                .unwrap();
+        assert!(
+            run_sequence(&propagation, &both)
+                .unwrap_err()
+                .contains("one of")
+        );
+        let none: Vec<CommandOptions> = serde_json::from_str(r#"[{ "label": "x" }]"#).unwrap();
+        assert!(
+            run_sequence(&propagation, &none)
+                .unwrap_err()
+                .contains("one of")
+        );
+        assert!(serde_json::from_str::<Vec<CommandOptions>>(r#"[{ "coast": {} }]"#).is_err());
+    }
+
     #[test]
     fn state_request_with_burn_round_trips_oem_and_spk() {
         let req = request(
@@ -3100,8 +3567,8 @@ mod tests {
         // Perigee at the ascending node + 90°: the northernmost point of the orbit.
         assert!((s.position_km.length() - 6930.0).abs() < 1e-6);
         assert!((s.position_km.z / s.position_km.length() - 98f64.to_radians().sin()).abs() < 1e-9);
-        assert!((quantity("smaKm", s) - 7000.0).abs() < 1e-6);
-        assert!((quantity("inclinationDeg", s) - 98.0).abs() < 1e-9);
+        assert!((Quantity::SmaKm.of(s) - 7000.0).abs() < 1e-6);
+        assert!((Quantity::InclinationDeg.of(s) - 98.0).abs() < 1e-9);
         let low = r#"{ "initial": { "epoch": "2026-01-01T00:00:00Z",
                    "elements": { "smaKm": 6500, "eccentricity": 0.1, "inclinationDeg": 0,
                                  "raanDeg": 0, "argPerigeeDeg": 0, "trueAnomalyDeg": 0 } },
