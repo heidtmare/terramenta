@@ -9,6 +9,7 @@
  * bound.
  */
 
+import { svg } from "./chart.js";
 import * as globe from "./globe.js";
 import { el, row, section, tabs } from "./dom.js";
 import { mountEphemeris } from "./ephemeris.js";
@@ -18,6 +19,7 @@ import { mountOrbitDetermination } from "./od-panel.js";
 import { mountEvents } from "./events-panel.js";
 import { altitude, timeScale } from "./format.js";
 import { mountMission } from "./mission.js";
+import { VECTOR_COLOR } from "./palette.js";
 import { mountOverlays } from "./overlays.js";
 import { PLACES } from "./places.js";
 import { mountProjectSection } from "./project-panel.js";
@@ -25,6 +27,18 @@ import { mountReports } from "./reports-panel.js";
 import { mountSpacecraft } from "./spacecraft-panel.js";
 import { mountTimeline } from "./timeline-panel.js";
 import { button, choice, slider, toggle } from "./widgets.js";
+
+/** Tab icons: 24-unit stroked paths. */
+const ICONS = {
+  project: "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z",
+  layers: "M12 3 2 8l10 5 10-5zM2 12.5l10 5 10-5M2 17l10 5 10-5",
+  spacecraft: "M9.5 9.5h5v5h-5zM2 10h5v4H2zM17 10h5v4h-5zM7 12h2.5M14.5 12H17M12 14.5V18M9.5 20.5h5",
+  timeline: "M3 12h18M6 9v6M11 6v12M16 8.5v7M20 10.5v3",
+  analysis: "M3 20h18M4 16l5-6 4 3 7-8",
+  view: "M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12zM12 9a3 3 0 1 0 0 6 3 3 0 1 0 0-6z",
+};
+
+const icon = (d) => svg("svg", { class: "tab-icon", viewBox: "0 0 24 24", "aria-hidden": "true" }, svg("path", { d }));
 
 /** `tab`: the tab opened first; `signal` aborts when the project closes. */
 export function mountPanel(root, { tab, signal }) {
@@ -116,7 +130,7 @@ export function mountPanel(root, { tab, signal }) {
   const vectorColor = el("input", {
     class: "swatch",
     type: "color",
-    value: "#8cd9ff",
+    value: VECTOR_COLOR,
     title: "Vector tile colour",
     oninput: sendVectorStyle,
   });
@@ -353,12 +367,12 @@ export function mountPanel(root, { tab, signal }) {
   // --- Tabs ----------------------------------------------------------------
 
   const { strip, panes, select } = tabs([
-    { id: "project", label: "Project", panes: [mountProjectSection({ signal })] },
-    { id: "layers", label: "Layers", panes: [imagery, vectorTiles, overlays, ephemerides] },
-    { id: "spacecraft", label: "Spacecraft", panes: mountSpacecraft(bind, signal) },
-    { id: "timeline", label: "Timeline", panes: [mountTimeline(bind)] },
-    { id: "analysis", label: "Analysis", panes: [...mountReports(bind, signal), mountEvents(bind, signal), mountCoverage(bind, signal), mountConjunctions(bind, signal), mountOrbitDetermination(bind, signal), ...mountMission(bind, signal)] },
-    { id: "view", label: "View", panes: [sun, frame, gnc, camera, chrome] },
+    { id: "project", label: "Project", icon: icon(ICONS.project), panes: [mountProjectSection({ signal })] },
+    { id: "layers", label: "Layers", icon: icon(ICONS.layers), panes: [imagery, vectorTiles, overlays, ephemerides] },
+    { id: "spacecraft", label: "Spacecraft", icon: icon(ICONS.spacecraft), panes: mountSpacecraft(bind, signal) },
+    { id: "timeline", label: "Timeline", icon: icon(ICONS.timeline), panes: [mountTimeline(bind)] },
+    { id: "analysis", label: "Analysis", icon: icon(ICONS.analysis), panes: [...mountReports(bind, signal), mountEvents(bind, signal), mountCoverage(bind, signal), mountConjunctions(bind, signal), mountOrbitDetermination(bind, signal), ...mountMission(bind, signal)] },
+    { id: "view", label: "View", icon: icon(ICONS.view), panes: [sun, frame, gnc, camera, chrome] },
   ]);
 
   // Strip stays put; the body scrolls.

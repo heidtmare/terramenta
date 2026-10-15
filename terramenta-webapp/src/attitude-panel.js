@@ -11,6 +11,7 @@ import { download, el, row, section } from "./dom.js";
 import { savedStations } from "./events.js";
 import * as globe from "./globe.js";
 import { PROJECT_VERSION, parseProject } from "./project.js";
+import { AXIS } from "./palette.js";
 import { isoUtc } from "./reports.js";
 import { button, rowList, toggle } from "./widgets.js";
 
@@ -23,9 +24,9 @@ const AXES = [
   ["−Z", [0, 0, -1]],
 ];
 const EULER = [
-  ["Roll", "#ff6b6b"],
-  ["Pitch", "#6bd66b"],
-  ["Yaw", "#6b9bff"],
+  ["Roll", AXIS[0]],
+  ["Pitch", AXIS[1]],
+  ["Yaw", AXIS[2]],
 ];
 
 export function mountAttitude(bind, signal) {

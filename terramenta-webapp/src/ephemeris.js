@@ -26,6 +26,7 @@ import * as globe from "./globe.js";
 import { el, row, section } from "./dom.js";
 import { duration } from "./format.js";
 import { CATALOGUES, DEFAULT_CATALOGUE } from "./orbits.js";
+import { EPHEMERIS_COLORS as PALETTE } from "./palette.js";
 import { button, setUnlessFocused, toggle } from "./widgets.js";
 
 /**
@@ -35,7 +36,6 @@ import { button, setUnlessFocused, toggle } from "./widgets.js";
  * one thing drawn here that is never on the ground, so it reads as its own kind
  * of thing rather than as another feed of places.
  */
-const PALETTE = ["#8ce0ff", "#b9a8ff", "#7ef0c8", "#ffd9f0", "#a8c8ff"];
 
 /** Next palette colour: by how many ephemeris layers the open project has. */
 const nextColor = () => PALETTE[globe.recordedSources().ephemerides.size % PALETTE.length];

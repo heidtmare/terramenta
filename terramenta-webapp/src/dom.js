@@ -73,7 +73,7 @@ export function row(label, control) {
  * tree rather than being rebuilt, so every control in them goes on taking its
  * value from each state snapshot and is already current when its tab is opened.
  *
- * Takes `[{id, label, panes}]` and returns the strip, the panes, and how to
+ * Takes `[{id, label, icon?, panes}]` (`icon`: a node) and returns the strip, the panes, and how to
  * open one by id.
  */
 export function tabs(groups) {
@@ -90,7 +90,8 @@ export function tabs(groups) {
         onclick: () => select(group.id),
         onkeydown: (event) => step(event),
       },
-      group.label,
+      group.icon,
+      el("span", {}, group.label),
     ),
   );
 

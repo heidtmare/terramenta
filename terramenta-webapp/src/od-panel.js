@@ -11,25 +11,26 @@ import { download, el, row, section } from "./dom.js";
 import { savedStations, stationLabel } from "./events.js";
 import * as globe from "./globe.js";
 import * as od from "./od.js";
+import { AXIS, SERIES } from "./palette.js";
 import { PROJECT_VERSION, layerDisplay, parseProject } from "./project.js";
 import { isoUtc, toCsv } from "./reports.js";
 import { button } from "./widgets.js";
 
 const TYPE_COLORS = {
-  range: "#6bd66b",
-  rangeRate: "#ffd36b",
-  azimuth: "#6b9bff",
-  elevation: "#ff6b6b",
-  rightAscension: "#c38bff",
-  declination: "#ff9bd2",
-  positionX: "#8ce0ff",
-  positionY: "#4fb3d9",
-  positionZ: "#2a7fa6",
+  range: AXIS[1],
+  rangeRate: SERIES.amber,
+  azimuth: AXIS[2],
+  elevation: AXIS[0],
+  rightAscension: SERIES.violet,
+  declination: SERIES.pink,
+  positionX: SERIES.sky,
+  positionY: SERIES.teal,
+  positionZ: SERIES.ocean,
 };
 const RSW = [
-  ["Radial", "#ff6b6b"],
-  ["In-track", "#6bd66b"],
-  ["Cross-track", "#6b9bff"],
+  ["Radial", AXIS[0]],
+  ["In-track", AXIS[1]],
+  ["Cross-track", AXIS[2]],
 ];
 /** A gap longer than this breaks a residual line (between passes). */
 const BREAK_S = 300;

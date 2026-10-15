@@ -14,9 +14,10 @@
  */
 
 import * as globe from "./globe.js";
+import { STATION_COLOR } from "./palette.js";
 
 export const STATION_LAYER = "ground-stations";
-export const STATION_COLOR = "#a6ff6b";
+export { STATION_COLOR };
 export const EVENT_DEFAULTS = { eclipses: true, apsides: false, nodes: false, stepS: 30 };
 
 let stations = [];
