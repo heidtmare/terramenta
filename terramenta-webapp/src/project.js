@@ -17,7 +17,7 @@
 
 import * as globe from "./globe.js";
 import { analysisErrors, analysisSection } from "./analysis.js";
-import { attitudesErrors, attitudesSection } from "./attitude.js";
+import { attitudesErrors, attitudesSection, flightOptions } from "./attitude.js";
 import { conjunctionErrors, conjunctionStudies } from "./conjunction.js";
 import { COVERAGE_LAYER, coverageErrors, coverageStudies } from "./coverage.js";
 import { DIRECTORS } from "./director.js";
@@ -366,7 +366,7 @@ export async function applySpacecraft(project, isCurrent = () => true) {
   if (!project.spacecraft || !isCurrent()) return;
   for (const { id, propagation, sequence, ...display } of project.spacecraft) {
     try {
-      globe.quietly(() => globe.addSpacecraft(id, propagation, display, sequence));
+      globe.quietly(() => globe.addSpacecraft(id, propagation, display, flightOptions(id, propagation, sequence)));
     } catch (error) {
       console.warn(`Project: spacecraft "${id}" did not propagate`, error);
     }
@@ -499,7 +499,7 @@ export function captureProject(state, base = {}) {
     const layer = spacecraftLayers.get(id);
     // Not a layer property: from the recorded display.
     const sigma = display.uncertaintySigma === undefined ? {} : { uncertaintySigma: display.uncertaintySigma };
-    const saved = sequence ? { propagation: base, sequence } : { propagation };
+    const saved = { propagation: base ?? propagation, ...(sequence ? { sequence } : {}) };
     return { id, ...(layer ? layerDisplay(layer) : display), ...sigma, ...saved };
   });
   if (spacecraft.length) project.spacecraft = spacecraft;

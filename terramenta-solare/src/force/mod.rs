@@ -2,7 +2,7 @@
 //!
 //! States are central-body-centred, ICRF axes, km, km/s, kg. Accelerations km/s².
 
-use glam::{DMat3, DVec3};
+use glam::{DMat3, DQuat, DVec3};
 
 use crate::earth::TerrestrialTransform;
 use crate::frame::Ephemeris;
@@ -26,13 +26,69 @@ pub use third_body::ThirdBody;
 pub const G0_M_S2: f64 = 9.806_65;
 
 /// Physical properties used by non-gravitational forces.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// With [`Self::plates`], drag takes its area from the plates facing the flow (still with
+/// [`Self::drag_coefficient`]) and SRP sums per-plate pressure; `drag_area_m2`,
+/// `srp_area_m2` and `reflectivity` are then unused. Plates need an attitude
+/// ([`crate::propagate::Propagator::attitude`]).
+#[derive(Debug, Clone, PartialEq)]
 pub struct Vehicle {
     pub dry_mass_kg: f64,
     pub drag_area_m2: f64,
     pub drag_coefficient: f64,
     pub srp_area_m2: f64,
     pub reflectivity: f64,
+    pub plates: Vec<Plate>,
+}
+
+/// One-sided flat plate, body axes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Plate {
+    /// Outward unit normal.
+    pub normal: DVec3,
+    pub area_m2: f64,
+    /// Specular reflectivity ρs.
+    pub specular: f64,
+    /// Diffuse reflectivity ρd; absorbed 1 − ρs − ρd.
+    pub diffuse: f64,
+}
+
+impl Plate {
+    /// Area projected on unit `toward` (body axes): `A·max(0, n̂·d̂)`.
+    pub fn projected_area_m2(&self, toward: DVec3) -> f64 {
+        self.area_m2 * self.normal.dot(toward).max(0.0)
+    }
+
+    /// Radiation force per unit pressure, m², body axes; `sun` the unit vector to the Sun.
+    /// Montenbruck & Gill §3.4.2: `−A cosθ [(1 − ρs) ŝ + 2 (ρs cosθ + ρd / 3) n̂]`.
+    pub fn radiation_m2(&self, sun: DVec3) -> DVec3 {
+        let cos = self.normal.dot(sun);
+        if cos <= 0.0 {
+            return DVec3::ZERO;
+        }
+        -self.area_m2
+            * cos
+            * ((1.0 - self.specular) * sun
+                + 2.0 * (self.specular * cos + self.diffuse / 3.0) * self.normal)
+    }
+}
+
+impl Vehicle {
+    /// Box plates: `±x, ±y, ±z` faces of areas `[a_x, a_y, a_z]`, one ρs, ρd.
+    pub fn box_plates(areas_m2: [f64; 3], specular: f64, diffuse: f64) -> Vec<Plate> {
+        DVec3::AXES
+            .into_iter()
+            .zip(areas_m2)
+            .flat_map(|(axis, area_m2)| {
+                [axis, -axis].map(|normal| Plate {
+                    normal,
+                    area_m2,
+                    specular,
+                    diffuse,
+                })
+            })
+            .collect()
+    }
 }
 
 impl Default for Vehicle {
@@ -43,6 +99,7 @@ impl Default for Vehicle {
             drag_coefficient: 2.2,
             srp_area_m2: 1.0,
             reflectivity: 1.8,
+            plates: Vec::new(),
         }
     }
 }
@@ -65,6 +122,9 @@ pub struct ForceContext<'a> {
     /// Sun relative to the central body at `epoch`, evaluated once per stage by the
     /// propagator. Overrides per-force Sun ephemerides.
     pub sun_km: Option<DVec3>,
+    /// Body → inertial, when the propagator has an attitude and a force or plates need it;
+    /// `None` also where the attitude law is undefined (the propagation then fails).
+    pub attitude: Option<DQuat>,
 }
 
 impl ForceContext<'_> {
@@ -90,6 +150,11 @@ pub trait ForceModel: std::fmt::Debug + Send + Sync {
 
     /// Needs [`ForceContext::body_fixed`].
     fn requires_body_fixed(&self) -> bool {
+        false
+    }
+
+    /// Needs [`ForceContext::attitude`] regardless of the vehicle.
+    fn requires_attitude(&self) -> bool {
         false
     }
 

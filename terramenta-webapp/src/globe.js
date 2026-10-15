@@ -193,10 +193,10 @@ const sources = {
   ephemerides: new Map(),
   missions: new Map(),
   /**
-   * `{propagation, display, info, error, sequence?, base?, run?}` per
+   * `{propagation, display, info, error, base, sequence?, run?}` per
    * `addSpacecraft` id, failed ones included. `propagation` is what flies (a
-   * sequence's resolved one); `base` the one given with `sequence`, `run` its
-   * `runSequence` result.
+   * sequence's resolved one, with the flown `attitude`); `base` the one given,
+   * without `attitude`; `run` the `runSequence` result.
    */
   spacecraft: new Map(),
   /** Ephemeris layer ids whose selection was set explicitly. */
@@ -773,17 +773,21 @@ export const runSequence = (propagation, sequence) => required().runSequence(pro
  * result up as ephemeris layer `id` with `display` (`addEphemeris` options,
  * `url`/`text` ignored); replaces a layer of that id. Returns `propagate`'s
  * info. With `sequence`, flies `runSequence(propagation, sequence)`'s resolved
- * propagation instead. Recorded even if propagation throws — the spec is kept
- * for saving, the old layer removed — then rethrows. With
- * `propagation.covariance`, draws the position ellipsoid at
- * `display.uncertaintySigma` (default 3; 0 hides) in the point colour.
+ * propagation instead. `attitude` (default `propagation.attitude`) is flown
+ * as `propagation.attitude` but not kept in `base`. Recorded even if
+ * propagation throws — the spec is kept for saving, the old layer removed —
+ * then rethrows. With `propagation.covariance`, draws the position ellipsoid
+ * at `display.uncertaintySigma` (default 3; 0 hides) in the point colour.
  */
-export function addSpacecraft(id, propagation, display = {}, sequence = undefined) {
-  const entry = { propagation, display, info: null, error: null };
-  if (sequence) Object.assign(entry, { sequence, base: propagation, run: null });
+export function addSpacecraft(id, propagation, display = {}, { sequence, attitude } = {}) {
+  const { attitude: given, ...base } = propagation;
+  attitude ??= given;
+  const flown = attitude ? { ...base, attitude } : base;
+  const entry = { propagation: flown, display, info: null, error: null, base };
+  if (sequence) Object.assign(entry, { sequence, run: null });
   try {
     if (sequence) {
-      entry.run = required().runSequence(propagation, sequence);
+      entry.run = required().runSequence(flown, sequence);
       entry.propagation = entry.run.propagation;
     }
     entry.info = required().propagate({ ...entry.propagation, kvn: false });

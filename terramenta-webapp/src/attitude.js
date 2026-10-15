@@ -16,6 +16,9 @@
  *
  * `syncAttitudes()` (every state) re-samples a profile when it, its spacecraft
  * or its station changes, and redraws. Samples are not saved.
+ *
+ * A spacecraft with `vehicle.plates` or a `"body"` finite burn flies its
+ * profile (`flightOptions`): editing the profile re-propagates it.
  */
 
 import { savedStations } from "./events.js";
@@ -68,17 +71,54 @@ function notify(set = listeners) {
 
 export const savedAttitudes = () => profiles;
 
-/** Adds `profile`, replacing its spacecraft's. */
+/** Adds `profile`, replacing its spacecraft's; re-flies the spacecraft if coupled. */
 export function setAttitude(profile) {
   const copy = structuredClone(profile);
   const index = profiles.findIndex((other) => other.spacecraft === profile.spacecraft);
   profiles = index < 0 ? [...profiles, copy] : profiles.with(index, copy);
+  refly(profile.spacecraft);
   notify();
 }
 
 export function removeAttitude(spacecraft) {
   profiles = profiles.filter((profile) => profile.spacecraft !== spacecraft);
+  refly(spacecraft);
   notify();
+}
+
+// --- Flight ----------------------------------------------------------------------
+
+/** The propagation reads an attitude: plates, or a `"body"` finite burn (sequences included). */
+export function needsAttitude(propagation, sequence = []) {
+  const body = (burn) => burn?.frame === "body";
+  const walk = (commands) => commands.some((command) => body(command.finiteBurn) || walk(command.target?.sequence ?? []));
+  return (propagation.vehicle?.plates?.length ?? 0) > 0 || (propagation.finiteBurns ?? []).some(body) || walk(sequence);
+}
+
+/** `propagate` `attitude` from spacecraft `id`'s profile: law, spin, site; `undefined` without one. */
+export function flightAttitude(id) {
+  const profile = profiles.find((candidate) => candidate.spacecraft === id);
+  if (!profile) return undefined;
+  const { quaternion, primary, secondary, spin } = profile;
+  const site = siteOf(profile);
+  return JSON.parse(JSON.stringify({ quaternion, primary, secondary, spin, target: site ?? undefined }));
+}
+
+/** `globe.addSpacecraft` options: `sequence`, and the profile when the propagation needs it. */
+export function flightOptions(id, propagation, sequence) {
+  const attitude = needsAttitude(propagation, sequence) ? flightAttitude(id) : undefined;
+  return { ...(sequence ? { sequence } : {}), ...(attitude ? { attitude } : {}) };
+}
+
+/** Re-propagates spacecraft `id` under its current profile if it needs one. Failures are recorded. */
+function refly(id) {
+  const entry = globe.recordedSources().spacecraft.get(id);
+  if (!entry || !needsAttitude(entry.base, entry.sequence)) return;
+  try {
+    globe.addSpacecraft(id, entry.base, entry.display, flightOptions(id, entry.base, entry.sequence));
+  } catch (error) {
+    console.warn(`Attitude: spacecraft "${id}" did not propagate`, error);
+  }
 }
 
 /** `{attitudes?}` for saving; profiles of spacecraft no longer in the scene dropped. */

@@ -40,6 +40,11 @@
     "description": "LVLH, sun-constrained ground-site tracking and an inertial spinner: body axes and boresights on the globe, sensor angles, AEM export."
   },
   {
+    "file": "differential-drag.terramenta.json",
+    "name": "Differential drag",
+    "description": "Flat-plate smallsats flying attitude profiles: low-drag vs wing-into-the-flow decay, and a body-frame low-thrust raise."
+  },
+  {
     "file": "coverage-study.terramenta.json",
     "name": "Coverage study",
     "description": "Six-imager sun-synchronous constellation from Keplerian elements: sensor footprints, H3 revisit over Europe, global access, a terrain-masked station."

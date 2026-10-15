@@ -1,5 +1,5 @@
-//! Solar radiation pressure, cannonball model, conical shadow of the central body
-//! (Montenbruck & Gill, *Satellite Orbits*, §3.4).
+//! Solar radiation pressure, conical shadow of the central body (Montenbruck & Gill,
+//! *Satellite Orbits*, §3.4): cannonball, or flat plates under the attitude.
 
 use std::sync::Arc;
 
@@ -71,8 +71,19 @@ impl ForceModel for SolarRadiationPressure {
         // N/m² at the spacecraft.
         let p = self.irradiance_w_m2 / (C_KM_S * 1e3) * (ASTRONOMICAL_UNIT_KM / dist).powi(2);
         let v = ctx.vehicle;
+        let force_m2 = match ctx.attitude {
+            Some(q) if !v.plates.is_empty() => {
+                let sun_body = q.inverse() * (-d / dist);
+                q * v
+                    .plates
+                    .iter()
+                    .map(|plate| plate.radiation_m2(sun_body))
+                    .sum::<DVec3>()
+            }
+            _ => v.reflectivity * v.srp_area_m2 * d / dist,
+        };
         // m/s² → km/s².
-        nu * p * v.reflectivity * v.srp_area_m2 / ctx.mass_kg * 1e-3 * d / dist
+        nu * p / ctx.mass_kg * 1e-3 * force_m2
     }
 
     fn velocity_dependent(&self) -> bool {
@@ -128,9 +139,82 @@ mod tests {
             switch_epoch: crate::Epoch::J2000,
             switch_mass_kg: 1.0,
             sun_km: None,
+            attitude: None,
         };
         let a = srp.acceleration(&ctx);
         // 4.54e-6 m/s² away from the Sun.
         assert!((a.x * 1e3 + 4.5398e-6).abs() < 1e-9, "{a}");
+    }
+
+    #[test]
+    fn plates() {
+        let sun = DVec3::new(ASTRONOMICAL_UNIT_KM, 0.0, 0.0);
+        let srp = SolarRadiationPressure::new(
+            crate::frame::FixedOffset(crate::StateVector::new(sun, DVec3::ZERO)),
+            0.0,
+        );
+        let vehicle = |plates| super::super::Vehicle {
+            plates,
+            ..Default::default()
+        };
+        let accel = |vehicle: &super::super::Vehicle, q: glam::DQuat| {
+            srp.acceleration(&ForceContext {
+                epoch: crate::Epoch::J2000,
+                position_km: DVec3::ZERO,
+                velocity_km_s: DVec3::ZERO,
+                mass_kg: 1.0,
+                vehicle,
+                body_fixed: None,
+                switch_epoch: crate::Epoch::J2000,
+                switch_mass_kg: 1.0,
+                sun_km: None,
+                attitude: Some(q),
+            }) * 1e3
+                / 4.5398e-6
+        };
+        let plate = |specular, diffuse| super::super::Plate {
+            normal: DVec3::X,
+            area_m2: 1.0,
+            specular,
+            diffuse,
+        };
+        // Facing the Sun: absorbing 1, specular 2, diffuse 1 + 2/3, all anti-Sun.
+        for ((s, d), expected) in [
+            ((0.0, 0.0), 1.0),
+            ((1.0, 0.0), 2.0),
+            ((0.0, 1.0), 5.0 / 3.0),
+        ] {
+            let a = accel(&vehicle(vec![plate(s, d)]), glam::DQuat::IDENTITY);
+            assert!(
+                (a - DVec3::new(-expected, 0.0, 0.0)).length() < 1e-4,
+                "{s} {d}: {a}"
+            );
+        }
+        // Turned away: nothing; 60° off, absorbing: cos 60° along −ŝ.
+        let back = accel(
+            &vehicle(vec![plate(0.0, 0.0)]),
+            glam::DQuat::from_rotation_z(std::f64::consts::PI),
+        );
+        assert_eq!(back, DVec3::ZERO);
+        let tilted = accel(
+            &vehicle(vec![plate(0.0, 0.0)]),
+            glam::DQuat::from_rotation_z(60f64.to_radians()),
+        );
+        assert!(
+            (tilted - DVec3::new(-0.5, 0.0, 0.0)).length() < 1e-4,
+            "{tilted}"
+        );
+        // Specular at 45°: along −n̂ only, 2 cos²45° = 1.
+        let q = glam::DQuat::from_rotation_z(45f64.to_radians());
+        let mirror = accel(&vehicle(vec![plate(1.0, 0.0)]), q);
+        assert!((mirror + q * DVec3::X).length() < 1e-4, "{mirror}");
+        // A cube of absorbing plates matches a unit cannonball with Cr = 1 for any attitude.
+        let cube = vehicle(super::super::Vehicle::box_plates([1.0; 3], 0.0, 0.0));
+        let a = accel(&cube, glam::DQuat::from_rotation_y(0.4));
+        let projected = 0.4f64.cos() + 0.4f64.sin();
+        assert!(
+            (a - DVec3::new(-projected, 0.0, 0.0)).length() < 1e-4,
+            "{a}"
+        );
     }
 }

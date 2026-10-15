@@ -461,6 +461,9 @@ pub fn determine_orbit(req: &OdRequest) -> Result<OdResult, String> {
         .iter()
         .map(|s| {
             let p = parameter(&s.parameter)?;
+            if p == Parameter::Reflectivity && !propagator.vehicle.plates.is_empty() {
+                return Err("solveFor reflectivity: plates have no reflectivity".into());
+            }
             if !(s.sigma.is_finite() && s.sigma > 0.0) {
                 return Err(format!("solveFor {}: sigma must be positive", s.parameter));
             }

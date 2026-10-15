@@ -78,7 +78,7 @@ Relative URLs resolve against the app root (the directory holding
 | `overlays` | `{enabled, picking, layers: [{id, ...addOverlay options}]}` | One of `url`/`text` per layer |
 | `ephemerides` | `{enabled, layers: [{id, ...addEphemeris options}]}` | OMM JSON or KVN OEM |
 | `environment` | `{eop, spaceWeather, kernel}` | URLs; see [Spacecraft](#spacecraft) |
-| `spacecraft` | `[{id, ...addEphemeris display options, uncertaintySigma, propagation}]` | `propagation`: `propagate` options; one of `stop`/`durationS`; `initial` a TLE, OMM, GCRF state or `{epoch, elements}`; optional `covariance`. `uncertaintySigma`: ellipsoid scale, default 3, 0 hides. Id unique across `ephemerides`. Optional `sequence`: see [Mission sequence](#mission-sequence) |
+| `spacecraft` | `[{id, ...addEphemeris display options, uncertaintySigma, propagation}]` | `propagation`: `propagate` options; one of `stop`/`durationS`; `initial` a TLE, OMM, GCRF state or `{epoch, elements}`; optional `covariance`; `vehicle.plates` and `"body"` finite burns fly the attitude profile ([Attitude](#attitude)). `uncertaintySigma`: ellipsoid scale, default 3, 0 hides. Id unique across `ephemerides`. Optional `sequence`: see [Mission sequence](#mission-sequence) |
 | `missions` | `[{id, ...addMission options}]` | |
 | `placemarks.enabled`, `keyboard` | bool | |
 | `gnc` | `{enabled, eciAxes, ecefAxes, graticule, graticuleStepDeg, sidereal, track, trackOrbits, focus: {layer, noradId}}` | |
@@ -123,6 +123,7 @@ Listed in [`projects/manifest.json`](projects/manifest.json).
 | [`ground-contacts`](projects/ground-contacts.terramenta.json) | 700 km SSO for a day over five ground stations; contacts, eclipses, nodes; timeline slows the clock for `polar.aos.svalbard.1` |
 | [`targeted-transfer`](projects/targeted-transfer.terramenta.json) | Rough first-guess burns, solved on the Spacecraft tab: Hohmann Δv and second-burn epoch for a circular 800 km orbit; 20 N finite-burn duration for a 150 km SMA raise |
 | [`attitude-modes`](projects/attitude-modes.terramenta.json) | Three pointing laws over six hours: LVLH observer with a star-tracker sun angle, SSO tracking Svalbard with its array sun-constrained, 6°/s inertial spinner; body axes and boresights on the globe |
+| [`differential-drag`](projects/differential-drag.terramenta.json) | Three 12 kg plate-model smallsats at 350 km for three days: ends into the flow, solar wing into the flow, and ends into the flow with a 2 mN body-frame thrust; SMA and altitude plots; opens on Analysis |
 | [`conjunction-screening`](projects/conjunction-screening.terramenta.json) | 550 km SSO satellite and a debris object crossing it at 70° with a 120 m radial miss, both with covariance; screened against the debris and the CelesTrak visual catalogue; timeline slows through TCA; opens on Analysis |
 | [`orbit-determination`](projects/orbit-determination.terramenta.json) | 450 km satellite (truth Cd 2.6) and a 3 km-off a priori (Cd 2.2) with covariance; simulated radar (four stations) and GNSS tracking; radar batch solving for Cd, GNSS EKF, radar batch with Cd fixed; opens on Analysis |
 | [`coverage-study`](projects/coverage-study.terramenta.json) | Six nadir imagers in three 700 km SSO planes from Keplerian elements, cone and rectangular fields of view with footprints; one-day sensor revisit over Europe (H3 4, shown) and global access above 10° (H3 2); Svalbard with a terrain horizon; opens on Analysis |
@@ -142,7 +143,7 @@ spacecraft, Coverage, Conjunctions and Orbit determination while it has neither 
 | | Vector tiles | Source (MapLibre boundaries, OSM Shortbread), its source layers and depth, colour, ring fill, streaming on/off |
 | | GeoJSON overlays | Add from URL or local file; bundled samples and USGS feeds; refresh period; picking on/off. Per layer: visibility, colour, clamp to surface, extrude, simplestyle on/off, refresh, remove, feature counts and age |
 | | Satellites | Add OMM from URL or local file; five Celestrak groups. Per layer: visibility, colour, trails and trail window, refresh, remove, and a filterable object list with per-object draw and trail toggles |
-| **Spacecraft** | Spacecraft | Per spacecraft: visibility, colour, trails, span/samples/final mass/final 1σ, edit, go to start, OEM/SPK export, remove. Editor: initial state (Keplerian elements, GCRF state with circular-orbit fill, TLE, OMM), start/duration/step, vehicle, forces, integrator, impulsive and finite burns, uncertainty (frame, 1σ position and velocity, process noise, ellipsoid σ) |
+| **Spacecraft** | Spacecraft | Per spacecraft: visibility, colour, trails, span/samples/final mass/final 1σ, edit, go to start, OEM/SPK export, remove. Editor: initial state (Keplerian elements, GCRF state with circular-orbit fill, TLE, OMM), start/duration/step, vehicle, plates (normal, area, specular, diffuse), forces, integrator, impulsive and finite burns (finite: body frame too), uncertainty (frame, 1σ position and velocity, process noise, ellipsoid σ) |
 | | Targeting | Per target: spacecraft, solve, apply, edit, remove; last solution's variables (initial, solved) and goals (desired, achieved, error; misses in red). Editor: name, spacecraft, iterations, variables (burn, parameter, perturbation, max step), goals (quantity, at, value, tolerance) |
 | | Attitude | Per profile: law, AEM export, edit, remove; sensor angles (or LVLH Euler angles) chart with clock cursor (click to set the clock), min/time/max table. Editor: spacecraft, name, law (align/constrain axes and directions, or inertial quaternion), spin, target (station or site), step, body axes on/off, sensors (name, axis, direction or none, field of view: cone or rectangle, colour, drawing on/off) |
 | | Ground stations | Per station: name, position, altitude, mask, horizon points, edit, remove. Add/edit: name, lat/lon, altitude, mask, horizon (`az:el, …`), colour. Drawn as a point overlay |
@@ -362,6 +363,12 @@ options)`, drawn with `globe.showAttitude`.
   linear interpolation, sign-continuous.
 - Re-sampled when the profile, its spacecraft or its station changes. Samples
   are not saved; profiles of removed spacecraft are dropped on save.
+- **Flown**: a spacecraft with `vehicle.plates` or a `frame: "body"` finite
+  burn (sequences included) propagates under its profile (law, spin, site;
+  `propagation.attitude`, not saved): drag takes the plate area facing the
+  flow, SRP sums the plates, the burn thrusts along the body direction. Spin
+  zero angle defaults to the propagation start. Setting or removing the
+  profile re-propagates it; without one it fails. Station edits do not.
 
 ## Coverage
 
@@ -573,6 +580,7 @@ projects/
   ground-contacts.terramenta.json  Ground station contacts and eclipses
   targeted-transfer.terramenta.json  Differential correction of burns
   attitude-modes.terramenta.json  Pointing laws, body axes, sensor angles
+  differential-drag.terramenta.json  Plate drag/SRP and body-frame thrust under attitude
   coverage-study.terramenta.json  Imager constellation, footprints, H3 coverage
   conjunction-screening.terramenta.json  Close approaches, Pc, CDM
   orbit-determination.terramenta.json  Simulated tracking, batch/EKF, Cd
