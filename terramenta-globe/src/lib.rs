@@ -36,6 +36,8 @@ mod mvt;
 // Driven from `wasm`; native builds only test it.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 mod numerical;
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+mod od;
 mod omm;
 mod overlays;
 mod picking;

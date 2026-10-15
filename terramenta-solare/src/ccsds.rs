@@ -1,6 +1,6 @@
 //! CCSDS Orbit Data Messages (502.0-B-3), KVN: OEM and OPM read/write; Attitude Data
 //! Messages (504.0-B-1), KVN: quaternion AEM read/write; Conjunction Data Messages
-//! (508.0-B-1), KVN: CDM read/write.
+//! (508.0-B-1), KVN: CDM read/write; Tracking Data Messages (503.0-B-2), KVN: TDM read/write.
 //!
 //! Frames and centres are carried as strings; no frame conversion is applied.
 //! OEM covariance: lower-triangle `[r, v]` blocks, `EPOCH` and optional `COV_REF_FRAME`.
@@ -1146,6 +1146,220 @@ impl Cdm {
     }
 }
 
+// --- TDM ------------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TdmMetadata {
+    pub time_system: TimeSystem,
+    /// `PARTICIPANT_1..n`.
+    pub participants: Vec<String>,
+    /// `PATH`, 1-based participant indices in signal order (`[1, 2, 1]`: two-way). Empty: absent.
+    pub path: Vec<usize>,
+    pub mode: Option<String>,
+    /// `AZEL`, `RADEC`, `XEYN`, `XSYE`.
+    pub angle_type: Option<String>,
+    pub reference_frame: Option<String>,
+    /// `km`, `s`, `RU`.
+    pub range_units: Option<String>,
+}
+
+impl Default for TdmMetadata {
+    fn default() -> Self {
+        Self {
+            time_system: TimeSystem::Utc,
+            participants: Vec::new(),
+            path: Vec::new(),
+            mode: Some("SEQUENTIAL".into()),
+            angle_type: None,
+            reference_frame: None,
+            range_units: None,
+        }
+    }
+}
+
+/// `KEYWORD = epoch value`. Units as the keyword defines (`ANGLE_*`: deg).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TdmRecord {
+    pub keyword: String,
+    pub epoch: Epoch,
+    pub value: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TdmSegment {
+    pub metadata: TdmMetadata,
+    pub records: Vec<TdmRecord>,
+}
+
+/// Tracking Data Message (503.0-B-2), KVN. Records are carried by keyword; no unit or
+/// path conversion.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Tdm {
+    pub header: Header,
+    pub segments: Vec<TdmSegment>,
+}
+
+impl Tdm {
+    pub fn to_kvn(&self) -> String {
+        use std::fmt::Write;
+        let mut out = String::new();
+        write_header(&mut out, "TDM", &self.header);
+        for seg in &self.segments {
+            let m = &seg.metadata;
+            let ts = m.time_system;
+            let _ = writeln!(out, "\nMETA_START");
+            let _ = writeln!(out, "TIME_SYSTEM = {}", ts.as_str());
+            let by_time =
+                |a: &&TdmRecord, b: &&TdmRecord| a.epoch.seconds_since(b.epoch).total_cmp(&0.0);
+            if let (Some(first), Some(last)) = (
+                seg.records.iter().min_by(by_time),
+                seg.records.iter().max_by(by_time),
+            ) {
+                let (first, last) = (first.epoch, last.epoch);
+                let _ = writeln!(out, "START_TIME = {}", ts.format(first));
+                let _ = writeln!(out, "STOP_TIME = {}", ts.format(last));
+            }
+            for (i, p) in m.participants.iter().enumerate() {
+                let _ = writeln!(out, "PARTICIPANT_{} = {p}", i + 1);
+            }
+            if let Some(mode) = &m.mode {
+                let _ = writeln!(out, "MODE = {mode}");
+            }
+            if !m.path.is_empty() {
+                let path: Vec<String> = m.path.iter().map(usize::to_string).collect();
+                let _ = writeln!(out, "PATH = {}", path.join(","));
+            }
+            for (k, v) in [
+                ("ANGLE_TYPE", &m.angle_type),
+                ("REFERENCE_FRAME", &m.reference_frame),
+                ("RANGE_UNITS", &m.range_units),
+            ] {
+                if let Some(v) = v {
+                    let _ = writeln!(out, "{k} = {v}");
+                }
+            }
+            let _ = writeln!(out, "META_STOP\n\nDATA_START");
+            for r in &seg.records {
+                let _ = writeln!(
+                    out,
+                    "{} = {} {:.12e}",
+                    r.keyword,
+                    ts.format(r.epoch),
+                    r.value
+                );
+            }
+            let _ = writeln!(out, "DATA_STOP");
+        }
+        out
+    }
+
+    pub fn from_kvn(text: &str) -> Result<Self, CcsdsError> {
+        let mut tdm = Tdm {
+            header: Header::default(),
+            segments: Vec::new(),
+        };
+        let mut meta: Option<TdmMetadata> = None;
+        let mut data = false;
+        for (i, raw) in text.lines().enumerate() {
+            let line = raw.trim();
+            let n = i + 1;
+            if line.is_empty() || line.starts_with("COMMENT") {
+                continue;
+            }
+            match line {
+                "META_START" => {
+                    meta = Some(TdmMetadata {
+                        mode: None,
+                        ..TdmMetadata::default()
+                    });
+                    continue;
+                }
+                "META_STOP" => {
+                    let m = meta
+                        .take()
+                        .ok_or_else(|| err(n, "META_STOP without META_START"))?;
+                    tdm.segments.push(TdmSegment {
+                        metadata: m,
+                        records: Vec::new(),
+                    });
+                    continue;
+                }
+                "DATA_START" => {
+                    if tdm.segments.is_empty() {
+                        return Err(err(n, "DATA_START before metadata"));
+                    }
+                    data = true;
+                    continue;
+                }
+                "DATA_STOP" => {
+                    data = false;
+                    continue;
+                }
+                _ => {}
+            }
+            let Some((k, v)) = kv(line) else {
+                return Err(err(n, "expected KEY = value"));
+            };
+            if let Some(m) = meta.as_mut() {
+                match k {
+                    "TIME_SYSTEM" => {
+                        m.time_system = TimeSystem::parse(v)
+                            .ok_or_else(|| err(n, format!("unsupported TIME_SYSTEM {v}")))?
+                    }
+                    "MODE" => m.mode = Some(v.into()),
+                    "PATH" | "PATH_1" if m.path.is_empty() => {
+                        m.path = v
+                            .split(',')
+                            .map(|p| p.trim().parse().map_err(|_| err(n, "bad PATH")))
+                            .collect::<Result<_, _>>()?
+                    }
+                    "ANGLE_TYPE" => m.angle_type = Some(v.into()),
+                    "REFERENCE_FRAME" => m.reference_frame = Some(v.into()),
+                    "RANGE_UNITS" => m.range_units = Some(v.into()),
+                    _ => {
+                        if let Some(i) = k
+                            .strip_prefix("PARTICIPANT_")
+                            .and_then(|i| i.parse::<usize>().ok())
+                            .filter(|i| *i >= 1)
+                        {
+                            if m.participants.len() < i {
+                                m.participants.resize(i, String::new());
+                            }
+                            m.participants[i - 1] = v.into();
+                        }
+                    }
+                }
+                continue;
+            }
+            if !data {
+                match k {
+                    "CCSDS_TDM_VERS" => tdm.header.version = v.into(),
+                    "CREATION_DATE" => tdm.header.creation_date = v.into(),
+                    "ORIGINATOR" => tdm.header.originator = v.into(),
+                    _ => {}
+                }
+                continue;
+            }
+            let seg = tdm.segments.last_mut().expect("checked at DATA_START");
+            let mut fields = v.split_whitespace();
+            let epoch = fields
+                .next()
+                .and_then(|e| seg.metadata.time_system.parse_epoch(e))
+                .ok_or_else(|| err(n, "bad epoch"))?;
+            let value = fields
+                .next()
+                .and_then(|x| x.parse::<f64>().ok())
+                .ok_or_else(|| err(n, format!("bad value for {k}")))?;
+            seg.records.push(TdmRecord {
+                keyword: k.into(),
+                epoch,
+                value,
+            });
+        }
+        Ok(tdm)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1463,5 +1677,44 @@ CNDOT_NDOT = 5.178E-05 [m**2/s**2]
         assert!(
             Cdm::from_kvn(&CDM_SAMPLE.replace("CNDOT_NDOT = 5.178E-05 [m**2/s**2]\n", "")).is_err()
         );
+    }
+
+    const TDM_SAMPLE: &str = "CCSDS_TDM_VERS = 2.0
+COMMENT TDM example created by yyyyy-nnnA Nav Team (NASA/JPL)
+CREATION_DATE = 2005-160T20:15:00Z
+ORIGINATOR = NASA
+META_START
+TIME_SYSTEM = UTC
+PARTICIPANT_1 = DSS-25
+PARTICIPANT_2 = yyyy-nnnA
+MODE = SEQUENTIAL
+PATH = 1,2,1
+RANGE_UNITS = km
+ANGLE_TYPE = AZEL
+META_STOP
+DATA_START
+RANGE = 2005-159T17:41:00 +4.00000000000e+04
+ANGLE_1 = 2005-159T17:41:00 2.51000000e+02 [deg]
+ANGLE_2 = 2005-159T17:41:00 4.20000000e+01
+DATA_STOP
+";
+
+    #[test]
+    fn tdm_reads_and_round_trips() {
+        let tdm = Tdm::from_kvn(TDM_SAMPLE).unwrap();
+        let seg = &tdm.segments[0];
+        assert_eq!(seg.metadata.participants, ["DSS-25", "yyyy-nnnA"]);
+        assert_eq!(seg.metadata.path, [1, 2, 1]);
+        assert_eq!(seg.metadata.angle_type.as_deref(), Some("AZEL"));
+        assert_eq!(seg.records.len(), 3);
+        assert_eq!(seg.records[1].keyword, "ANGLE_1");
+        assert_eq!(seg.records[1].value, 251.0);
+        assert_eq!(
+            seg.records[0].epoch,
+            Epoch::from_utc(2005, 6, 8, 17, 41, 0.0)
+        );
+        let back = Tdm::from_kvn(&tdm.to_kvn()).unwrap();
+        assert_eq!(back, tdm);
+        assert!(Tdm::from_kvn("DATA_START\nRANGE = 2005-159T17:41:00 1\n").is_err());
     }
 }

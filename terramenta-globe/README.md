@@ -114,6 +114,7 @@ from a real failure.
 | `showUncertainty(id, options)` / `hideUncertainty(id)` | Draw the last `propagate` covariance on ephemeris layer `id`: position ellipsoid at `sigma` |
 | `coverage(options)` | Access coverage of an H3 grid by spacecraft, line of sight or through sensor fields of view: per-cell fraction, accesses, gaps |
 | `conjunctions(options)` | Screen a propagated spacecraft against propagated spacecraft, TLE/OMM and loaded ephemeris layers: TCA, miss, RSW geometry, Pc, Pc max, CDM |
+| `determineOrbit(options)` | Batch least squares (state, Cd/Cr) or EKF from observations, CCSDS TDM or simulated tracking: estimate, covariance, residuals, TDM |
 | `loadKernel(bytes)` `loadEop(text)` `loadSpaceWeather(text)` `propagationEnvironment()` | Propagation data |
 | `setPickingEnabled(bool)` `pinFeature(layer, index)` `clearPinnedFeature()` | Overlay feature picking |
 | `pinSatellite(layer, noradId)` `clearPinnedSatellite()` | Satellite picking |
@@ -635,6 +636,41 @@ const { screened, filtered, conjunctions } = globe.conjunctions({
 - Cost: native ~0.8 s for a day at 60 s against 10 000 LEO objects (2 600 past
   the band filter); WASM ~0.3 s for 5 000.
 
+```js
+const od = globe.determineOrbit({
+  propagation: aPriori,                               // covariance = a priori P̄
+  stations: [{ id: "svalbard", latDeg: 78.23, lonDeg: 15.39, minElevationDeg: 5 }],
+  simulate: { truth, tracking: [{ type: "range" }, { type: "azimuth" }, { type: "elevation" }], stepS: 30 },
+  // or observations: [{ time, station, type, value, sigma }], tdm: kvn
+  estimator: "batch", solveFor: [{ parameter: "dragCoefficient", sigma: 0.5 }],
+});
+// od: { converged, epoch, positionKm, velocityKmS, sigmaRsw, covariance, parameters,
+//   iterations, residuals, rms, edited, history? (ekf), truthErrorRsw?, estimate, tdm? }
+```
+
+- Measurements (`type`, display unit): `range` (km, one-way), `rangeRate`
+  (km/s), `azimuth`/`elevation` (deg, geodetic horizon), `rightAscension`/
+  `declination` (deg, topocentric GCRF), `positionX/Y/Z` (km, GCRF, no
+  station). Analytic partials; receive-time tags, one-leg light time
+  (`lightTime`); no refraction, aberration or media delays.
+- Batch: Gauss–Newton about the a priori state at the propagation start;
+  `propagation.covariance` adds an a priori, `solveFor` estimates `vehicle`
+  Cd/Cr (finite-difference sensitivities). Converged when the weighted RMS
+  changes < `tolerance`. Edits `|y|/σ > editSigma·max(RMS, 1)` from the second
+  iteration. Covariance `Λ⁻¹` at the a priori epoch.
+- EKF: Joseph-form scalar updates from the a priori state and covariance, SNC
+  process noise from `covariance.processNoiseKm2S3`, innovation gate
+  `editSigma` (default 5); estimate at the last observation; `history` holds
+  the posterior RSW 1σ after each update.
+- TDM: `RANGE` (km; halved on a round-trip `PATH`), `DOPPLER_INSTANTANEOUS`
+  (range rate), `ANGLE_1/2` (`AZEL`, `RADEC`). Participants match station ids.
+  Exported one-way (`PATH = 2,1`).
+- `simulate`: truth propagated, Hermite-interpolated; tracking every `stepS`
+  while the station mask clears; Gaussian noise (`seed`), optional `bias`.
+  `truthErrorRsw`: estimate − truth at the estimate epoch.
+- `estimate`: `propagate` patch (`initial`, GCRF `covariance`, estimated
+  `vehicle` parameters).
+
 - Without a kernel, Sun/Moon come from analytic series (Moon ≤ 0.1°).
 - Without EOP, Earth orientation uses zero polar motion and UT1 = UTC.
 - Synchronous; ≤ 200 000 samples per call. Errors throw.
@@ -857,6 +893,7 @@ src/
   simplestyle.rs   simplestyle-spec 1.1.0
   omm.rs           OMM → SGP4 propagators; OEM → tabulated motion
   numerical.rs     propagate/propagateSpk/findEvents/target/attitude/coverage/conjunctions requests; kernel, EOP, space weather
+  od.rs            determineOrbit requests
   tessellate.rs    Ear clipping, holes, antimeridian
   picking.rs       Overlay hit-testing
   overlays.rs      Overlay layers, geojson:// source, refresh, meshes

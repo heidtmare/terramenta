@@ -131,6 +131,7 @@ const UNTRACKED = new Set([
   "hideAttitude",
   "coverage",
   "conjunctions",
+  "determineOrbit",
 ]);
 
 let changeListener = null;
@@ -739,6 +740,17 @@ export const coverage = (options) => required().coverage(options);
  * Full option list: `terramenta-globe/src/wasm.rs`, `conjunctions`.
  */
 export const conjunctions = (options) => required().conjunctions(options);
+
+/**
+ * Orbit determination: `{propagation, stations?, observations?, tdm?,
+ * simulate?: {truth, tracking, stepS?, seed?}, sigmas?, estimator?, solveFor?,
+ * lightTime?, maxIterations?, tolerance?, editSigma?, exportTdm?}` →
+ * `{estimator, converged, epoch, positionKm, velocityKmS, sigmaRsw,
+ * covariance, parameters, iterations, residuals, rms, observations, edited,
+ * history?, truthErrorRsw?, estimate, tdm?}`. Synchronous; throws on bad input.
+ * Full option list: `terramenta-globe/src/wasm.rs`, `determine_orbit`.
+ */
+export const determineOrbit = (options) => required().determineOrbit(options);
 
 /**
  * Propagates `propagation` (`propagate` options; `kvn` ignored) and puts the

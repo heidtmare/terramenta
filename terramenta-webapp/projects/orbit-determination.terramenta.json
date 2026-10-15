@@ -1,0 +1,116 @@
+{
+  "$schema": "../schema/project.schema.json",
+  "terramenta": 3,
+  "name": "Orbit determination",
+  "description": "A 450 km, 51.6° satellite (truth: Cd 2.6) tracked for a day by four radars (range 10 m, az/el 18″, 60 s) and carrying a GNSS receiver (10 m). The a priori is 3 km low with Cd 2.2 and a 5 km / 5 m/s covariance. Analysis → Orbit determination: a batch fit solving for Cd, an EKF on GNSS positions (process noise absorbing the Cd error), and the radar batch with Cd held at 2.2: more edits, RMS above 1, and a truth error far outside 1σ. Each reports the estimate, 1σ, error against the truth, residual statistics and charts; Apply replaces the a priori with the estimate; TDM exports the tracking.",
+  "ui": { "tab": "analysis" },
+  "frame": "ecef",
+  "clock": { "epoch": "2026-05-01T00:00:00Z", "timeScale": 120, "paused": false },
+  "camera": { "lat": 40, "lon": -40, "altitudeKm": 22000 },
+  "spacecraft": [
+    {
+      "id": "truth",
+      "label": "Truth",
+      "pointColor": "#a6ff6b",
+      "lineColor": "#a6ff6b80",
+      "leadingOrbits": 0,
+      "trailingOrbits": 1,
+      "propagation": {
+        "name": "TRUTH",
+        "initial": {
+          "epoch": "2026-05-01T00:00:00Z",
+          "elements": { "smaKm": 6828.137, "eccentricity": 0.0008, "inclinationDeg": 51.6, "raanDeg": 120, "argPerigeeDeg": 40, "trueAnomalyDeg": 0 }
+        },
+        "durationS": 86400,
+        "stepS": 60,
+        "vehicle": { "massKg": 400, "dragAreaM2": 3, "dragCoefficient": 2.6, "srpAreaM2": 3 },
+        "forces": { "gravity": [8, 8], "drag": "harrisPriester" }
+      }
+    },
+    {
+      "id": "estimate",
+      "label": "A priori / estimate",
+      "pointColor": "#ffb86b",
+      "lineColor": "#ffb86ba6",
+      "leadingOrbits": 0,
+      "trailingOrbits": 1,
+      "uncertaintySigma": 3,
+      "propagation": {
+        "name": "SAT",
+        "initial": {
+          "epoch": "2026-05-01T00:00:00Z",
+          "elements": { "smaKm": 6825.137, "eccentricity": 0.0008, "inclinationDeg": 51.62, "raanDeg": 120.02, "argPerigeeDeg": 40, "trueAnomalyDeg": 0.03 }
+        },
+        "durationS": 86400,
+        "stepS": 60,
+        "vehicle": { "massKg": 400, "dragAreaM2": 3, "dragCoefficient": 2.2, "srpAreaM2": 3 },
+        "forces": { "gravity": [8, 8], "drag": "harrisPriester" },
+        "covariance": {
+          "positionSigmaKm": [5, 5, 5],
+          "velocitySigmaKmS": [0.005, 0.005, 0.005],
+          "processNoiseKm2S3": [1e-13, 1e-13, 1e-13]
+        }
+      }
+    }
+  ],
+  "groundStations": [
+    { "id": "svalbard", "label": "Svalbard", "latDeg": 78.2297, "lonDeg": 15.4078, "altKm": 0.5, "minElevationDeg": 5 },
+    { "id": "fairbanks", "label": "Fairbanks", "latDeg": 64.8594, "lonDeg": -147.8489, "altKm": 0.3, "minElevationDeg": 5 },
+    { "id": "wallops", "label": "Wallops", "latDeg": 37.9402, "lonDeg": -75.4664, "minElevationDeg": 5 },
+    { "id": "hartebeesthoek", "label": "Hartebeesthoek", "latDeg": -25.8872, "lonDeg": 27.7075, "altKm": 1.5, "minElevationDeg": 10 }
+  ],
+  "analysis": {
+    "plots": [
+      { "id": "in-track", "label": "In-track 1σ", "quantity": "sigmaInTrackM", "spacecraft": ["estimate"] }
+    ],
+    "orbitDetermination": [
+      {
+        "id": "radar-batch",
+        "label": "Radar batch, Cd",
+        "spacecraft": "estimate",
+        "simulate": {
+          "truth": "truth",
+          "tracking": [
+            { "type": "range", "sigma": 0.01 },
+            { "type": "azimuth", "sigma": 0.005 },
+            { "type": "elevation", "sigma": 0.005 }
+          ],
+          "stepS": 60,
+          "seed": 7
+        },
+        "solveFor": [{ "parameter": "dragCoefficient", "sigma": 0.5 }]
+      },
+      {
+        "id": "gnss-ekf",
+        "label": "GNSS EKF",
+        "spacecraft": "estimate",
+        "estimator": "ekf",
+        "simulate": {
+          "truth": "truth",
+          "tracking": [
+            { "type": "positionX", "sigma": 0.01 },
+            { "type": "positionY", "sigma": 0.01 },
+            { "type": "positionZ", "sigma": 0.01 }
+          ],
+          "stepS": 120,
+          "seed": 3
+        }
+      },
+      {
+        "id": "radar-cd-fixed",
+        "label": "Radar batch, Cd fixed",
+        "spacecraft": "estimate",
+        "simulate": {
+          "truth": "truth",
+          "tracking": [
+            { "type": "range", "sigma": 0.01 },
+            { "type": "azimuth", "sigma": 0.005 },
+            { "type": "elevation", "sigma": 0.005 }
+          ],
+          "stepS": 60,
+          "seed": 7
+        }
+      }
+    ]
+  }
+}

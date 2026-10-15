@@ -436,14 +436,69 @@
       ]
     },
     "analysis": {
-      "description": "Saved plots, porkchop, coverage and conjunction studies (Analysis tab); see src/analysis.js, src/coverage.js, src/conjunction.js.",
+      "description": "Saved plots, porkchop, coverage, conjunction and orbit determination studies (Analysis tab); see src/analysis.js, src/coverage.js, src/conjunction.js, src/od.js.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "plots": { "type": "array", "items": { "$ref": "#/$defs/plot" } },
         "porkchops": { "type": "array", "items": { "$ref": "#/$defs/porkchop" } },
         "coverage": { "type": "array", "items": { "$ref": "#/$defs/coverage" } },
-        "conjunctions": { "type": "array", "items": { "$ref": "#/$defs/conjunction" } }
+        "conjunctions": { "type": "array", "items": { "$ref": "#/$defs/conjunction" } },
+        "orbitDetermination": { "type": "array", "items": { "$ref": "#/$defs/orbitDetermination" } }
+      }
+    },
+    "orbitDetermination": {
+      "description": "Orbit determination of one spacecraft from TDM and/or simulated tracking.",
+      "type": "object",
+      "required": ["id", "spacecraft"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$", "title": "letters, digits, - and _" },
+        "label": { "type": "string" },
+        "spacecraft": { "type": "string", "description": "Spacecraft id: the a priori; its propagation.covariance the a priori covariance (EKF: required)." },
+        "estimator": { "enum": ["batch", "ekf"], "description": "Default batch." },
+        "stations": { "type": "array", "items": { "type": "string" }, "description": "Ground station ids; default all." },
+        "tdm": { "type": "string", "description": "CCSDS TDM (KVN) URL, relative to the app root, or data: URL." },
+        "simulate": {
+          "type": "object",
+          "required": ["truth", "tracking"],
+          "additionalProperties": false,
+          "properties": {
+            "truth": { "type": "string", "description": "Spacecraft id tracked." },
+            "tracking": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": ["type"],
+                "additionalProperties": false,
+                "properties": {
+                  "type": { "enum": ["range", "rangeRate", "azimuth", "elevation", "rightAscension", "declination", "positionX", "positionY", "positionZ"] },
+                  "station": { "type": "string", "description": "Ground station id; absent: every station." },
+                  "sigma": { "type": "number", "minimum": 0, "description": "1σ noise and weight: km, km/s, deg." },
+                  "bias": { "type": "number", "description": "km, km/s, deg." }
+                }
+              }
+            },
+            "stepS": { "type": "number", "exclusiveMinimum": 0, "description": "Default 60." },
+            "seed": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "solveFor": {
+          "type": "array",
+          "description": "Batch only.",
+          "items": {
+            "type": "object",
+            "required": ["parameter", "sigma"],
+            "additionalProperties": false,
+            "properties": {
+              "parameter": { "enum": ["dragCoefficient", "reflectivity"] },
+              "sigma": { "type": "number", "exclusiveMinimum": 0, "description": "A priori 1σ." }
+            }
+          }
+        },
+        "editSigma": { "type": "number", "minimum": 0, "description": "Batch: × RMS (default 3); EKF: innovation σ (default 5); 0 disables." },
+        "lightTime": { "type": "boolean", "description": "Default true." }
       }
     },
     "conjunction": {

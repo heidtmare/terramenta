@@ -133,6 +133,18 @@ export const formatHorizon = (horizon) => (horizon ?? []).map(([az, el]) => `${a
 
 // --- Searching -----------------------------------------------------------------
 
+/** Globe station options (`findEvents`, `determineOrbit`) for `list`. */
+export function stationOptions(list = stations) {
+  return list.map(({ id, latDeg, lonDeg, altKm, minElevationDeg, horizon }) => ({
+    id,
+    latDeg,
+    lonDeg,
+    altKm: altKm ?? 0,
+    minElevationDeg: minElevationDeg ?? 0,
+    horizon: horizon ?? [],
+  }));
+}
+
 /**
  * `{contacts, eclipses, orbit}` (`globe.findEvents`, Unix seconds) or
  * `{error}` for spacecraft `id`; `null` if absent or not propagated.
@@ -147,14 +159,7 @@ export function spacecraftEvents(id, entry = globe.recordedSources().spacecraft.
     data = globe.findEvents(
       { ...entry.propagation, kvn: false },
       {
-        stations: stations.map(({ id, latDeg, lonDeg, altKm, minElevationDeg, horizon }) => ({
-          id,
-          latDeg,
-          lonDeg,
-          altKm: altKm ?? 0,
-          minElevationDeg: minElevationDeg ?? 0,
-          horizon: horizon ?? [],
-        })),
+        stations: stationOptions(),
         eclipses,
         apsides,
         nodes,

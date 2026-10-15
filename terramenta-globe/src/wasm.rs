@@ -1462,6 +1462,38 @@ pub fn conjunctions(options: JsValue) -> Result<JsValue, JsError> {
     Ok(to_js(&out))
 }
 
+/// Orbit determination on the `propagate` force model.
+///
+/// ```js
+/// const r = determineOrbit({
+///   propagation,                          // a priori: initial, forces, vehicle; covariance = P̄ (EKF: required, + process noise)
+///   stations: [{ id, latDeg, lonDeg, altKm, minElevationDeg, horizon }],
+///   observations: [{ time, station?, type, value, sigma? }],  // km, km/s, deg
+///   tdm: "CCSDS_TDM_VERS = 2.0 ...",      // and/or
+///   simulate: { truth: propagation, tracking: [{ type, station?, sigma?, bias? }], stepS: 60, seed: 1 },
+///   sigmas: { rangeKm: 0.01, rangeRateKmS: 1e-5, angleDeg: 0.005, positionKm: 0.01 },
+///   estimator: "batch",                   // | "ekf"
+///   solveFor: [{ parameter: "dragCoefficient", sigma: 0.5 }],  // batch
+///   lightTime: true, maxIterations: 10, tolerance: 1e-3, editSigma: 3, exportTdm: false,
+/// });
+/// // r: { estimator, converged, epoch, positionKm, velocityKmS, sigmaRsw, covariance (GCRF lower triangle),
+/// //      parameters: [{ parameter, apriori, value, sigma }], iterations: [{ rms, accepted, edited, correctionKm, correctionKmS }],
+/// //      residuals: [{ time, station?, type, observed, residual, postFit?, sigma, edited }], rms, observations, edited,
+/// //      history?: { times, sigmaRsw } (EKF), truthErrorRsw? (simulated), estimate: { initial, covariance, vehicle }, tdm? }
+/// ```
+///
+/// Types: range, rangeRate, azimuth, elevation, rightAscension, declination, positionX/Y/Z.
+/// Batch: Gauss–Newton about the a priori state at its epoch. EKF: state at the last observation.
+#[wasm_bindgen(js_name = determineOrbit)]
+pub fn determine_orbit(options: JsValue) -> Result<JsValue, JsError> {
+    let json = js_sys::JSON::stringify(&options)
+        .map_err(|_| JsError::new("options are not JSON-serialisable"))?;
+    let request: crate::od::OdRequest =
+        serde_json::from_str(&String::from(json)).map_err(|e| JsError::new(&e.to_string()))?;
+    let out = crate::od::determine_orbit(&request).map_err(|e| JsError::new(&e))?;
+    Ok(to_js(&out))
+}
+
 /// Stops drawing attitude on `id`; `false` if none was drawn.
 #[wasm_bindgen(js_name = hideAttitude)]
 pub fn hide_attitude(id: &str) -> bool {

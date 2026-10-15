@@ -3,7 +3,8 @@
 Solar-system astrodynamics in pure Rust (`f64`, [`glam`](https://docs.rs/glam)
 `DVec3`): a reference-frame tree rooted at the Solar System Barycentre, two-body
 and numerical (Cowell) propagation with force models and maneuvers, a `Spacecraft`
-type over two-body/SGP4/numerical/tabulated motion, SGP4, CCSDS OEM/OPM I/O, SPK
+type over two-body/SGP4/numerical/tabulated motion, SGP4, orbit determination
+(batch least squares, EKF), CCSDS OEM/OPM/AEM/CDM/TDM I/O, SPK
 output, NRLMSISE-00, a Lambert solver, transfer planning, and patched conics. Used by [`terramenta-globe`](../terramenta-globe/) (heliocentric
 view and flown missions) and [`terramenta-charta`](../terramenta-charta/)
 (porkchop plots). No WebAssembly binding of its own; callers link it as a Rust
@@ -33,6 +34,7 @@ this example).*
 | [`spice`](src/spice.rs) | `KernelEphemeris`: SPK states (DE440/DE440s) via [`anise`](https://docs.rs/anise), with optional low-precision fallback. `solar_system_from_kernels`: SSB, Sun, planets, Moon. |
 | [`propagate`](src/propagate/mod.rs) | `Propagator`: Cowell on `[r, v, m]`, impulsive maneuvers, sampled output, forward/backward. State transition matrix (`propagate_stm`, `propagate_stm_with`): variational equations with the state, force partials analytic (`ForceModel::partials`) or central differences, mapped through local-frame burns. `Integrator`: RK4, RKF7(8), DOP853; error control optionally on leading components only. `BodyOrientation` / `EarthOrientation` (cached, Earth rotation applied exactly between refreshes). |
 | [`conjunction`](src/conjunction.rs) | `closest_approaches` (range minima, Brent-refined on a grid, threshold-pruned); encounter plane; Foster 2D `probability` (principal-axis quadrature), Alfano `max_probability` over covariance scale; `assess` (miss, RSW relative state, Pc); `erfc`. |
+| [`od`](src/od.rs) | Orbit determination. Range, range rate, az/el, RA/Dec, GNSS position models with analytic partials, one-leg light time. `batch`: weighted least squares, a priori, Cd/Cr solve-for (finite-difference sensitivities), sigma editing, `Λ⁻¹` covariance. `filter`: EKF, Joseph form, SNC process noise, innovation gating. `simulate`: visibility-masked noisy tracking. TDM ↔ observations. |
 | [`covariance`](src/covariance.rs) | 6×6 `Matrix6` algebra (inverse, congruence, lower triangle); local-frame rotation (`to_local`, `from_local`); `ProcessNoise` (white acceleration, SNC); `CovariancePropagation` along STM samples; `position_ellipsoid`, `symmetric_eigen3`. |
 | [`force`](src/force/mod.rs) | `ForceModel` trait. `SphericalHarmonics` (normalised Cunningham V/W, EGM2008 20×20 embedded, ICGEM `.gfc` loader), `PointMass`, `ThirdBody` (Battin f(q)), `Drag` with `ExponentialAtmosphere` (Vallado) / `HarrisPriester` / `Nrlmsise00` (`gtd7d`, 3-h Ap history, via [`nrlmsise00`](https://docs.rs/nrlmsise00)), `SolarRadiationPressure` (conical shadow), `Relativity` (Schwarzschild). |
 | [`space_weather`](src/space_weather.rs) | `SpaceWeather`: CelesTrak `SW-All.csv` (observed, daily and monthly prediction) or constant; NRLMSISE-00 drivers. |
@@ -43,7 +45,7 @@ this example).*
 | [`events`](src/events.rs) | Grid + Brent root finding on scalar event functions; `GroundStation` look angles, terrain `horizon` mask and `contacts`, conical `eclipses`, apsides/nodes (`orbit_events`). |
 | [`coverage`](src/coverage.rs) | Body-mounted `Sensor` fields of view (cone, rectangle); WGS-84 `ellipsoid_hit`, `ground_point` (limb past it), `footprint`; H3 `Grid` (h3o) over the globe or a `Region`; sampled `Coverage` per cell: fraction, accesses, max/mean gap, first access. |
 | [`interpolate`](src/interpolate.rs) | `SampledEphemeris`: Lagrange / Hermite interpolation of tabulated states; implements `Ephemeris`. |
-| [`ccsds`](src/ccsds.rs) | OEM (with covariance blocks) and OPM (CCSDS 502.0-B-3, KVN) read/write; quaternion AEM (504.0-B-1, KVN) read/write, `B2A` and scalar-first normalised on read; CDM (508.0-B-1, KVN) read/write, RTN covariance in m² on file. UTC/TAI/TT/TDB/GPS; UTC leap seconds as `:60`. |
+| [`ccsds`](src/ccsds.rs) | OEM (with covariance blocks) and OPM (CCSDS 502.0-B-3, KVN) read/write; quaternion AEM (504.0-B-1, KVN) read/write, `B2A` and scalar-first normalised on read; CDM (508.0-B-1, KVN) read/write, RTN covariance in m² on file; TDM (503.0-B-2, KVN) read/write, records by keyword. UTC/TAI/TT/TDB/GPS; UTC leap seconds as `:60`. |
 | [`spk`](src/spk.rs) | `write_spk`: little-endian DAF/SPK, Type 13 (Hermite) and Type 9 (Lagrange) segments, chained summary records. Epochs in SPICE ET. |
 | [`tle`](src/tle.rs) | `Sgp4Ephemeris`: TLE/OMM via [`sgp4`](https://docs.rs/sgp4) (AFSPC/WGS-72 mode), TEME or GCRF output. |
 | [`orbit`](src/orbit.rs) | `OrbitalElements`: state vector ↔ classical elements, two-body propagation (`state_at`, `state_at_true_anomaly`). |
