@@ -18,8 +18,24 @@
     <div id="shell" hidden>
       <div id="overlay-left">
         <header id="masthead">
-          <h1>Terramenta</h1>
-          <p>reference implementation</p>
+          <!-- Globe and orbit, after the banner in assets/terramenta.png. -->
+          <svg class="logo" viewBox="0 0 32 32" aria-hidden="true">
+            <defs>
+              <radialGradient id="logo-globe" cx="0.38" cy="0.32" r="0.75">
+                <stop offset="0" stop-color="#cfe6ff" />
+                <stop offset="0.45" stop-color="#4f8fe8" />
+                <stop offset="1" stop-color="#0d2d6b" />
+              </radialGradient>
+            </defs>
+            <circle cx="16" cy="16" r="8.5" fill="url(#logo-globe)" />
+            <path class="logo-meridian" d="M16 7.5c-3.2 2.4-3.2 14.6 0 17M7.8 14.2h16.4M8.4 19.2h15.2" />
+            <ellipse class="logo-orbit" cx="16" cy="16" rx="14.5" ry="5.2" transform="rotate(-24 16 16)" />
+            <circle class="logo-satellite" cx="28.6" cy="10.3" r="1.5" />
+          </svg>
+          <div>
+            <h1>Terramenta</h1>
+            <p>reference implementation</p>
+          </div>
         </header>
         <div id="readout"></div>
         <!-- Shown only while something is picked; the globe decides what that

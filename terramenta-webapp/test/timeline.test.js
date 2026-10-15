@@ -326,3 +326,18 @@ test("edits notify, ids stay unique, and saving drops broken references", () => 
   assert.equal(timelineSection(scene), undefined, "empty and directed: omitted");
   globe.reset();
 });
+
+test("timeline axis: UTC-aligned ticks, clear of the ends, labelled by step", async () => {
+  const { axisTicks } = await import("../src/timeline-panel.js");
+  const day = Date.UTC(2026, 9, 15) / 1000;
+  const hours = axisTicks({ from: day - 1800, to: day + 4 * 3600 + 1800 });
+  assert.deepEqual(
+    hours.map((tick) => tick.label),
+    ["Oct 15", "01:00", "02:00", "03:00", "04:00"],
+  );
+  const days = axisTicks({ from: day, to: day + 4 * 86_400 });
+  assert.deepEqual(
+    days.map((tick) => tick.label),
+    ["Oct 16", "Oct 17", "Oct 18"],
+  );
+});

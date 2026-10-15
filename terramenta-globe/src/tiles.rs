@@ -34,7 +34,7 @@ use bevy::shader::ShaderRef;
 
 use crate::frame::{FrameSet, ReferenceFrame};
 use crate::geo::{GeoBounds, LatLon};
-use crate::globe::GLOBE_RADIUS;
+use crate::globe::{GLOBE_RADIUS, NIGHT_INTENSITY, NIGHT_TEXTURE};
 use crate::imagery::{IMAGERY_SOURCE, ImagerySettings};
 use crate::sun::Sun;
 use crate::view::not_departing_view;
@@ -276,7 +276,11 @@ pub struct TileUniform {
     pub terminator_softness: f32,
     /// Matches [`crate::globe::GlobeUniform::sun_shading`].
     pub sun_shading: f32,
-    pub _padding: Vec2,
+    /// Matches [`crate::globe::GlobeUniform::night_intensity`].
+    pub night_intensity: f32,
+    /// Angle of [`ReferenceFrame::earth_to_world`], for locating the tile in
+    /// the Earth-fixed night texture.
+    pub earth_yaw: f32,
 }
 
 impl Default for TileUniform {
@@ -288,7 +292,8 @@ impl Default for TileUniform {
             rim_strength: 0.55,
             terminator_softness: 0.12,
             sun_shading: 1.0,
-            _padding: Vec2::ZERO,
+            night_intensity: NIGHT_INTENSITY,
+            earth_yaw: 0.0,
         }
     }
 }
@@ -300,6 +305,9 @@ pub struct TileMaterial {
     #[texture(1)]
     #[sampler(2)]
     pub imagery: Option<Handle<Image>>,
+    #[texture(3)]
+    #[sampler(4)]
+    pub night: Option<Handle<Image>>,
 }
 
 impl Material for TileMaterial {
@@ -788,6 +796,7 @@ fn stream_tiles(
             let material = materials.add(TileMaterial {
                 uniform: TileUniform::default(),
                 imagery: Some(slot.imagery.clone()),
+                night: Some(asset_server.load(NIGHT_TEXTURE)),
             });
             let entity = commands
                 .spawn((
@@ -875,9 +884,11 @@ fn sync_tile_sun(
 ) {
     let sun_direction = frame.earth_to_world() * sun.direction_ecef;
     let sun_shading = sun.shading();
+    let earth_yaw = frame.earth_yaw();
     for (_, material) in materials.iter_mut() {
         material.uniform.sun_direction = sun_direction;
         material.uniform.sun_shading = sun_shading;
+        material.uniform.earth_yaw = earth_yaw;
     }
 }
 

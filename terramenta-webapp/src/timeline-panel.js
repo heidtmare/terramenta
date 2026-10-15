@@ -17,6 +17,9 @@ import { button, toggle } from "./widgets.js";
 /** Within this many seconds of the clock, an event is "now" for Previous/Next. */
 const NEAR_S = 0.5;
 const SEARCHED_KEY = "terramenta.timeline.searched";
+/** Axis tick steps, seconds; the smallest giving ≤ MAX_TICKS ticks is used. */
+const TICK_STEPS = [60, 300, 900, 1800, 3600, 10_800, 21_600, 43_200, 86_400, 172_800, 604_800, 2_592_000, 7_776_000, 31_536_000];
+const MAX_TICKS = 5;
 
 export function mountTimeline(bind) {
   let lastState = null;
@@ -48,6 +51,8 @@ export function mountTimeline(bind) {
 
   const status = el("p", { class: "detail" }, "—");
   const cursor = el("div", { class: "timeline-cursor" });
+  const elapsed = el("div", { class: "timeline-elapsed" });
+  const grid = el("div", { class: "timeline-grid" });
   const markers = el("div", { class: "timeline-markers" });
   let range = null;
   const strip = el(
@@ -62,10 +67,12 @@ export function mountTimeline(bind) {
         globe.setClock(range.from + fraction * (range.to - range.from));
       },
     },
+    elapsed,
+    grid,
     markers,
     cursor,
   );
-  const span = el("div", { class: "timeline-span" }, el("span", {}, ""), el("span", {}, ""));
+  const axis = el("div", { class: "timeline-axis" });
 
   const list = el("div", { class: "layers" });
   const rows = [];
@@ -104,8 +111,13 @@ export function mountTimeline(bind) {
         }),
       ),
     );
-    strip.hidden = span.hidden = !range;
-    if (range) [span.firstChild.textContent, span.lastChild.textContent] = [clock(range.from), clock(range.to)];
+    strip.hidden = axis.hidden = !range;
+    const ticks = range ? axisTicks(range) : [];
+    grid.replaceChildren(...ticks.map((tick) => el("div", { class: "timeline-tick", style: `left: ${position(tick.at)}%` })));
+    axis.replaceChildren(
+      ...ticks.map((tick) => el("span", { class: "timeline-tick-label", style: `left: ${position(tick.at)}%` }, tick.label)),
+    );
+    if (range) strip.title = `${clock(range.from)} – ${clock(range.to)}\nClick to set the clock`;
 
     rows.length = 0;
     rows.push(...resolved.map(eventRow));
@@ -119,7 +131,8 @@ export function mountTimeline(bind) {
 
   function update(now) {
     if (range) {
-      cursor.style.left = `${Math.min(Math.max(position(now), 0), 100)}%`;
+      const at = `${Math.min(Math.max(position(now), 0), 100)}%`;
+      cursor.style.left = elapsed.style.width = at;
       cursor.classList.toggle("outside", now < range.from || now > range.to);
     }
     let upcoming = null;
@@ -145,7 +158,7 @@ export function mountTimeline(bind) {
     el("div", { class: "buttons" }, button("Previous", () => step(-1)), button("Next", () => step(1))),
     status,
     strip,
-    span,
+    axis,
     list,
     editor.node,
   );
@@ -170,6 +183,28 @@ function eventRow(event) {
   );
   const node = el("div", { class: "layer timeline-event" }, head, detail);
   return { event, node, when };
+}
+
+/** Ticks at UTC multiples of a step, kept clear of the strip's ends. */
+export function axisTicks({ from, to }) {
+  const span = to - from;
+  const step = TICK_STEPS.find((candidate) => span / candidate <= MAX_TICKS) ?? TICK_STEPS.at(-1);
+  const ticks = [];
+  for (let at = Math.ceil(from / step) * step; at <= to; at += step) {
+    const fraction = (at - from) / span;
+    if (fraction < 0.04 || fraction > 0.96) continue;
+    ticks.push({ at, label: tickLabel(at, step) });
+  }
+  return ticks;
+}
+
+/** `Oct 15` on day steps or at midnight; `14:30` otherwise. */
+function tickLabel(unixSeconds, step) {
+  const iso = new Date(unixSeconds * 1000).toISOString();
+  if (step < 86_400 && unixSeconds % 86_400 !== 0) return iso.slice(11, 16);
+  const date = new Date(unixSeconds * 1000);
+  const day = `${date.toLocaleString("en", { month: "short", timeZone: "UTC" })} ${date.getUTCDate()}`;
+  return step >= 31_536_000 ? `${day} ${date.getUTCFullYear()}` : day;
 }
 
 function relative(seconds) {
