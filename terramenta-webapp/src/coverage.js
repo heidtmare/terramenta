@@ -341,6 +341,17 @@ export function ring(boundary) {
   return out;
 }
 
+/** `coverageGeoJson` with every statistic on every cell, for a GIS. */
+export function coverageFeatures(result, metric) {
+  const collection = coverageGeoJson(result, metric);
+  const byId = new Map(result.cells.map((cell) => [cell.id, cell]));
+  for (const feature of collection.features) {
+    const { boundary: _boundary, ...cell } = byId.get(feature.properties.title);
+    Object.assign(feature.properties, cell);
+  }
+  return collection;
+}
+
 /** CSV rows: `[id, latDeg, lonDeg, fraction, accesses, maxGapS, meanGapS, firstAccessS]`. */
 export function coverageRows(result) {
   return result.cells.map((cell) => [

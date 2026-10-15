@@ -131,6 +131,7 @@ const UNTRACKED = new Set([
   "showAttitude",
   "hideAttitude",
   "coverage",
+  "groundTrack",
   "terrainHorizon",
   "conjunctions",
   "determineOrbit",
@@ -735,6 +736,13 @@ export const hideAttitude = (id) => required().hideAttitude(id);
  * Full option list: `terramenta-globe/src/wasm.rs`, `coverage`.
  */
 export const coverage = (options) => required().coverage(options);
+
+/**
+ * Sub-satellite points of `propagation` (`propagate` options): `{times,
+ * coords: [[lonDeg, latDeg, heightKm]]}`, Unix seconds, WGS 84, every
+ * `options.stepS` (60) and at the end. Throws on bad input.
+ */
+export const groundTrack = (propagation, options) => required().groundTrack(propagation, options);
 
 /**
  * Terrain horizon mask from Terrarium tiles: `options` `{latDeg, lonDeg,

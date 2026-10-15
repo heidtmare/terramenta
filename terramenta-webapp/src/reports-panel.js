@@ -11,6 +11,7 @@
  */
 
 import * as analysis from "./analysis.js";
+import * as coverage from "./coverage.js";
 import { lineChart } from "./chart.js";
 import { download, el, row, section } from "./dom.js";
 import { clock, duration } from "./format.js";
@@ -30,6 +31,7 @@ import {
   columnName,
   withUncertainty,
 } from "./reports.js";
+import { stacCatalog, zip } from "./stac.js";
 import { button } from "./widgets.js";
 import * as workspace from "./workspace.js";
 
@@ -47,9 +49,10 @@ export function spacecraftData(id) {
   let data = cache.get(entry);
   if (!data) {
     try {
-      const oem = parseOem(globe.propagate({ ...entry.propagation, kvn: true }).oem);
+      const oemText = globe.propagate({ ...entry.propagation, kvn: true }).oem;
+      const oem = parseOem(oemText);
       const rows = withUncertainty(reportRows(oem), entry.info.covariance);
-      data = { oem, rows, budget: deltaVBudget(entry.propagation) };
+      data = { oem, oemText, rows, budget: deltaVBudget(entry.propagation) };
     } catch (error) {
       data = { error: error.message ?? String(error) };
     }
@@ -245,6 +248,9 @@ function mountSpacecraftReports(bind) {
   let signature = null;
 
   const czml = button("CZML (all spacecraft)", () => exportCzml(lastState));
+  const stacButton = button("STAC catalog (zip)", () => exportStac(lastState), {
+    title: "STAC 1.1 catalog: spacecraft (ground track, OEM, CZML) and coverage results",
+  });
   let lastState = null;
 
   bind(list, (state) => {
@@ -263,7 +269,7 @@ function mountSpacecraftReports(bind) {
     "Spacecraft reports",
     empty,
     list,
-    el("div", { class: "buttons" }, czml),
+    el("div", { class: "buttons" }, czml, stacButton),
     el("p", { class: "detail" }, "GCRF/UTC. Osculating two-body elements; altitude over equatorial radius."),
   );
   return node;
@@ -368,6 +374,64 @@ function exportCzml(state) {
   const name = workspace.snapshot().project?.name ?? "Terramenta";
   const czml = toCzml(name, entries, { unixSeconds: state.sun.unixSeconds, timeScale: state.sun.timeScale });
   download(`${slug(name) || "spacecraft"}.czml`, new Blob([JSON.stringify(czml)], { type: "application/json" }));
+}
+
+/** STAC catalog of propagated spacecraft and coverage results, zipped. */
+function exportStac(state) {
+  if (!state) return;
+  const name = workspace.snapshot().project?.name ?? "Terramenta";
+  const clockInfo = { unixSeconds: state.sun.unixSeconds, timeScale: state.sun.timeScale };
+  const spacecraft = [];
+  for (const [id, entry] of globe.recordedSources().spacecraft) {
+    const data = spacecraftData(id);
+    if (!data?.oemText) continue;
+    const look = lookOf(id, state);
+    const [start, stop] = [data.rows[0].t, data.rows.at(-1).t];
+    let track = null;
+    try {
+      // ≤ ~2000 points per track.
+      track = globe.groundTrack({ ...entry.propagation, kvn: false }, { stepS: Math.max(60, (stop - start) / 2000) });
+    } catch {
+      // Item without geometry.
+    }
+    const czml = toCzml(look.label, [{ id, ...look, oem: data.oem }], clockInfo);
+    spacecraft.push({ id, label: look.label, start, stop, track, oem: data.oemText, czml });
+  }
+  const studies = coverage.savedCoverage().flatMap((study) => {
+    const kept = coverage.coverageResult(study.id);
+    if (!kept?.result) return [];
+    const { result } = kept;
+    const s = coverage.settings(study);
+    const summary = coverage.summarizeCoverage(result);
+    return [
+      {
+        id: study.id,
+        label: study.label ?? study.id,
+        start: result.start,
+        stop: result.stop,
+        bounds: s.bounds,
+        properties: {
+          "terramenta:spacecraft": s.spacecraft,
+          "terramenta:access": s.access,
+          "terramenta:min_elevation_deg": s.minElevationDeg,
+          "terramenta:h3_resolution": result.resolution,
+          "terramenta:step_s": result.stepS,
+          "terramenta:cells": summary.cells,
+          "terramenta:covered_share": summary.coveredShare,
+          "terramenta:mean_fraction": summary.meanFraction,
+          "terramenta:median_max_gap_s": summary.medianMaxGapS,
+          "terramenta:worst_max_gap_s": summary.worstMaxGapS,
+          "terramenta:mean_revisit_s": summary.meanRevisitS,
+          "terramenta:stale": kept.stale,
+        },
+        geojson: coverage.coverageFeatures(result, s.metric),
+        csv: toCsv(coverage.COVERAGE_COLUMNS, coverage.coverageRows(result)),
+      },
+    ];
+  });
+  const id = slug(name) || "terramenta";
+  const files = stacCatalog({ id, title: name, spacecraft, coverage: studies });
+  download(`${id}-stac.zip`, new Blob([zip(files)], { type: "application/zip" }));
 }
 
 function slug(text) {

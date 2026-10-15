@@ -113,6 +113,7 @@ from a real failure.
 | `attitude(propagation, options)` | Attitude under a pointing law over a propagation: quaternions, LVLH Euler angles, sensor angles, AEM |
 | `showAttitude(id, options)` / `hideAttitude(id)` | Draw the last `attitude` result on ephemeris layer `id`: body axes, sensor boresights, field-of-view footprints |
 | `showUncertainty(id, options)` / `hideUncertainty(id)` | Draw the last `propagate` covariance on ephemeris layer `id`: position ellipsoid at `sigma` |
+| `groundTrack(propagation, options)` | Sub-satellite points (WGS 84 lon/lat/height) of a propagation every `stepS` |
 | `terrainHorizon(options, rgba)` | Station horizon mask from a Terrarium DEM tile mosaic: ground height, `[azimuthDeg, elevationDeg]` mask |
 | `coverage(options)` | Access coverage of an H3 grid by spacecraft, line of sight or through sensor fields of view: per-cell fraction, accesses, gaps |
 | `conjunctions(options)` | Screen a propagated spacecraft against propagated spacecraft, TLE/OMM and loaded ephemeris layers: TCA, miss, RSW geometry, Pc, Pc max, CDM |
@@ -949,7 +950,7 @@ src/
   geojson.rs       GeoJSON parsing and flattening
   simplestyle.rs   simplestyle-spec 1.1.0
   omm.rs           OMM → SGP4 propagators; OEM → tabulated motion
-  numerical.rs     propagate/propagateSpk/findEvents/target/attitude/coverage/conjunctions/terrainHorizon requests; kernel, EOP, space weather
+  numerical.rs     propagate/propagateSpk/findEvents/groundTrack/target/attitude/coverage/conjunctions/terrainHorizon requests; kernel, EOP, space weather
   od.rs            determineOrbit requests
   tessellate.rs    Ear clipping, holes, antimeridian
   picking.rs       Overlay hit-testing

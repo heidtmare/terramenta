@@ -158,13 +158,7 @@ function exportCsv(study, result) {
 }
 
 function exportGeoJson(study, result, metric) {
-  const collection = coverage.coverageGeoJson(result, metric);
-  // Every statistic on every cell, for a GIS.
-  const byId = new Map(result.cells.map((cell) => [cell.id, cell]));
-  for (const feature of collection.features) {
-    const { boundary: _boundary, ...cell } = byId.get(feature.properties.title);
-    Object.assign(feature.properties, cell);
-  }
+  const collection = coverage.coverageFeatures(result, metric);
   download(`${study.id}.geojson`, new Blob([JSON.stringify(collection)], { type: "application/geo+json" }));
 }
 

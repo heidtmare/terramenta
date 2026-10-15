@@ -1208,6 +1208,39 @@ pub fn propagate_spk(options: JsValue) -> Result<Vec<u8>, JsError> {
     out.to_spk().map_err(|e| JsError::new(&e))
 }
 
+/// Propagates `propagation` (as [`propagate`]) and samples its ground track.
+///
+/// ```js
+/// const { times, coords } = groundTrack(propagation, { stepS: 60 });
+/// // times: Unix seconds; coords: [[lonDeg, latDeg, heightKm], …], WGS 84, lon in [−180, 180)
+/// ```
+///
+/// ITRF from GCRF with IAU 2006/2000A and loaded EOP; the last sample is the span's end.
+#[wasm_bindgen(js_name = groundTrack)]
+pub fn ground_track(propagation: JsValue, options: JsValue) -> Result<JsValue, JsError> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Options {
+        #[serde(default = "step")]
+        step_s: f64,
+    }
+    fn step() -> f64 {
+        60.0
+    }
+    let request = propagation_request(&propagation)?;
+    let options: Options = if options.is_undefined() || options.is_null() {
+        Options { step_s: step() }
+    } else {
+        let json = js_sys::JSON::stringify(&options)
+            .map_err(|_| JsError::new("options are not JSON-serialisable"))?;
+        serde_json::from_str(&String::from(json)).map_err(|e| JsError::new(&e.to_string()))?
+    };
+    let out = crate::numerical::trajectory(&request).map_err(|e| JsError::new(&e))?;
+    let track =
+        crate::numerical::ground_track(&out, options.step_s).map_err(|e| JsError::new(&e))?;
+    Ok(to_js(&track))
+}
+
 /// Propagates `propagation` (as [`propagate`]) and searches the result for events.
 ///
 /// ```js
