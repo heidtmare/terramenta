@@ -36,6 +36,7 @@ pub mod events;
 pub mod flyby;
 pub mod force;
 pub mod frame;
+pub mod iau;
 pub mod interpolate;
 pub mod lambert;
 pub mod maneuver;

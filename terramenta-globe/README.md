@@ -492,7 +492,16 @@ state vector, or osculating Keplerian `elements` (`smaKm`, `eccentricity`,
 (SGP4 carries TLE/OMM to `start`), then Cowell with EGM2008 (≤ 20×20),
 Sun/Moon, SRP, drag (`exponential` | `harrisPriester` | `nrlmsise00`), relativity,
 impulsive and finite burns. Output is a GCRF/UTC OEM, which `addEphemeris` draws
-as tabulated motion. With `covariance`, the state transition matrix is integrated
+as tabulated motion.
+
+`centralBody: "moon" | "mars"`: state or elements about that body, ICRF axes;
+GRGM900C (lunar principal axes) or JGMRO120F under IAU 2015 orientation, ≤ 20×20;
+third bodies Sun + Earth (Moon) or Sun (Mars); SRP shadow by the body; no drag.
+OEM `CENTER_NAME` MOON/MARS, `REF_FRAME` ICRF; SPK center 301 or 4 (Mars
+barycentre). Sequence, target, optimize and Monte Carlo quantities use the
+body's GM and radius. Ground track, stations, coverage, OD, attitude targets and
+TLE/OMM secondaries are Earth-only. OEM layers with `CENTER_NAME` MOON/MARS
+(ICRF/EME2000/J2000) are shifted to geocentric for drawing. With `covariance`, the state transition matrix is integrated
 alongside and the initial `[r, v]` covariance propagated linearly
 (`P = Φ P₀ Φᵀ`, plus white-acceleration process noise between samples); the OEM
 gets a GCRF `COVARIANCE` block per sample.

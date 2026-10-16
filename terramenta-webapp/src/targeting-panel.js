@@ -46,7 +46,7 @@ export function mountTargeting(bind, signal) {
     el(
       "p",
       { class: "detail" },
-      "Newton differential correction, finite-difference Jacobian. Goals are two-body osculating values about Earth.",
+      "Newton differential correction, finite-difference Jacobian. Goals are two-body osculating values about the central body.",
     ),
   );
 }

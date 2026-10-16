@@ -25,6 +25,11 @@
     "description": "Cowell-propagated 500 → 800 km Hohmann transfer with a coasting reference; covariance and 3σ ellipsoids, plots, Δv budget, CSV/CZML/OEM/SPK export."
   },
   {
+    "file": "lunar-orbit.terramenta.json",
+    "name": "Low lunar orbit",
+    "description": "Moon-centred 50 km polar orbits: GRGM900C 20×20 mascons against J2 alone; periapsis decay plots."
+  },
+  {
     "file": "ground-contacts.terramenta.json",
     "name": "Ground contacts",
     "description": "Sun-synchronous LEO over five ground stations: contacts, eclipses and nodes; timeline keyed to the first Svalbard pass."

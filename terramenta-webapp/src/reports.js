@@ -2,14 +2,20 @@
  * Reports: spacecraft samples, derived quantities, position uncertainty, Δv
  * budget, CSV and CZML. Pure; no globe or DOM.
  *
- * Samples come from `propagate`'s OEM (GCRF, UTC, km, km/s), one array per
- * segment (segments split at impulsive burns, sharing the burn epoch).
- * Osculating elements are two-body about Earth (`MU_EARTH`); altitudes are
- * radius − `EARTH_RADIUS_KM` (equatorial), not geodetic.
+ * Samples come from `propagate`'s OEM (central-body-centred, GCRF/ICRF, UTC, km,
+ * km/s), one array per segment (segments split at impulsive burns, sharing the
+ * burn epoch). Osculating elements are two-body about the segment's
+ * `CENTER_NAME` (`BODIES`); altitudes are radius − equatorial radius, not geodetic.
  */
 
 export const MU_EARTH = 398_600.4418;
 export const EARTH_RADIUS_KM = 6_378.137;
+/** OEM `CENTER_NAME` → `{mu, radiusKm}`: field GM (solare `CentralBody`), equatorial radius. */
+export const BODIES = {
+  EARTH: { mu: MU_EARTH, radiusKm: EARTH_RADIUS_KM },
+  MOON: { mu: 4_902.79996708864, radiusKm: 1_737.4 },
+  MARS: { mu: 42_828.3756639565, radiusKm: 3_396.19 },
+};
 const G0 = 9.80665;
 /** `vehicle.dryMassKg` default: this, capped at the wet mass (solare `Vehicle`). */
 const DEFAULT_DRY_MASS_KG = 850;
@@ -90,8 +96,12 @@ export function epochSeconds(text) {
 
 // --- Quantities ------------------------------------------------------------------
 
-/** Every `QUANTITIES` key for one GCRF state; non-finite where undefined (hyperbolic period). */
-export function quantities(r, v) {
+/**
+ * Every `QUANTITIES` key for one state about `center` (`BODIES` key, default
+ * Earth); non-finite where undefined (hyperbolic period).
+ */
+export function quantities(r, v, center = "EARTH") {
+  const { mu: MU, radiusKm: RADIUS_KM } = BODIES[center?.toUpperCase()] ?? BODIES.EARTH;
   const radius = norm(r);
   const speed = norm(v);
   const h = cross(r, v);
@@ -99,10 +109,10 @@ export function quantities(r, v) {
   const node = [-h[1], h[0], 0];
   const nodeNorm = norm(node);
   const rv = dot(r, v);
-  const eVector = r.map((component, i) => ((speed ** 2 - MU_EARTH / radius) * component - rv * v[i]) / MU_EARTH);
+  const eVector = r.map((component, i) => ((speed ** 2 - MU / radius) * component - rv * v[i]) / MU);
   const e = norm(eVector);
-  const energy = speed ** 2 / 2 - MU_EARTH / radius;
-  const a = -MU_EARTH / (2 * energy);
+  const energy = speed ** 2 / 2 - MU / radius;
+  const a = -MU / (2 * energy);
   const inclination = Math.acos(clamp(h[2] / hNorm)) * DEG;
 
   const equatorial = nodeNorm < 1e-12;
@@ -121,7 +131,7 @@ export function quantities(r, v) {
 
   const bound = a > 0 && e < 1;
   return {
-    altitudeKm: radius - EARTH_RADIUS_KM,
+    altitudeKm: radius - RADIUS_KM,
     radiusKm: radius,
     speedKmS: speed,
     smaKm: a,
@@ -130,16 +140,16 @@ export function quantities(r, v) {
     raanDeg: raan,
     argPerigeeDeg: wrap(argPerigee),
     trueAnomalyDeg: wrap(anomaly),
-    periodMin: bound ? (2 * Math.PI * Math.sqrt(a ** 3 / MU_EARTH)) / 60 : NaN,
-    perigeeAltKm: a * (1 - e) - EARTH_RADIUS_KM,
-    apogeeAltKm: bound ? a * (1 + e) - EARTH_RADIUS_KM : NaN,
+    periodMin: bound ? (2 * Math.PI * Math.sqrt(a ** 3 / MU)) / 60 : NaN,
+    perigeeAltKm: a * (1 - e) - RADIUS_KM,
+    apogeeAltKm: bound ? a * (1 + e) - RADIUS_KM : NaN,
   };
 }
 
 /** `[{t, segment, ...quantities}]` across every segment, in order. */
 export function reportRows(oem) {
   return oem.segments.flatMap((segment, index) =>
-    segment.samples.map(({ t, r, v }) => ({ t, segment: index, r, v, ...quantities(r, v) })),
+    segment.samples.map(({ t, r, v }) => ({ t, segment: index, r, v, ...quantities(r, v, segment.center) })),
   );
 }
 
@@ -260,10 +270,14 @@ export function columnName(key) {
 /**
  * CZML document (array) for Cesium: one packet per spacecraft, positions in
  * `INERTIAL` (ICRF ≈ GCRF) metres, one position interval per OEM segment so
- * burns are not interpolated across.
+ * burns are not interpolated across. Earth-centred segments only.
  * `entries`: `[{id, label, color: "#rrggbb[aa]", oem}]`; `clock`: `{unixSeconds, timeScale}` or omitted.
  */
 export function toCzml(name, entries, clock) {
+  const geocentric = (segment) => !segment.center || segment.center.toUpperCase() === "EARTH";
+  entries = entries
+    .map((entry) => ({ ...entry, oem: { ...entry.oem, segments: entry.oem.segments.filter(geocentric) } }))
+    .filter((entry) => entry.oem.segments.some((segment) => segment.samples.length));
   const spans = entries
     .flatMap(({ oem }) => oem.segments.flatMap((segment) => segment.samples))
     .map((sample) => sample.t);

@@ -15,11 +15,12 @@
 //!   quantity at the body's end, subject to equality and inequality constraints there
 //!   ([`crate::optimize::minimize`]), then runs the body with the solution.
 //!
-//! Forward only. Quantities are two-body about Earth (EGM2008 GM), GCRF.
+//! Forward only. Quantities are two-body about [`Propagator::central_body`] (field GM,
+//! equatorial radius), ICRF axes.
 
 use glam::DVec3;
 
-use crate::force::EGM2008_GM_KM3_S2;
+use crate::bodies::CentralBody;
 use crate::maneuver::{BurnFrame, FiniteBurn, ImpulsiveManeuver, LocalFrame};
 use crate::optimize::{self, Evaluation, Progress, Tolerances};
 use crate::propagate::{PropagationError, Propagator, SpacecraftState};
@@ -28,8 +29,6 @@ use crate::time::Epoch;
 
 /// Standard gravity for finite-burn Δv, m/s².
 const G0_M_S2: f64 = 9.806_65;
-/// Earth equatorial radius for altitudes, km.
-const EARTH_RADIUS_KM: f64 = 6378.137;
 /// Crossing root tolerance, s.
 pub const CROSSING_TOLERANCE_S: f64 = 1e-4;
 /// Crossings this close to a segment start are the start itself, s.
@@ -49,7 +48,7 @@ pub enum Quantity {
     ArgPerigeeDeg,
     TrueAnomalyDeg,
     ArgLatitudeDeg,
-    /// Geocentric.
+    /// Body-centred, ICRF equator.
     LatitudeDeg,
     PeriodMin,
     PerigeeAltKm,
@@ -114,9 +113,9 @@ impl Quantity {
         )
     }
 
-    pub fn of(self, s: &SpacecraftState) -> f64 {
+    pub fn of(self, s: &SpacecraftState, body: CentralBody) -> f64 {
         let (r, v) = (s.position_km, s.velocity_km_s);
-        let mu = EGM2008_GM_KM3_S2;
+        let (mu, radius_km) = (body.gm_km3_s2(), body.equatorial_radius_km());
         let (radius, speed) = (r.length(), v.length());
         let h = r.cross(v);
         let rv = r.dot(v);
@@ -132,7 +131,7 @@ impl Quantity {
                 .to_degrees()
         };
         match self {
-            Self::AltitudeKm => radius - EARTH_RADIUS_KM,
+            Self::AltitudeKm => radius - radius_km,
             Self::RadiusKm => radius,
             Self::SpeedKmS => speed,
             Self::RadialVelocityKmS => rv / radius,
@@ -154,8 +153,8 @@ impl Quantity {
             }
             Self::LatitudeDeg => (r.z / radius).clamp(-1.0, 1.0).asin().to_degrees(),
             Self::PeriodMin => 2.0 * std::f64::consts::PI * (a.powi(3) / mu).sqrt() / 60.0,
-            Self::PerigeeAltKm => a * (1.0 - e) - EARTH_RADIUS_KM,
-            Self::ApogeeAltKm => a * (1.0 + e) - EARTH_RADIUS_KM,
+            Self::PerigeeAltKm => a * (1.0 - e) - radius_km,
+            Self::ApogeeAltKm => a * (1.0 + e) - radius_km,
             Self::FlightPathAngleDeg => {
                 (rv / (radius * speed)).clamp(-1.0, 1.0).asin().to_degrees()
             }
@@ -164,8 +163,8 @@ impl Quantity {
     }
 
     /// `achieved − desired`; angles wrapped to ±180°.
-    pub fn error(self, s: &SpacecraftState, desired: f64) -> f64 {
-        let e = self.of(s) - desired;
+    pub fn error(self, s: &SpacecraftState, desired: f64, body: CentralBody) -> f64 {
+        let e = self.of(s, body) - desired;
         if self.is_angle() {
             (e + 180.0).rem_euclid(360.0) - 180.0
         } else {
@@ -357,8 +356,8 @@ pub struct Constraint {
 
 impl Constraint {
     /// Equal: [`Quantity::error`]; inequalities: amount violated, ≤ 0 when satisfied.
-    pub fn error(&self, s: &SpacecraftState) -> f64 {
-        let e = self.quantity.error(s, self.value);
+    pub fn error(&self, s: &SpacecraftState, body: CentralBody) -> f64 {
+        let e = self.quantity.error(s, self.value, body);
         match self.relation {
             Relation::Equal => e,
             Relation::AtLeast => -e,
@@ -937,7 +936,7 @@ fn solve(
     let errors = |s: &SpacecraftState| -> Vec<f64> {
         t.goals
             .iter()
-            .map(|g| g.quantity.error(s, g.value))
+            .map(|g| g.quantity.error(s, g.value, p.central_body))
             .collect()
     };
     let solution = targeting::solve(
@@ -957,8 +956,8 @@ fn solve(
             .map(|g| GoalOutcome {
                 quantity: g.quantity,
                 value: g.value,
-                achieved: g.quantity.of(&end),
-                error: g.quantity.error(&end, g.value),
+                achieved: g.quantity.of(&end, p.central_body),
+                error: g.quantity.error(&end, g.value, p.central_body),
             })
             .collect(),
         values: solution.values,
@@ -990,7 +989,7 @@ fn optimize_body(
     let objective = |run: &Run| match o.objective {
         Objective::DeltaV => delta_v_km_s(&run.segments),
         Objective::Quantity { quantity, maximize } => {
-            let v = quantity.of(&run.end);
+            let v = quantity.of(&run.end, p.central_body);
             if maximize { -v } else { v }
         }
     };
@@ -999,8 +998,14 @@ fn optimize_body(
             let run = trial(p, start, &optimize_values(o, x))?;
             Ok::<_, SequenceError>(Evaluation {
                 objective: objective(&run),
-                equalities: equal.iter().map(|c| c.error(&run.end)).collect(),
-                inequalities: unequal.iter().map(|c| c.error(&run.end)).collect(),
+                equalities: equal
+                    .iter()
+                    .map(|c| c.error(&run.end, p.central_body))
+                    .collect(),
+                inequalities: unequal
+                    .iter()
+                    .map(|c| c.error(&run.end, p.central_body))
+                    .collect(),
             })
         },
         &variables,
@@ -1030,10 +1035,10 @@ fn optimize_body(
             .constraints
             .iter()
             .map(|c| {
-                let error = c.error(&run.end);
+                let error = c.error(&run.end, p.central_body);
                 ConstraintOutcome {
                     constraint: *c,
-                    achieved: c.quantity.of(&run.end),
+                    achieved: c.quantity.of(&run.end, p.central_body),
                     error,
                     met: c.met(error),
                 }
@@ -1083,7 +1088,8 @@ pub fn propagate_until(
         } => (quantity, value, direction),
     };
     let angle = quantity.is_angle();
-    let g = |s: &SpacecraftState| quantity.error(s, value);
+    let body = p.central_body;
+    let g = |s: &SpacecraftState| quantity.error(s, value, body);
     let mut found = 0;
     let mut left = *start;
     let mut g_left = g(&left);
@@ -1174,7 +1180,7 @@ fn refine(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::force::PointMass;
+    use crate::force::{EGM2008_GM_KM3_S2, PointMass};
     use crate::propagate::{Integrator, Method};
     use crate::{Epoch, StateVector};
 
@@ -1434,7 +1440,7 @@ mod tests {
             .atan2(t.values[0] + (mu / r1).sqrt())
             .to_degrees();
         assert!((perigee_tilt.abs() - 1.59).abs() < 0.05, "{perigee_tilt}");
-        assert!((Quantity::InclinationDeg.of(&out.end) - inc).abs() < 1e-4);
+        assert!((Quantity::InclinationDeg.of(&out.end, CentralBody::Earth) - inc).abs() < 1e-4);
     }
 
     #[test]

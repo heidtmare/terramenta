@@ -14,6 +14,7 @@ use std::sync::Arc;
 use glam::{DMat3, DQuat, DVec3};
 
 use crate::attitude::{Geometry, Steering};
+use crate::bodies::CentralBody;
 use crate::covariance::Matrix6;
 use crate::earth::{EarthModel, TerrestrialTransform, gcrf_to_itrf};
 use crate::eop::{Eop, EopTable};
@@ -122,6 +123,9 @@ const ORIENTATION_CACHE: usize = 16;
 
 #[derive(Debug, Clone)]
 pub struct Propagator {
+    /// Origin of the state; sets GM and radius for derived quantities
+    /// ([`crate::sequence::Quantity`]). Forces are configured separately.
+    pub central_body: CentralBody,
     pub forces: Vec<Arc<dyn ForceModel>>,
     pub vehicle: Vehicle,
     pub orientation: Option<Arc<dyn BodyOrientation>>,
@@ -147,6 +151,7 @@ pub struct Propagator {
 impl Propagator {
     pub fn new(integrator: Integrator) -> Self {
         Self {
+            central_body: CentralBody::Earth,
             forces: Vec::new(),
             vehicle: Vehicle::default(),
             orientation: None,
@@ -160,6 +165,11 @@ impl Propagator {
             switch_mass: None,
             attitude_failure: None,
         }
+    }
+
+    pub fn with_central_body(mut self, body: CentralBody) -> Self {
+        self.central_body = body;
+        self
     }
 
     pub fn with_force(mut self, force: impl ForceModel + 'static) -> Self {

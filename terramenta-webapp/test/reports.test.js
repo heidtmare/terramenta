@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { niceTicks } from "../src/chart.js";
 import {
+  BODIES,
   EARTH_RADIUS_KM,
   MU_EARTH,
   QUANTITIES,
@@ -91,6 +92,24 @@ test("quantities: elliptical equatorial, both sides of perigee", () => {
   const hyperbolic = quantities([7000, 0, 0], [0, 12, 0]);
   assert.ok(hyperbolic.eccentricity > 1);
   assert.ok(Number.isNaN(hyperbolic.periodMin) && Number.isNaN(hyperbolic.apogeeAltKm));
+});
+
+test("quantities and rows follow the OEM centre; CZML keeps Earth-centred segments", () => {
+  const { mu, radiusKm } = BODIES.MOON;
+  const r = radiusKm + 100;
+  const q = quantities([r, 0, 0], [0, 0, Math.sqrt(mu / r)], "MOON");
+  close(q.altitudeKm, 100, 1e-9);
+  close(q.periodMin, (2 * Math.PI * Math.sqrt(r ** 3 / mu)) / 60, 1e-9);
+  const lunar = parseOem(
+    OEM.replaceAll("CENTER_NAME = EARTH", "CENTER_NAME = MOON").replace(
+      "OBJECT_NAME = DEMO\nREF_FRAME",
+      "OBJECT_NAME = DEMO\nCENTER_NAME = MOON\nREF_FRAME",
+    ),
+  );
+  const rows = reportRows(lunar);
+  const [sample] = lunar.segments[0].samples;
+  close(rows[0].altitudeKm, Math.hypot(...sample.r) - radiusKm, 1e-9);
+  assert.equal(toCzml("x", [{ id: "a", oem: lunar }]).length, 1);
 });
 
 test("report rows, summary and CSV", () => {

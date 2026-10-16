@@ -27,7 +27,8 @@ this example).*
 | [`sun`](src/sun.rs) | Sun position relative to the SSB. |
 | [`planets`](src/planets.rs) | Venus, Earth and Mars from JPL low-precision mean elements at J2000 plus rates (valid 1800–2050). |
 | [`ecliptic`](src/ecliptic.rs) | Ecliptic → equatorial rotation applied to published planetary elements. |
-| [`bodies`](src/bodies.rs) | `GM` and mean radius per body; `sphere_of_influence_km` (Laplace SOI). |
+| [`bodies`](src/bodies.rs) | `GM` and mean radius per body; `sphere_of_influence_km` (Laplace SOI). `CentralBody::{Earth, Moon, Mars}`: field GM, equatorial radius, NAIF id, embedded field, body-fixed orientation. |
+| [`iau`](src/iau.rs) | IAU 2015 WGCCRE rotation elements (`pck00011.tpc`): `MOON`, `MARS`, nutation–precession terms, quadratic W. `IauOrientation` (`BodyOrientation`): `moon_pa` (IAU Moon + DE440 ME→PA offset), `mars`. |
 | [`time`](src/time.rs) | `Epoch` on [`hifitime`](https://docs.rs/hifitime), stored in TAI. Unix seconds are UTC with leap seconds. TT/TDB/UTC/UT1 accessors; SOFA two-part JDs. |
 | [`eop`](src/eop.rs) | `EopTable`: IERS `finals*.all` and CelesTrak `EOP-All.csv` parsers; linear interpolation, leap-second-aware UT1−UTC. |
 | [`earth`](src/earth.rs) | GCRF/TEME ↔ ITRF (`EarthModel::{Iau76Fk5, Iau2006Cio}`) via [`sofars`](https://docs.rs/sofars); GMST82, GAST, ERA; WGS-84 geodetic ↔ ECEF. |
@@ -36,7 +37,7 @@ this example).*
 | [`conjunction`](src/conjunction.rs) | `closest_approaches` (range minima, Brent-refined on a grid, threshold-pruned); encounter plane; Foster 2D `probability` (principal-axis quadrature), Alfano `max_probability` over covariance scale; `assess` (miss, RSW relative state, Pc); `erfc`. |
 | [`od`](src/od.rs) | Orbit determination. Range, range rate, az/el, RA/Dec, GNSS position models with analytic partials, one-leg light time. `batch`: weighted least squares, a priori, Cd/Cr solve-for (finite-difference sensitivities), sigma editing, `Λ⁻¹` covariance. `filter`: EKF, Joseph form, SNC process noise, innovation gating. `simulate`: visibility-masked noisy tracking. TDM ↔ observations. |
 | [`covariance`](src/covariance.rs) | 6×6 `Matrix6` algebra (inverse, congruence, lower triangle, semidefinite `cholesky`); local-frame rotation (`to_local`, `from_local`); `ProcessNoise` (white acceleration, SNC); `CovariancePropagation` along STM samples; `position_ellipsoid`, `symmetric_eigen3`. |
-| [`force`](src/force/mod.rs) | `ForceModel` trait. `SphericalHarmonics` (normalised Cunningham V/W, EGM2008 20×20 embedded, ICGEM `.gfc` loader), `PointMass`, `ThirdBody` (Battin f(q)), `Drag` with `ExponentialAtmosphere` (Vallado) / `HarrisPriester` / `Nrlmsise00` (`gtd7d`, 3-h Ap history, via [`nrlmsise00`](https://docs.rs/nrlmsise00)), `SolarRadiationPressure` (conical shadow), `Relativity` (Schwarzschild). `Vehicle::plates`: flat `Plate`s under the attitude for drag area and SRP (absorbed, specular, diffuse). |
+| [`force`](src/force/mod.rs) | `ForceModel` trait. `SphericalHarmonics` (normalised Cunningham V/W; EGM2008, GRGM900C, JGMRO120F 20×20 embedded; ICGEM `.gfc` and PDS SHADR loaders), `PointMass`, `ThirdBody` (Battin f(q)), `Drag` with `ExponentialAtmosphere` (Vallado) / `HarrisPriester` / `Nrlmsise00` (`gtd7d`, 3-h Ap history, via [`nrlmsise00`](https://docs.rs/nrlmsise00)), `SolarRadiationPressure` (conical shadow), `Relativity` (Schwarzschild). `Vehicle::plates`: flat `Plate`s under the attitude for drag area and SRP (absorbed, specular, diffuse). |
 | [`space_weather`](src/space_weather.rs) | `SpaceWeather`: CelesTrak `SW-All.csv` (observed, daily and monthly prediction) or constant; NRLMSISE-00 drivers. |
 | [`moon`](src/moon.rs) | Analytic geocentric Moon (Montenbruck & Gill), EME2000; third body without kernels. |
 | [`maneuver`](src/maneuver.rs) | `ImpulsiveManeuver` (rocket-equation mass), `FiniteBurn` (thrust, Isp, ṁ; cut-off at dry mass), `LocalFrame::{Inertial, Vnb, Rsw, Lvlh}`; `BurnFrame::Body` thrusts along body axes under the attitude. |
@@ -67,7 +68,8 @@ Mercury–Pluto (barycentres) and the Moon (under Earth), from loaded kernels.
 ## Data
 
 ```sh
-./scripts/fetch-data.sh   # data/de440s.bsp, finals2000A.all, EOP-All.csv, SW-All.csv, EGM2008_120.gfc
+./scripts/fetch-data.sh   # data/de440s.bsp, pck00011.tpc, gm_de440.tpc, moon_pa_de440_200625.bpc,
+                          # finals2000A.all, EOP-All.csv, SW-All.csv, EGM2008_120.gfc
 ```
 
 Not committed. Kernel- and EOP-dependent tests skip when files are absent.
@@ -98,6 +100,15 @@ Not committed. Kernel- and EOP-dependent tests skip when files are absent.
 | LEO 1 d, 20×20 + Sun/Moon + SRP + HP drag + GR | RKF78 vs DOP853 | 0.5 m |
 | Analytic Moon, 2000–2020 | DE440s | 0.08°, 476 km |
 | 400 km, 1 d, 2024-03 (solar max) | NRLMSISE-00 vs mean-activity HP decay | −11.5 vs −10.3 km |
+
+[`tests/central_body.rs`](tests/central_body.rs):
+
+| Case | Reference | Residual |
+| --- | --- | --- |
+| IAU Moon, Mars orientation, 2000–2040 | ANISE from `pck00011.tpc` (W₂ dropped there) | < 1e-9 rad |
+| Moon PA (IAU + ME→PA offset), 2000–2040 | DE440 librations (`moon_pa_de440_200625.bpc`) | 0.0033° |
+| Mars Ω̇ under J2 (JGMRO120F), 2 d | First-order secular theory | 0.7 % |
+| 50 km lunar orbit, GRGM900C 20×20 vs 2×2, 1 d | Mascon divergence, stays above 50 km | 12 km |
 
 [`tests/gmat.rs`](tests/gmat.rs) vs GMAT R2026a (PrinceDormand78, 1e-13). Scripts in
 [`validation/gmat/`](validation/gmat), references in [`tests/gmat/`](tests/gmat),
