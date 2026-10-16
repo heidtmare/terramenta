@@ -63,5 +63,10 @@
     "file": "orbit-determination.terramenta.json",
     "name": "Orbit determination",
     "description": "Simulated radar and GNSS tracking of a 450 km satellite: batch least squares with Cd, EKF, single-station fit; residuals, 1σ vs truth error, TDM export."
+  },
+  {
+    "file": "monte-carlo.terramenta.json",
+    "name": "Monte Carlo",
+    "description": "Targeted 500 → 800 km raise under state, Δv magnitude, pointing and mass dispersions: open vs closed loop statistics, histograms, RSW scatter, trial CSV."
   }
 ]

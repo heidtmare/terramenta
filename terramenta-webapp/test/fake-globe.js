@@ -176,6 +176,31 @@ export function attachFake({ objects = {} } = {}) {
         })),
       };
     },
+    /** One trial per sample, values nominal + trial index; trial 2 fails. Throws on an empty sequence. */
+    monteCarlo: (propagation, sequence, { samples = 100, quantities = ["altitudeKm"] } = {}) => {
+      if (sequence && !sequence.length) throw new Error("sequence is empty");
+      const trial = (k) => ({
+        values: quantities.map(() => 400 + k),
+        deltaVKmS: 0.1,
+        durationS: 3600,
+        offsetRswKm: [k, -k, 0],
+        massKg: 900,
+        converged: true,
+      });
+      const summary = { count: samples - 1, mean: 401, sigma: 1, min: 400, max: 400 + samples, p05: 400, p50: 401, p95: 402 };
+      return {
+        samples,
+        failed: samples > 2 ? 1 : 0,
+        unconverged: 0,
+        quantities,
+        nominal: trial(0),
+        trials: Array.from({ length: samples }, (_, k) => (k === 2 ? { ...trial(0), values: [], error: "not reached" } : trial(k + 1))),
+        summaries: quantities.map(() => summary),
+        deltaVKmS: summary,
+        durationS: summary,
+        dispersion: { meanPositionKm: [7000, 0, 0], meanVelocityKmS: [0, 7.5, 0], covariance: [], sigmaRsw: [0.1, 1, 0.1, 1e-4, 1e-4, 1e-4], ellipsoidKm: [1, 0.1, 0.1] },
+      };
+    },
     /** Batch: two iterations; EKF: history. One residual per station and tracking type; truth error when simulated. Throws without observations. */
     determineOrbit: ({ propagation, stations = [], simulate, tdm, estimator = "batch", solveFor = [], exportTdm }) => {
       if (!simulate && !tdm) throw new Error("no observations");
@@ -240,5 +265,5 @@ export const commands = (calls) =>
   calls
     .map(([name]) => name)
     .filter(
-      (name) => !(name in { layers: 0, vectorLayers: 0, limits: 0, ephemerisObjects: 0, propagationEnvironment: 0, findEvents: 0, target: 0, attitude: 0, coverage: 0, groundTrack: 0, terrainHorizon: 0, conjunctions: 0, determineOrbit: 0 }),
+      (name) => !(name in { layers: 0, vectorLayers: 0, limits: 0, ephemerisObjects: 0, propagationEnvironment: 0, findEvents: 0, target: 0, attitude: 0, coverage: 0, groundTrack: 0, terrainHorizon: 0, conjunctions: 0, determineOrbit: 0, monteCarlo: 0 }),
     );

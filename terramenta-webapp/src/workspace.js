@@ -44,6 +44,7 @@ import { openTargets, subscribe as onTargetsEdit } from "./targeting.js";
 import { openAttitudes, subscribe as onAttitudesEdit } from "./attitude.js";
 import { openConjunctions, subscribe as onConjunctionEdit } from "./conjunction.js";
 import { openCoverage, subscribe as onCoverageEdit } from "./coverage.js";
+import { openMonteCarlo, subscribe as onMonteCarloEdit } from "./monte-carlo.js";
 import { openOrbitDetermination, subscribe as onOdEdit } from "./od.js";
 
 const AUTOSAVE_KEY = "autosave";
@@ -112,6 +113,7 @@ export async function initWorkspace({ mount }) {
   onCoverageEdit(markDirty);
   onConjunctionEdit(markDirty);
   onOdEdit(markDirty);
+  onMonteCarloEdit(markDirty);
 
   addEventListener("beforeunload", (event) => {
     if (dirty) event.preventDefault();
@@ -201,6 +203,7 @@ function mountScene(project, options = {}) {
   openCoverage(project);
   openConjunctions(project);
   openOrbitDetermination(project);
+  openMonteCarlo(project);
   const controller = new AbortController();
   view = { ...mountView(project, current.source, controller.signal, options), abort: () => controller.abort() };
   // The last snapshot is the old scene.

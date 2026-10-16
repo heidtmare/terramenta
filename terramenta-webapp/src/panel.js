@@ -15,6 +15,7 @@ import { el, row, section, tabs } from "./dom.js";
 import { mountEphemeris } from "./ephemeris.js";
 import { mountConjunctions } from "./conjunction-panel.js";
 import { mountCoverage } from "./coverage-panel.js";
+import { mountMonteCarlo } from "./monte-carlo-panel.js";
 import { mountOrbitDetermination } from "./od-panel.js";
 import { mountEvents } from "./events-panel.js";
 import { altitude, timeScale } from "./format.js";
@@ -371,7 +372,7 @@ export function mountPanel(root, { tab, signal }) {
     { id: "layers", label: "Layers", icon: icon(ICONS.layers), panes: [imagery, vectorTiles, overlays, ephemerides] },
     { id: "spacecraft", label: "Spacecraft", icon: icon(ICONS.spacecraft), panes: mountSpacecraft(bind, signal) },
     { id: "timeline", label: "Timeline", icon: icon(ICONS.timeline), panes: [mountTimeline(bind)] },
-    { id: "analysis", label: "Analysis", icon: icon(ICONS.analysis), panes: [...mountReports(bind, signal), mountEvents(bind, signal), mountCoverage(bind, signal), mountConjunctions(bind, signal), mountOrbitDetermination(bind, signal), ...mountMission(bind, signal)] },
+    { id: "analysis", label: "Analysis", icon: icon(ICONS.analysis), panes: [...mountReports(bind, signal), mountEvents(bind, signal), mountCoverage(bind, signal), mountConjunctions(bind, signal), mountOrbitDetermination(bind, signal), mountMonteCarlo(bind, signal), ...mountMission(bind, signal)] },
     { id: "view", label: "View", icon: icon(ICONS.view), panes: [sun, frame, gnc, camera, chrome] },
   ]);
 

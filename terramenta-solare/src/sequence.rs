@@ -357,6 +357,17 @@ pub fn run(
     state: SpacecraftState,
     commands: &[Command],
 ) -> Result<Run, SequenceError> {
+    run_with(propagator, state, commands, &mut |_| {})
+}
+
+/// [`run`], with `execution` applied to each maneuver and finite burn as flown (after
+/// targeting; target iterations fly them unmodified). Execution errors.
+pub fn run_with(
+    propagator: &Propagator,
+    state: SpacecraftState,
+    commands: &[Command],
+    execution: &mut dyn FnMut(&mut Action),
+) -> Result<Run, SequenceError> {
     validate(commands)?;
     let mut out = Run {
         segments: Vec::new(),
@@ -365,8 +376,37 @@ pub fn run(
         end: state,
     };
     let mut p = propagator.clone();
-    execute(&mut p, commands, 0, &mut out)?;
+    execute(&mut p, commands, 0, &mut out, execution)?;
     Ok(out)
+}
+
+/// `commands` with each target replaced by its body at `run`'s solution: the nominal flown
+/// open loop. `run` is a run of `commands`.
+pub fn freeze(commands: &[Command], run: &Run) -> Vec<Command> {
+    let mut outcomes = run.segments.iter().filter_map(|s| match &s.kind {
+        SegmentKind::Target(t) => Some(&t.values),
+        _ => None,
+    });
+    let mut out = Vec::new();
+    flatten(commands, &mut outcomes, &mut out);
+    out
+}
+
+/// Preorder, as [`execute`] records targets.
+fn flatten<'a>(
+    commands: &[Command],
+    values: &mut impl Iterator<Item = &'a Vec<f64>>,
+    out: &mut Vec<Command>,
+) {
+    for c in commands {
+        match &c.action {
+            Action::Target(t) => {
+                let v = values.next().expect("run of these commands");
+                flatten(&with_values(t, v), values, out);
+            }
+            _ => out.push(c.clone()),
+        }
+    }
 }
 
 fn validate(commands: &[Command]) -> Result<(), SequenceError> {
@@ -546,10 +586,21 @@ fn execute(
     commands: &[Command],
     depth: usize,
     out: &mut Run,
+    execution: &mut dyn FnMut(&mut Action),
 ) -> Result<(), SequenceError> {
     for c in commands {
         let start = out.end;
-        let kind = match &c.action {
+        let flown;
+        let action = match &c.action {
+            a @ (Action::Maneuver { .. } | Action::FiniteBurn { .. }) => {
+                let mut a = a.clone();
+                execution(&mut a);
+                flown = a;
+                &flown
+            }
+            a => a,
+        };
+        let kind = match action {
             Action::Propagate {
                 stop,
                 count,
@@ -604,7 +655,13 @@ fn execute(
                     end: start,
                 });
                 let outcome = solve(p, &start, t)?;
-                execute(p, &with_values(t, &outcome.values), depth + 1, out)?;
+                execute(
+                    p,
+                    &with_values(t, &outcome.values),
+                    depth + 1,
+                    out,
+                    execution,
+                )?;
                 let segment = &mut out.segments[index];
                 segment.kind = SegmentKind::Target(outcome);
                 segment.end = out.end;
@@ -644,7 +701,13 @@ fn solve(
             finite_burns: Vec::new(),
             end: *start,
         };
-        execute(&mut p.clone(), &with_values(t, x), 0, &mut trial)?;
+        execute(
+            &mut p.clone(),
+            &with_values(t, x),
+            0,
+            &mut trial,
+            &mut |_| {},
+        )?;
         Ok(trial.end)
     };
     let errors = |s: &SpacecraftState| -> Vec<f64> {

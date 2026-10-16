@@ -70,6 +70,25 @@ pub fn inverse(a: &Matrix6) -> Option<Matrix6> {
     Some(inv)
 }
 
+/// Lower `L` with `L Lᵀ = P`. Semidefinite: a pivot ≤ `1e-14·max P_ii` zeroes its column.
+#[allow(clippy::needless_range_loop)]
+pub fn cholesky(p: &Matrix6) -> Matrix6 {
+    let floor = 1e-14 * (0..6).fold(0.0f64, |m, i| m.max(p[i][i]));
+    let mut l = [[0.0; 6]; 6];
+    for j in 0..6 {
+        let d = p[j][j] - (0..j).map(|k| l[j][k] * l[j][k]).sum::<f64>();
+        if d <= floor {
+            continue;
+        }
+        let d = d.sqrt();
+        l[j][j] = d;
+        for i in j + 1..6 {
+            l[i][j] = (p[i][j] - (0..j).map(|k| l[i][k] * l[j][k]).sum::<f64>()) / d;
+        }
+    }
+    l
+}
+
 /// `diag(R, R)`: `R` 3×3 as a block rotation.
 pub fn block(r: DMat3) -> Matrix6 {
     let c = r.to_cols_array_2d();
@@ -278,6 +297,22 @@ mod tests {
                 assert!((back[i][j] - p[i][j]).abs() < 1e-12);
             }
         }
+    }
+
+    #[test]
+    fn cholesky_factors_including_semidefinite() {
+        let close = |a: &Matrix6, b: &Matrix6| {
+            a.iter()
+                .flatten()
+                .zip(b.iter().flatten())
+                .all(|(x, y)| (x - y).abs() < 1e-10)
+        };
+        let p = sample();
+        let l = cholesky(&p);
+        assert!((0..6).all(|i| (i + 1..6).all(|j| l[i][j] == 0.0)));
+        assert!(close(&mul(&l, &transpose(&l)), &p));
+        let d = diagonal([4.0, 0.0, 1.0, 0.0, 0.0, 9.0]);
+        assert!(close(&mul(&cholesky(&d), &transpose(&cholesky(&d))), &d));
     }
 
     #[test]

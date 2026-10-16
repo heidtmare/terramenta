@@ -120,6 +120,7 @@ from a real failure.
 | `coverage(options)` | Access coverage of an H3 grid by spacecraft, line of sight or through sensor fields of view: per-cell fraction, accesses, gaps |
 | `conjunctions(options)` | Screen a propagated spacecraft against propagated spacecraft, TLE/OMM and loaded ephemeris layers: TCA, miss, RSW geometry, Pc, Pc max, CDM |
 | `determineOrbit(options)` | Batch least squares (state, Cd/Cr) or EKF from observations, CCSDS TDM or simulated tracking: estimate, covariance, residuals, TDM |
+| `monteCarlo(propagation, sequence, options)` | Dispersed runs of a mission sequence, or of the propagation's burns: per-trial end quantities, Δv, RSW offset; statistics; end-state sample covariance |
 | `loadKernel(bytes)` `loadEop(text)` `loadSpaceWeather(text)` `propagationEnvironment()` | Propagation data |
 | `setPickingEnabled(bool)` `pinFeature(layer, index)` `clearPinnedFeature()` | Overlay feature picking |
 | `pinSatellite(layer, noradId)` `clearPinnedSatellite()` | Satellite picking |
@@ -970,7 +971,7 @@ src/
   geojson.rs       GeoJSON parsing and flattening
   simplestyle.rs   simplestyle-spec 1.1.0
   omm.rs           OMM → SGP4 propagators; OEM → tabulated motion
-  numerical.rs     propagate/propagateSpk/findEvents/groundTrack/target/attitude/coverage/conjunctions/terrainHorizon requests; kernel, EOP, space weather
+  numerical.rs     propagate/propagateSpk/findEvents/groundTrack/target/runSequence/monteCarlo/attitude/coverage/conjunctions/terrainHorizon requests; kernel, EOP, space weather
   od.rs            determineOrbit requests
   tessellate.rs    Ear clipping, holes, antimeridian
   picking.rs       Overlay hit-testing
