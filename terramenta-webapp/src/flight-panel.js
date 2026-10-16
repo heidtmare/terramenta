@@ -17,7 +17,7 @@ import { mountProjectSection } from "./project-panel.js";
 import * as timeline from "./timeline.js";
 import { button, choice, slider, toggle } from "./widgets.js";
 
-const PHASE_IDS = ["departure", "escape", "arrival", "capture"];
+const PHASE_IDS = ["departure", "escape", "encounter", "flyby", "exit", "arrival", "capture"];
 
 /**
  * `missionId`: the mission shown; `project` the open project;
@@ -106,15 +106,25 @@ export function mountFlightPanel(root, { missionId, project, signal }) {
       },
     ]),
   );
-  for (const entry of phaseButtons.values()) entry.node.disabled = true;
+  for (const entry of phaseButtons.values()) {
+    entry.node.disabled = true;
+    entry.node.hidden = true;
+  }
+  const flyby = el("p", { class: "detail", hidden: true });
+  const burns = el("p", { class: "detail", hidden: true });
 
   bind(status, (state) => {
     const mission = state.missions.find((mission) => mission.id === missionId);
     if (!mission) return;
     status.textContent = describeMission(mission);
+    flyby.hidden = !mission.flyby;
+    if (mission.flyby) flyby.textContent = describeFlyby(mission);
+    burns.hidden = !mission.burns?.length;
+    if (mission.burns?.length) burns.textContent = describeBurns(mission.burns);
     for (const phase of mission.phases) {
       const entry = phaseButtons.get(phase.id);
       if (!entry) continue;
+      entry.node.hidden = false;
       entry.unixSeconds = phase.unixSeconds;
       entry.node.textContent = phase.label;
       entry.node.disabled = phase.unixSeconds == null;
@@ -125,7 +135,7 @@ export function mountFlightPanel(root, { missionId, project, signal }) {
   const missionTitle = el("h2", {}, "Mission");
   bind(missionTitle, (state) => {
     const mission = state.missions.find((mission) => mission.id === missionId);
-    if (mission) missionTitle.textContent = `Mission — ${mission.origin} → ${mission.destination}`;
+    if (mission) missionTitle.textContent = `Mission — ${route(mission)}`;
   });
 
   const missionSection = el(
@@ -133,6 +143,8 @@ export function mountFlightPanel(root, { missionId, project, signal }) {
     { class: "section" },
     missionTitle,
     status,
+    flyby,
+    burns,
     el("div", { class: "buttons" }, ...Array.from(phaseButtons.values(), (entry) => entry.node)),
   );
 
@@ -144,6 +156,7 @@ export function mountFlightPanel(root, { missionId, project, signal }) {
   const anchorChoice = choice(
     [
       ["sun", "Sun"],
+      ["venus", "Venus"],
       ["earth", "Earth"],
       ["mars", "Mars"],
       ["barycenter", "Barycenter"],
@@ -179,6 +192,24 @@ export function mountFlightPanel(root, { missionId, project, signal }) {
       }
     },
   };
+}
+
+const route = (mission) =>
+  [mission.origin, mission.via, mission.destination].filter(Boolean).join(" → ");
+
+/** Designed flyby: altitude, turn, v∞ in → out, periapsis burn, total. */
+function describeFlyby({ via, flyby }) {
+  const km = Math.round(flyby.periapsisAltitudeKm).toLocaleString();
+  return (
+    `${via} flyby ${clock(flyby.unixSeconds)} · ${km} km · turn ${flyby.turnAngleDeg.toFixed(1)}° · ` +
+    `v∞ ${flyby.vInfinityInKmS.toFixed(2)} → ${flyby.vInfinityOutKmS.toFixed(2)} km/s · ` +
+    `periapsis Δv ${(flyby.periapsisDeltaVKmS * 1000).toFixed(0)} m/s · Σ ${flyby.totalDeltaVKmS.toFixed(2)} km/s`
+  );
+}
+
+/** Executed guidance burns, m/s. */
+function describeBurns(burns) {
+  return `Burns: ${burns.map((burn) => `${burn.id} ${(burn.deltaVKmS * 1000).toFixed(0)} m/s`).join(" · ")}`;
 }
 
 /** The line under the mission's name: what it found, and where it is with it. */

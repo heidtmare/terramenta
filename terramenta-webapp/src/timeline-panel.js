@@ -241,6 +241,8 @@ export function describeActions(actions) {
   if (actions.frame) parts.push(actions.frame.toUpperCase());
   if (actions.focus) parts.push(`focus ${actions.focus.layer}`);
   if (actions.follow) parts.push(`follow ${actions.follow}`);
+  if (actions.helioDistanceAu !== undefined) parts.push(`${actions.helioDistanceAu} AU`);
+  if (actions.faceFlyby) parts.push(`face ${actions.faceFlyby} flyby`);
   if (actions.camera) parts.push("camera");
   return parts.join(" · ") || "no actions";
 }

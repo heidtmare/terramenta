@@ -3,8 +3,8 @@
 //! all the way from launch to arrival.
 //!
 //! [`frame`] has the reasoning and the tree itself — the Solar System
-//! Barycentre at the root, [`sun::Sun`], [`planets::EARTH`] and
-//! [`planets::MARS`] as its direct children, each reporting its own
+//! Barycentre at the root, [`sun::Sun`], [`planets::VENUS`],
+//! [`planets::EARTH`] and [`planets::MARS`] as its direct children, each reporting its own
 //! position the low-precision way `terramenta-globe`'s sun and moon models
 //! do. [`orbit`] is the two-body mechanics everything propagates with.
 //! [`spacecraft`] is where the tree earns its keep: a
@@ -33,6 +33,7 @@ pub mod earth;
 pub mod ecliptic;
 pub mod eop;
 pub mod events;
+pub mod flyby;
 pub mod force;
 pub mod frame;
 pub mod interpolate;
@@ -67,17 +68,18 @@ pub use propagate::{Propagator, SpacecraftState};
 pub use time::Epoch;
 
 /// The tree this crate exists to build: the Solar System Barycentre at the
-/// root, with the Sun, Earth and Mars hanging off it as direct children —
+/// root, with the Sun, Venus, Earth and Mars hanging off it as direct children —
 /// the top-level shape described in [`frame`]'s module docs, as one call
-/// rather than three separate [`FrameTree::add`] calls with the right
+/// rather than separate [`FrameTree::add`] calls with the right
 /// [`Ephemeris`] for each.
 ///
 /// The frames are reachable afterward by [`FrameTree::find`], under the names
-/// `"Sun"`, `"Earth"` and `"Mars"`.
+/// `"Sun"`, `"Venus"`, `"Earth"` and `"Mars"`.
 pub fn solar_system() -> FrameTree {
     let mut tree = FrameTree::new();
     let root = tree.root();
     tree.add("Sun", root, sun::Sun);
+    tree.add("Venus", root, planets::VENUS);
     tree.add("Earth", root, planets::EARTH);
     tree.add("Mars", root, planets::MARS);
     tree
@@ -90,9 +92,9 @@ mod tests {
     use glam::DVec3;
 
     #[test]
-    fn solar_system_wires_up_the_three_top_level_bodies() {
+    fn solar_system_wires_up_the_top_level_bodies() {
         let tree = solar_system();
-        for name in ["Sun", "Earth", "Mars"] {
+        for name in ["Sun", "Venus", "Earth", "Mars"] {
             let frame = tree.find(name).unwrap_or_else(|| panic!("no {name} frame"));
             assert_eq!(tree.parent(frame), Some(tree.root()));
         }

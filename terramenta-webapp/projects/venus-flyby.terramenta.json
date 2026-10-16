@@ -1,0 +1,33 @@
+{
+  "$schema": "../schema/project.schema.json",
+  "terramenta": 3,
+  "name": "Earth → Venus → Mars",
+  "description": "2034 Venus gravity assist to Mars under patched conics: parking-orbit departure, cruise correction, Venus approach and periapsis, retarget, Mars capture. Clock, view and zoom are directed.",
+  "ui": { "panel": "flight", "readout": false },
+  "clock": { "epoch": "2034-06-01T00:00:00Z" },
+  "view": "globe",
+  "imagery": { "enabled": false },
+  "vectorTiles": { "enabled": false },
+  "overlays": { "enabled": false },
+  "ephemerides": { "enabled": false },
+  "placemarks": { "enabled": false },
+  "hud": { "visible": false },
+  "missions": [
+    {
+      "id": "evm",
+      "origin": "Earth",
+      "via": "Venus",
+      "destination": "Mars",
+      "departureSearchDays": 120,
+      "searchSteps": 13
+    }
+  ],
+  "camera": { "follow": "evm" },
+  "director": {
+    "type": "missionFlight",
+    "mission": "evm",
+    "launchLeadSeconds": 3600,
+    "departureTimeScale": 600,
+    "departureDoublingSeconds": 2
+  }
+}

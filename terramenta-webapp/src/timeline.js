@@ -8,8 +8,9 @@
  *   searched events (`events.js` `eventTimeline`): `.aos.<station>.N`,
  *   `.los.<station>.N`, `.umbraN[.end]`, `.penumbraN[.end]`, `.periapsisN`,
  *   `.apoapsisN`, `.ascendingNodeN`, `.descendingNodeN`;
- *   `<mission>.departure`, `.escape`, `.arrival`, `.capture` (`state.missions`,
- *   `null` until known).
+ *   `<mission>.departure`, `.escape`, `.encounter`, `.flyby`, `.exit`,
+ *   `.arrival`, `.capture` (`state.missions`, `null` until known; the flyby
+ *   three only with `via`).
  * - Project `timeline.events`: `{id, label, at, actions}`; `at` is a date-time
  *   or `{event, offsetS}` naming a scene event or another project event.
  * - Director (`director.js`): generated from `project.director`, not saved.
@@ -34,8 +35,8 @@ import { utcSeconds } from "./format.js";
 import * as globe from "./globe.js";
 import { flownShape } from "./sequence.js";
 
-export const MISSION_PHASES = ["departure", "escape", "arrival", "capture"];
-const REFERENCE = /^([^.]+)\.(start|end|burn([1-9]\d*)|finite([1-9]\d*)(\.end)?|departure|escape|arrival|capture)$/;
+export const MISSION_PHASES = ["departure", "escape", "encounter", "flyby", "exit", "arrival", "capture"];
+const REFERENCE = /^([^.]+)\.(start|end|burn([1-9]\d*)|finite([1-9]\d*)(\.end)?|departure|escape|encounter|flyby|exit|arrival|capture)$/;
 /** Searched events; counts are known only after propagation, so unchecked. */
 const SEARCHED = /^([^.]+)\.(?:(?:aos|los)\.([^.]+)\.[1-9]\d*|(?:umbra|penumbra)[1-9]\d*(?:\.end)?|(?:periapsis|apoapsis|ascendingNode|descendingNode)[1-9]\d*)$/;
 
@@ -368,6 +369,8 @@ function apply(merged, latest, state) {
     if (id !== undefined) globe.setGncFocus(layer, id);
   }
   if (changed("follow") && merged.follow) globe.followMission(merged.follow);
+  if (changed("helioDistanceAu") && merged.helioDistanceAu) globe.setHeliocentricDistance(merged.helioDistanceAu);
+  if (changed("faceFlyby") && merged.faceFlyby) globe.faceFlyby(merged.faceFlyby);
   if (latest.camera) globe.lookAt(latest.camera.lat, latest.camera.lon, latest.camera.altitudeKm);
   run.applied = merged;
 }

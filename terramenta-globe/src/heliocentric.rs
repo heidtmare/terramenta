@@ -27,6 +27,11 @@
 //! [`MARS_VISUAL_RADIUS_AU`] are art-directed instead: sized by eye to read
 //! clearly on screen, not by a formula, the same way [`crate::globe`]'s own
 //! radii are tuned constants rather than derived ones.
+//!
+//! Close in, [`VisualScale`] shrinks each mesh toward true size (radius
+//! `clamp(d·k, true, art)`, `d` camera distance), so a flyby periapsis a few
+//! thousand km up reads correctly. [`FloatingOrigin`] follows the camera
+//! anchor in this view, keeping f32 precision at the subject.
 
 use bevy::mesh::MeshVertexBufferLayoutRef;
 use bevy::pbr::{MaterialPipeline, MaterialPipelineKey};
@@ -37,11 +42,10 @@ use bevy::render::render_resource::{
 use bevy::shader::ShaderRef;
 
 use crate::mission::MissionSettings;
-use crate::solar::{FloatingOrigin, SolarBody, SolarSystem, TrackedSpacecraft, floating_offset};
+use crate::solar::{FloatingOrigin, SolarBody, SolarSystem, TrackedSpacecraft};
 use crate::starfield::{self, Starfield, StarfieldMaterial};
-use crate::time::SimClock;
 use crate::view::{ViewState, in_heliocentric_view};
-use terramenta_solare::{Epoch, FrameId};
+use terramenta_solare::FrameId;
 
 /// The Sun's visual radius, wildly exaggerated from its true ~0.00465 AU so
 /// it reads as more than a point from Earth's orbit.
@@ -53,6 +57,12 @@ const SUN_CORONA_RADIUS_AU: f32 = SUN_VISUAL_RADIUS_AU * 1.9;
 /// Mars's real 1.88:1 size ratio between the two.
 const EARTH_VISUAL_RADIUS_AU: f32 = 0.006;
 const MARS_VISUAL_RADIUS_AU: f32 = 0.0032;
+const VENUS_VISUAL_RADIUS_AU: f32 = 0.0057;
+/// Minimum apparent radius, rad: planets, spacecraft marker.
+const PLANET_MIN_ANGULAR_RADIUS: f32 = 0.004;
+const SUN_MIN_ANGULAR_RADIUS: f32 = 0.015;
+const SPACECRAFT_MIN_ANGULAR_RADIUS: f32 = 0.0011;
+const KM_PER_AU: f32 = terramenta_solare::bodies::ASTRONOMICAL_UNIT_KM as f32;
 /// A mission's own marker — smaller than either planet, so it never reads as
 /// a third world. Drawn unlit, unlike the planets: a sphere this small has no
 /// shading to speak of, only whichever half happens to face the sun.
@@ -65,8 +75,8 @@ const SPACECRAFT_GLOBE_RADIUS: f32 = crate::globe::GLOBE_RADIUS * 0.01;
 /// heliocentric camera can orbit out to ([`HELIO_MAX_DISTANCE_AU`]).
 const STARFIELD_RADIUS_AU: f32 = 15.0;
 
-/// Closest the heliocentric camera can orbit in to its anchor.
-pub(crate) const HELIO_MIN_DISTANCE_AU: f32 = 0.05;
+/// Closest the heliocentric camera can orbit in to its anchor (~15,000 km).
+pub(crate) const HELIO_MIN_DISTANCE_AU: f32 = 1.0e-4;
 /// Furthest out — comfortably past Mars's aphelion, ~1.66 AU.
 pub(crate) const HELIO_MAX_DISTANCE_AU: f32 = 6.0;
 /// Where the establishing shot lands, on the cut into this view.
@@ -92,6 +102,29 @@ const PITCH_LIMIT: f32 = std::f32::consts::FRAC_PI_2 - 0.02;
 #[derive(Component)]
 pub(crate) struct HeliocentricVisual;
 
+/// Distance-adaptive mesh scale; mesh built at `art_radius_au`.
+#[derive(Component, Clone, Copy)]
+pub(crate) struct VisualScale {
+    true_radius_au: f32,
+    art_radius_au: f32,
+    min_angular_radius: f32,
+}
+
+impl VisualScale {
+    fn planet(true_radius_km: f64, art_radius_au: f32) -> Self {
+        Self {
+            true_radius_au: true_radius_km as f32 / KM_PER_AU,
+            art_radius_au,
+            min_angular_radius: PLANET_MIN_ANGULAR_RADIUS,
+        }
+    }
+
+    fn factor(&self, distance_au: f32) -> f32 {
+        (distance_au * self.min_angular_radius).clamp(self.true_radius_au, self.art_radius_au)
+            / self.art_radius_au
+    }
+}
+
 /// A mission spacecraft's marker for the globe view, spawned as a child of
 /// the spacecraft by [`spawn_mission_visuals`] so it rides along with the
 /// [`SolarBody`] transform and goes when the spacecraft does. Its
@@ -108,6 +141,7 @@ pub(crate) struct GlobeSpacecraftMarker;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HeliocentricAnchor {
     Sun,
+    Venus,
     Earth,
     Mars,
     /// The Solar System Barycentre itself — the tree's own root, not one of
@@ -124,6 +158,7 @@ impl HeliocentricAnchor {
     pub fn id(self) -> &'static str {
         match self {
             Self::Sun => "sun",
+            Self::Venus => "venus",
             Self::Earth => "earth",
             Self::Mars => "mars",
             Self::Barycenter => "barycenter",
@@ -135,6 +170,7 @@ impl HeliocentricAnchor {
     pub fn from_id(id: &str) -> Option<Self> {
         match id {
             "sun" => Some(Self::Sun),
+            "venus" => Some(Self::Venus),
             "earth" => Some(Self::Earth),
             "mars" => Some(Self::Mars),
             "barycenter" => Some(Self::Barycenter),
@@ -142,13 +178,12 @@ impl HeliocentricAnchor {
         }
     }
 
-    /// Looks this anchor up in `solar_system` — the Sun, Earth and Mars by
-    /// name, the barycentre as the tree's own root, which is always present
-    /// and so never `None` the other three are, in principle, before the
-    /// tree has been built.
+    /// Looks this anchor up in `solar_system` — bodies by name, the
+    /// barycentre as the tree's own root.
     fn resolve(self, solar_system: &SolarSystem) -> Option<FrameId> {
         match self {
             Self::Sun => solar_system.find("Sun"),
+            Self::Venus => solar_system.find("Venus"),
             Self::Earth => solar_system.find("Earth"),
             Self::Mars => solar_system.find("Mars"),
             Self::Barycenter => Some(solar_system.root()),
@@ -202,6 +237,20 @@ impl Default for HeliocentricCamera {
 }
 
 impl HeliocentricCamera {
+    /// Turns the rig to look along `-normal` (ICRF), e.g. down onto a flyby
+    /// plane; yaw takes the short way round.
+    pub(crate) fn face(&mut self, normal: bevy::math::DVec3) {
+        let d = crate::gnc::scene_from_canonical(normal).normalize();
+        let yaw = d.x.atan2(d.z);
+        let turns = ((self.target_yaw - yaw) / std::f32::consts::TAU).round();
+        self.target_yaw = yaw + turns * std::f32::consts::TAU;
+        self.target_pitch = d.y.asin().clamp(-PITCH_LIMIT, PITCH_LIMIT);
+    }
+
+    pub(crate) fn set_distance(&mut self, au: f32) {
+        self.target_distance = au.clamp(HELIO_MIN_DISTANCE_AU, HELIO_MAX_DISTANCE_AU);
+    }
+
     pub(crate) fn zoom_by(&mut self, exponent: f32) {
         self.target_distance = (self.target_distance * (-exponent).exp())
             .clamp(HELIO_MIN_DISTANCE_AU, HELIO_MAX_DISTANCE_AU);
@@ -352,9 +401,16 @@ impl Plugin for HeliocentricPlugin {
                     .run_if(in_heliocentric_view),
                 (follow_locked_mission, apply_heliocentric_orbit)
                     .chain()
+                    .in_set(crate::frame::FrameSet::Camera)
                     .run_if(in_heliocentric_view),
                 drive_heliocentric_sun.run_if(in_heliocentric_view),
             ),
+        )
+        .add_systems(
+            PostUpdate,
+            scale_heliocentric_visuals
+                .run_if(in_heliocentric_view)
+                .before(bevy::transform::TransformSystems::Propagate),
         );
     }
 }
@@ -393,11 +449,21 @@ fn spawn_heliocentric_bodies(
     let mars = solar_system
         .find("Mars")
         .expect("terramenta_solare::solar_system always adds a Mars frame");
+    let venus = solar_system
+        .find("Venus")
+        .expect("terramenta_solare::solar_system always adds a Venus frame");
+    use terramenta_solare::bodies::{
+        EARTH_MEAN_RADIUS_KM, MARS_MEAN_RADIUS_KM, SUN_MEAN_RADIUS_KM, VENUS_MEAN_RADIUS_KM,
+    };
 
     commands.spawn((
         Name::new("Heliocentric Sun"),
         HeliocentricVisual,
         SolarBody(sun),
+        VisualScale {
+            min_angular_radius: SUN_MIN_ANGULAR_RADIUS,
+            ..VisualScale::planet(SUN_MEAN_RADIUS_KM, SUN_VISUAL_RADIUS_AU)
+        },
         Mesh3d(meshes.add(Sphere::new(SUN_VISUAL_RADIUS_AU))),
         MeshMaterial3d(sun_materials.add(SunMaterial::default())),
         Transform::default(),
@@ -418,6 +484,10 @@ fn spawn_heliocentric_bodies(
         Name::new("Heliocentric Sun Corona"),
         HeliocentricVisual,
         SolarBody(sun),
+        VisualScale {
+            min_angular_radius: SUN_MIN_ANGULAR_RADIUS * 1.9,
+            ..VisualScale::planet(SUN_MEAN_RADIUS_KM * 1.9, SUN_CORONA_RADIUS_AU)
+        },
         Mesh3d(meshes.add(Sphere::new(SUN_CORONA_RADIUS_AU))),
         MeshMaterial3d(corona_materials.add(SunCoronaMaterial::default())),
         Transform::default(),
@@ -428,6 +498,7 @@ fn spawn_heliocentric_bodies(
         Name::new("Heliocentric Earth"),
         HeliocentricVisual,
         SolarBody(earth),
+        VisualScale::planet(EARTH_MEAN_RADIUS_KM, EARTH_VISUAL_RADIUS_AU),
         Mesh3d(meshes.add(Sphere::new(EARTH_VISUAL_RADIUS_AU))),
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: Color::srgb(0.25, 0.45, 0.85),
@@ -442,10 +513,26 @@ fn spawn_heliocentric_bodies(
         Name::new("Heliocentric Mars"),
         HeliocentricVisual,
         SolarBody(mars),
+        VisualScale::planet(MARS_MEAN_RADIUS_KM, MARS_VISUAL_RADIUS_AU),
         Mesh3d(meshes.add(Sphere::new(MARS_VISUAL_RADIUS_AU))),
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: Color::srgb(0.75, 0.35, 0.2),
             perceptual_roughness: 0.95,
+            ..default()
+        })),
+        Transform::default(),
+        Visibility::Hidden,
+    ));
+
+    commands.spawn((
+        Name::new("Heliocentric Venus"),
+        HeliocentricVisual,
+        SolarBody(venus),
+        VisualScale::planet(VENUS_MEAN_RADIUS_KM, VENUS_VISUAL_RADIUS_AU),
+        Mesh3d(meshes.add(Sphere::new(VENUS_VISUAL_RADIUS_AU))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgb(0.92, 0.82, 0.58),
+            perceptual_roughness: 0.9,
             ..default()
         })),
         Transform::default(),
@@ -487,23 +574,37 @@ fn spawn_mission_visuals(
             unlit: true,
             ..default()
         });
+        // Markers are children so their scale never reaches the trail
+        // ribbons, also children of the spacecraft.
         commands
             .entity(entity)
             .insert((
                 Name::new("Mission spacecraft"),
                 HeliocentricVisual,
-                Mesh3d(meshes.add(Sphere::new(SPACECRAFT_VISUAL_RADIUS_AU))),
-                MeshMaterial3d(material.clone()),
                 heliocentric_visibility,
             ))
-            .with_child((
-                Name::new("Mission spacecraft (globe)"),
-                GlobeSpacecraftMarker,
-                Mesh3d(meshes.add(Sphere::new(SPACECRAFT_GLOBE_RADIUS))),
-                MeshMaterial3d(material),
-                Transform::default(),
-                globe_visibility,
-            ));
+            .with_children(|parent| {
+                parent.spawn((
+                    Name::new("Mission spacecraft (heliocentric)"),
+                    VisualScale {
+                        true_radius_au: 0.0,
+                        art_radius_au: SPACECRAFT_VISUAL_RADIUS_AU,
+                        min_angular_radius: SPACECRAFT_MIN_ANGULAR_RADIUS,
+                    },
+                    Mesh3d(meshes.add(Sphere::new(SPACECRAFT_VISUAL_RADIUS_AU))),
+                    MeshMaterial3d(material.clone()),
+                    Transform::default(),
+                    Visibility::Inherited,
+                ));
+                parent.spawn((
+                    Name::new("Mission spacecraft (globe)"),
+                    GlobeSpacecraftMarker,
+                    Mesh3d(meshes.add(Sphere::new(SPACECRAFT_GLOBE_RADIUS))),
+                    MeshMaterial3d(material),
+                    Transform::default(),
+                    globe_visibility,
+                ));
+            });
     }
 }
 
@@ -536,7 +637,7 @@ fn heliocentric_keyboard_input(
     if let Some(anchor) = pressed_anchor(&keys) {
         camera.set_anchor(anchor, &solar_system);
     }
-    // `5` follows the first mission, after the four bodies `1`–`4` pick.
+    // `5` follows the first mission; `6` is Venus.
     if keys.just_pressed(KeyCode::Digit5)
         && let Some(id) = missions.as_deref().and_then(MissionSettings::first_id)
     {
@@ -573,9 +674,8 @@ fn heliocentric_keyboard_input(
     }
 }
 
-/// Which [`HeliocentricAnchor`], if any, was just picked by its number key —
-/// `1` through `4` in the same order [`HeliocentricVisual`] draws them, Sun
-/// first, plus the barycentre nothing is drawn at.
+/// Which [`HeliocentricAnchor`], if any, was just picked by its number key:
+/// `1` Sun, `2` Earth, `3` Mars, `4` barycentre, `6` Venus.
 fn pressed_anchor(keys: &ButtonInput<KeyCode>) -> Option<HeliocentricAnchor> {
     if keys.just_pressed(KeyCode::Digit1) {
         Some(HeliocentricAnchor::Sun)
@@ -585,6 +685,8 @@ fn pressed_anchor(keys: &ButtonInput<KeyCode>) -> Option<HeliocentricAnchor> {
         Some(HeliocentricAnchor::Mars)
     } else if keys.just_pressed(KeyCode::Digit4) {
         Some(HeliocentricAnchor::Barycenter)
+    } else if keys.just_pressed(KeyCode::Digit6) {
+        Some(HeliocentricAnchor::Venus)
     } else {
         None
     }
@@ -610,17 +712,13 @@ fn follow_locked_mission(
     }
 }
 
-/// Smooths the rig toward its targets and places it relative to its anchor
-/// body's own current position, which [`floating_offset`] computes fresh
-/// every tick the same way [`crate::solar::place_solar_bodies`] does for
-/// every other [`SolarBody`] — the anchor moves around the Sun like anything
-/// else in the tree, so the shot has to be rebuilt from where it is now, not
-/// where it was when the view was entered.
+/// Smooths the rig toward its targets (distance in log space, so a zoom
+/// across decades eases evenly) and re-centres [`FloatingOrigin`] on the
+/// anchor; the rig then sits around the world origin. Runs in
+/// [`crate::frame::FrameSet::Camera`], before bodies are placed against it.
 fn apply_heliocentric_orbit(
     time: Res<Time>,
-    solar_system: Res<SolarSystem>,
-    origin: Res<FloatingOrigin>,
-    clock: Res<SimClock>,
+    mut origin: ResMut<FloatingOrigin>,
     mut camera: Single<(&mut HeliocentricCamera, &mut Transform)>,
 ) {
     let (rig, transform) = &mut *camera;
@@ -631,19 +729,28 @@ fn apply_heliocentric_orbit(
     let t = 1.0 - (-SMOOTHING * time.delta_secs()).exp();
     rig.yaw += (rig.target_yaw - rig.yaw) * t;
     rig.pitch += (rig.target_pitch - rig.pitch) * t;
-    rig.distance += (rig.target_distance - rig.distance) * t;
+    rig.distance = (rig.distance.ln() + (rig.target_distance.ln() - rig.distance.ln()) * t).exp();
 
-    let epoch = Epoch::from_unix_seconds(clock.unix_seconds);
-    let anchor_position = floating_offset(
-        solar_system.tree(),
-        anchor,
-        origin.frame,
-        epoch,
-        Quat::IDENTITY,
-        terramenta_solare::bodies::ASTRONOMICAL_UNIT_KM,
-    );
+    if origin.frame != anchor {
+        origin.frame = anchor;
+    }
+    **transform = rig.transform(Vec3::ZERO);
+}
 
-    **transform = rig.transform(anchor_position);
+/// Applies [`VisualScale`] against the camera's distance to each body; a
+/// child marker measures from its parent's position.
+fn scale_heliocentric_visuals(
+    camera: Single<&Transform, (With<HeliocentricCamera>, Without<VisualScale>)>,
+    parents: Query<&Transform, (Without<VisualScale>, Without<HeliocentricCamera>)>,
+    mut visuals: Query<(&VisualScale, &mut Transform, Option<&ChildOf>)>,
+) {
+    for (scale, mut transform, parent) in &mut visuals {
+        let position = match parent.and_then(|parent| parents.get(parent.parent()).ok()) {
+            Some(parent) => parent.translation,
+            None => transform.translation,
+        };
+        transform.scale = Vec3::splat(scale.factor(position.distance(camera.translation)));
+    }
 }
 
 /// Animates the Sun's granulation and corona flicker. The heliocentric

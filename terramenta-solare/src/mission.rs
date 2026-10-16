@@ -166,7 +166,7 @@ pub fn plan_transfer(
 
 /// `steps` epochs evenly spaced from `start` to `end`, inclusive of both.
 /// `steps <= 1` collapses to just `start`.
-fn linspace_epochs(start: Epoch, end: Epoch, steps: usize) -> Vec<Epoch> {
+pub(crate) fn linspace_epochs(start: Epoch, end: Epoch, steps: usize) -> Vec<Epoch> {
     if steps <= 1 {
         return vec![start];
     }

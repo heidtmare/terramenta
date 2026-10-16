@@ -31,6 +31,8 @@
 //! [`crate::orbit`] already propagates, stitched together only at the
 //! moments a sphere of influence is crossed.
 
+use glam::DVec3;
+
 use crate::bodies;
 use crate::frame::{Ephemeris, FrameId, FrameTree, StateVector};
 use crate::orbit::OrbitalElements;
@@ -89,6 +91,10 @@ impl Primary {
 
     pub fn mars(frame: FrameId, sun: FrameId) -> Self {
         Self::orbiting(frame, bodies::GM_MARS_KM3_S2, Self::sun(sun))
+    }
+
+    pub fn venus(frame: FrameId, sun: FrameId) -> Self {
+        Self::orbiting(frame, bodies::GM_VENUS_KM3_S2, Self::sun(sun))
     }
 
     /// Attaches the bodies a spacecraft on this primary should be checked
@@ -159,6 +165,32 @@ impl PatchedConicSpacecraft {
     /// The body this spacecraft is currently described as orbiting.
     pub fn primary_frame(&self) -> FrameId {
         self.primary.frame
+    }
+
+    pub fn primary_gm_km3_s2(&self) -> f64 {
+        self.primary.gm_km3_s2
+    }
+
+    /// State relative to the current primary.
+    pub fn state_at(&self, epoch: Epoch) -> StateVector {
+        self.elements
+            .state_at(self.primary.gm_km3_s2, epoch.tt_seconds())
+    }
+
+    /// Impulsive Δv (km/s, ICRF) at `epoch`; the conic is re-anchored there.
+    pub fn apply_impulse(&mut self, tree: &mut FrameTree, epoch: Epoch, delta_v_km_s: DVec3) {
+        let state = self.state_at(epoch);
+        let burned = StateVector::new(state.position_km, state.velocity_km_s + delta_v_km_s);
+        self.elements =
+            OrbitalElements::from_state(burned, self.primary.gm_km3_s2, epoch.tt_seconds());
+        tree.reparent(
+            self.frame,
+            self.primary.frame,
+            TwoBodyOrbit {
+                elements: self.elements,
+                gm_km3_s2: self.primary.gm_km3_s2,
+            },
+        );
     }
 
     /// Checks this spacecraft against its current primary's sphere of
@@ -288,7 +320,6 @@ impl PatchedConicSpacecraft {
 mod tests {
     use super::*;
     use crate::frame::{FixedAtParent, FixedOffset};
-    use glam::DVec3;
 
     /// A minimal tree — SSB, Sun, Earth — with Earth held at a fixed offset
     /// rather than propagated, since these tests are about the spacecraft's
@@ -522,6 +553,20 @@ mod tests {
 
         assert!(escaped, "never escaped Earth");
         assert!(captured, "never captured at Mars");
+    }
+
+    #[test]
+    fn an_impulse_changes_velocity_not_position() {
+        let (mut tree, earth) = earth_sun_tree();
+        let leo = StateVector::new(DVec3::new(7000.0, 0.0, 0.0), DVec3::new(0.0, 7.3, 1.0));
+        let mut sc = PatchedConicSpacecraft::spawn(&mut tree, "Burn", earth, leo, Epoch::J2000);
+        let t = Epoch::J2000.advanced_by_seconds(600.0);
+        let before = tree.state_relative_to_root(sc.frame, t);
+        let dv = DVec3::new(0.0, 0.1, -0.05);
+        sc.apply_impulse(&mut tree, t, dv);
+        let after = tree.state_relative_to_root(sc.frame, t);
+        assert!((after.position_km - before.position_km).length() < 1e-6);
+        assert!((after.velocity_km_s - before.velocity_km_s - dv).length() < 1e-9);
     }
 
     #[test]

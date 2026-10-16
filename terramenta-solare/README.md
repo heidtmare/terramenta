@@ -25,7 +25,7 @@ this example).*
 | --- | --- |
 | [`frame`](src/frame.rs) | `FrameTree`, `FrameId`, `StateVector`, `Ephemeris`, `Relative` (one tree node relative to another, as an `Ephemeris`). Each node reports state relative to its parent; `state_of_relative_to` walks to the nearest common ancestor and subtracts there, avoiding precision loss from a single distant origin. |
 | [`sun`](src/sun.rs) | Sun position relative to the SSB. |
-| [`planets`](src/planets.rs) | Earth and Mars from JPL low-precision mean elements at J2000 plus rates (valid 1800–2050). |
+| [`planets`](src/planets.rs) | Venus, Earth and Mars from JPL low-precision mean elements at J2000 plus rates (valid 1800–2050). |
 | [`ecliptic`](src/ecliptic.rs) | Ecliptic → equatorial rotation applied to published planetary elements. |
 | [`bodies`](src/bodies.rs) | `GM` and mean radius per body; `sphere_of_influence_km` (Laplace SOI). |
 | [`time`](src/time.rs) | `Epoch` on [`hifitime`](https://docs.rs/hifitime), stored in TAI. Unix seconds are UTC with leap seconds. TT/TDB/UTC/UT1 accessors; SOFA two-part JDs. |
@@ -53,11 +53,12 @@ this example).*
 | [`orbit`](src/orbit.rs) | `OrbitalElements`: state vector ↔ classical elements, two-body propagation (`state_at`, `state_at_true_anomaly`). |
 | [`lambert`](src/lambert.rs) | `solve`: Vallado universal-variable Lambert solver with Stumpff functions; `TransferDirection::{Prograde, Retrograde}`. |
 | [`mission`](src/mission.rs) | `plan_transfer` (dated body-to-body Δv against the ephemeris), `find_best_transfer_window` (grid search for minimum total Δv), `hohmann_transfer` (coplanar circular baseline). |
+| [`flyby`](src/flyby.rs) | Powered gravity assist. `FlybyGeometry::solve` (periapsis radius and burn from v∞in/v∞out), `plan_flyby` (two Lambert legs), `find_best_flyby` (departure × leg-duration grid, refined), `FlybyGuidance` (sub-stepped patched-conic flight: B-plane cruise correction, approach Lambert to periapsis, periapsis burn, retarget). |
 | [`departure`](src/departure.rs) | `injection_state` and `escape_injection_state`: v∞ → parking-orbit departure state. The escape variant matches the target speed at the SOI radius rather than at infinity. |
 | [`spacecraft`](src/spacecraft/mod.rs) | `Spacecraft`: state, `Vehicle`, and `Propagation::{TwoBody, Sgp4, Numerical, Tabulated}`; `step_to`, `maneuver`, `ephemeris`. `PatchedConicSpacecraft` and `Primary`: SOI escape and capture across a `FrameTree`. |
 
-`solar_system()` returns a `FrameTree` with the SSB at the root and Sun, Earth
-and Mars as children.
+`solar_system()` returns a `FrameTree` with the SSB at the root and Sun, Venus,
+Earth and Mars as children.
 `spice::solar_system_from_kernels(almanac)` returns the same names plus
 Mercury–Pluto (barycentres) and the Moon (under Earth), from loaded kernels.
 

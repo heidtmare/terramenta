@@ -24,6 +24,7 @@ pub const GM_SATURN_SYSTEM_KM3_S2: f64 = 37_940_584.841_8;
 
 pub const EARTH_MEAN_RADIUS_KM: f64 = 6_371.0;
 pub const MARS_MEAN_RADIUS_KM: f64 = 3_389.5;
+pub const VENUS_MEAN_RADIUS_KM: f64 = 6_051.8;
 pub const SUN_MEAN_RADIUS_KM: f64 = 696_000.0;
 pub const MOON_MEAN_RADIUS_KM: f64 = 1_737.4;
 

@@ -115,7 +115,7 @@ impl Ephemeris for KernelEphemeris {
 /// [`crate::solar_system`] backed by kernels.
 ///
 /// Root SSB; children Sun, Mercury, Venus, Earth, Mars, Jupiter, Saturn, Uranus, Neptune, Pluto
-/// (barycentres except Earth); Moon under Earth. Sun, Earth, Mars fall back to the
+/// (barycentres except Earth); Moon under Earth. Sun, Venus, Earth, Mars fall back to the
 /// low-precision series outside coverage.
 pub fn solar_system_from_kernels(almanac: Arc<Almanac>) -> FrameTree {
     use naif::*;
@@ -124,7 +124,11 @@ pub fn solar_system_from_kernels(almanac: Arc<Almanac>) -> FrameTree {
     let root = tree.root();
     tree.add("Sun", root, k(SUN, SSB).with_fallback(sun::Sun));
     tree.add("Mercury", root, k(MERCURY_BARYCENTER, SSB));
-    tree.add("Venus", root, k(VENUS_BARYCENTER, SSB));
+    tree.add(
+        "Venus",
+        root,
+        k(VENUS_BARYCENTER, SSB).with_fallback(planets::VENUS),
+    );
     let earth = tree.add("Earth", root, k(EARTH, SSB).with_fallback(planets::EARTH));
     tree.add("Moon", earth, k(MOON, EARTH));
     tree.add(

@@ -82,7 +82,9 @@ from a real failure.
 | `setAltitude(km)` `zoomBy(exp)` `orbitBy(yawDeg, pitchDeg)` `resetView()` | Camera movement |
 | `setFrame("ecef" \| "eci")` `toggleFrame()` | Reference frame of the globe scene |
 | `setView("globe" \| "heliocentric")` `toggleView()` | Globe or heliocentric scene |
-| `setHeliocentricAnchor("sun" \| "earth" \| "mars" \| "barycenter")` | Heliocentric camera target; releases a mission lock |
+| `setHeliocentricAnchor("sun" \| "venus" \| "earth" \| "mars" \| "barycenter")` | Heliocentric camera target; releases a mission lock |
+| `setHeliocentricDistance(au)` | Heliocentric camera distance, 1e-4–6 AU; eased in log space |
+| `faceFlyby(id)` | Heliocentric camera looks down onto a mission's flyby plane |
 | `followMission(id)` | Lock both cameras onto a mission's spacecraft |
 | `setGncEnabled(bool)` `toggleGnc()` | Draw both frames at once |
 | `setGncEciAxes(bool)` `setGncEcefAxes(bool)` `setGncSidereal(bool)` | Triads and sidereal-angle arc |
@@ -781,15 +783,18 @@ fades; the return leg takes 1 s. `state.view` is `"globe"`, `"heliocentric"` or
 
 [`heliocentric.rs`](src/heliocentric.rs):
 
-- Sun, Earth and Mars as lit spheres with art-directed radii (true scale is
-  sub-pixel at AU distances). The Sun uses procedural granulation and limb
+- Sun, Venus, Earth and Mars as lit spheres with art-directed radii (true scale
+  is sub-pixel at AU distances); close in, each shrinks to true radius
+  (`clamp(d·k, true, art)`, `d` camera distance). The Sun uses procedural granulation and limb
   darkening ([`sun.wgsl`](assets/shaders/sun.wgsl)) and an additive corona
   shell ([`sun_corona.wgsl`](assets/shaders/sun_corona.wgsl)).
 - Positions come from `terramenta-solare`'s frame tree evaluated at the
   simulated clock.
-- Camera orbits an anchor (Sun, Earth, Mars, barycentre, or a mission
-  spacecraft) with drag/WASD/arrows and zooms with scroll/`+`/`-`. Keys `1`–`4`
-  select Sun, Earth, Mars, barycentre; `5` follows the first mission.
+- Camera orbits an anchor (Sun, Venus, Earth, Mars, barycentre, or a mission
+  spacecraft) at 1e-4–6 AU with drag/WASD/arrows and zooms with scroll/`+`/`-`.
+  Keys `1`–`4` select Sun, Earth, Mars, barycentre; `5` follows the first
+  mission; `6` Venus. `FloatingOrigin` is the anchor, so `f32` precision holds
+  at the subject.
 
 [`solar.rs`](src/solar.rs) bridges the frame tree to the scene. `FloatingOrigin`
 names the frame world space is centred on; `place_solar_bodies` computes each
@@ -805,18 +810,28 @@ simulated clock using `terramenta-solare`.
 ```js
 globe.addMission("mars-1", {});  // Earth → Mars, searched from the current clock
 globe.addMission("mars-2", { departureSearchDays: 400, arrivalSearchEndDays: 900 });
+globe.addMission("evm", { via: "Venus" });  // gravity assist
 globe.followMission("mars-1");
 globe.removeMission("mars-1");
 
 globe.onState(({ missions }) => {
-  // [{id, origin, destination, status, departureUnixSeconds, arrivalUnixSeconds,
-  //   departureDeltaVKmS, arrivalDeltaVKmS, orbiting, reason, phases}, ...]
+  // [{id, origin, destination, via, status, departureUnixSeconds, arrivalUnixSeconds,
+  //   departureDeltaVKmS, arrivalDeltaVKmS, flyby, burns, orbiting, reason, phases}, ...]
 });
 ```
 
 Request options and defaults: `origin` `"Earth"`, `destination` `"Mars"`,
 `departureSearchDays` 120, `arrivalSearchStartDays` 150,
 `arrivalSearchEndDays` 420, `searchSteps` 17, `parkingAltitudeKm` 300.
+`via` (`"Venus"`, `"Earth"`, `"Mars"`) makes it a gravity assist: the arrival
+window is replaced by `firstLegDays` `[80, 250]` × `secondLegDays`
+`[120, 400]`, searched by `find_best_flyby` (`searchSteps`³, refined;
+periapsis ≥ 300 km altitude). `flyby`: `{unixSeconds, periapsisAltitudeKm,
+turnAngleDeg, vInfinityInKmS, vInfinityOutKmS, periapsisDeltaVKmS,
+totalDeltaVKmS}`. `burns`: executed `FlybyGuidance` burns `{id: cruise |
+approach | periapsis | retarget, unixSeconds, deltaVKmS}`; guidance sub-steps
+(10 min in an SOI, 6 h heliocentric) so crossings and the periapsis burn land
+at any clock rate.
 
 Lifecycle (`status`):
 
@@ -829,17 +844,20 @@ Lifecycle (`status`):
    propagation hands it Earth → Sun → Mars.
 4. `arrived` on capture, or `failed` with a `reason`.
 
-`orbiting` names the current primary. `phases` always holds four entries
-(`departure`, `escape`, `arrival`, `capture`) with `unixSeconds` (null until
+`orbiting` names the current primary. `phases` holds `departure`, `escape`,
+then for a flyby `encounter` (SOI entry), `flyby` (periapsis; planned until
+flown), `exit`, then `arrival`, `capture`, each with `unixSeconds` (null until
 known) and `reached`. Running the clock back past departure un-launches the
 spacecraft; running forward relaunches it.
 
 [`trail.rs`](src/trail.rs) draws two trails per spacecraft:
 
-- **Flown** (solid white): recorded samples, stored relative to both the origin
-  body and the barycentre, trimmed when the clock runs backward.
+- **Flown** (solid): recorded samples, stored relative to both the origin
+  body and the barycentre, trimmed when the clock runs backward. White
+  heliocentric; blue, orange, red inside the origin, flyby and destination
+  SOIs.
 - **Planned** (dashed yellow): computed at launch — the departure hyperbola to
-  the origin's SOI (globe view) and the Lambert arc to arrival (heliocentric
+  the origin's SOI (globe view) and the Lambert arc(s) to arrival (heliocentric
   view). Dash length scales with camera distance.
 
 `followMission(id)` locks by mission id, so it can be set before launch (camera

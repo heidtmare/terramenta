@@ -14,17 +14,25 @@
  * - Skip to `launchLeadSeconds` before departure; globe view at `departureTimeScale`.
  * - Departure: the rate doubles every `departureDoublingSeconds` (wall clock) up to max.
  * - Escape: max rate, heliocentric view.
+ * - Flyby (missions with `via`; events never resolve otherwise): face the flyby
+ *   plane and zoom in over the 3 days before periapsis, `flybyTimeScale` ±8 h
+ *   about it, back out after.
  * - Capture: pause.
  */
+const HOUR = 3_600;
+const DAY = 86_400;
+/** The globe's heliocentric follow distance. */
+const FOLLOW_DISTANCE_AU = 1.5;
+
 const missionFlight = {
-  defaults: { launchLeadSeconds: 3_600, departureTimeScale: 600, departureDoublingSeconds: 2 },
+  defaults: { launchLeadSeconds: 3_600, departureTimeScale: 600, departureDoublingSeconds: 2, flybyTimeScale: 900 },
 
   validate(config, { missionIds }) {
     return missionIds.has(config.mission) ? [] : [`mission: no mission "${config.mission}"`];
   },
 
   events(config) {
-    const { mission, launchLeadSeconds, departureTimeScale, departureDoublingSeconds } = {
+    const { mission, launchLeadSeconds, departureTimeScale, departureDoublingSeconds, flybyTimeScale } = {
       ...this.defaults,
       ...config,
     };
@@ -46,6 +54,30 @@ const missionFlight = {
           actions: { timeScale: departureTimeScale, rampDoublingS: departureDoublingSeconds },
         },
         { id: "director-cruise", label: "Cruise", at: at("escape"), actions: { timeScale: "max", view: "heliocentric" } },
+        {
+          id: "director-flyby-approach",
+          label: "Flyby approach",
+          at: at("flyby", -3 * DAY),
+          actions: { timeScale: 8 * flybyTimeScale, helioDistanceAu: 0.03, faceFlyby: mission },
+        },
+        {
+          id: "director-flyby",
+          label: "Flyby",
+          at: at("flyby", -8 * HOUR),
+          actions: { timeScale: flybyTimeScale, helioDistanceAu: 0.0015 },
+        },
+        {
+          id: "director-flyby-depart",
+          label: "Flyby departure",
+          at: at("flyby", 8 * HOUR),
+          actions: { timeScale: 8 * flybyTimeScale, helioDistanceAu: 0.03 },
+        },
+        {
+          id: "director-flyby-cruise",
+          label: "Cruise after flyby",
+          at: at("flyby", 3 * DAY),
+          actions: { timeScale: "max", helioDistanceAu: FOLLOW_DISTANCE_AU },
+        },
         { id: "director-capture", label: "Hold at capture", at: at("capture"), actions: { paused: true } },
       ],
     };

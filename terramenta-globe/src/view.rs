@@ -66,7 +66,7 @@ const FADE_START_FRACTION: f32 = 0.6;
 /// the heliocentric scene, in astronomical units — near enough to still
 /// resolve a close pass, far enough that Mars's aphelion (~1.66 AU) is
 /// comfortably inside it.
-const HELIO_NEAR_AU: f32 = 0.0005;
+const HELIO_NEAR_AU: f32 = 1.0e-6;
 const HELIO_FAR_AU: f32 = 20.0;
 /// The globe view's own near/far planes, restored on the way back in — see
 /// [`crate::camera::spawn_camera`].

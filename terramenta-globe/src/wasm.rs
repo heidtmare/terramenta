@@ -171,14 +171,26 @@ pub fn toggle_view() {
     api::send(GlobeCommand::ToggleView);
 }
 
-/// Re-anchors the heliocentric camera on `"sun"`, `"earth"`, `"mars"` or
-/// `"barycenter"`, keeping its current yaw, pitch and distance. An unknown
+/// Re-anchors the heliocentric camera on `"sun"`, `"venus"`, `"earth"`,
+/// `"mars"` or `"barycenter"`, keeping its current yaw, pitch and distance. An unknown
 /// name is ignored, and so is any name while the globe view is showing.
 #[wasm_bindgen(js_name = setHeliocentricAnchor)]
 pub fn set_heliocentric_anchor(anchor: &str) {
     if let Some(anchor) = HeliocentricAnchor::from_id(anchor) {
         api::send(GlobeCommand::SetHeliocentricAnchor(anchor));
     }
+}
+
+/// Turns the heliocentric camera to look down onto mission `id`'s flyby plane.
+#[wasm_bindgen(js_name = faceFlyby)]
+pub fn face_flyby(id: String) {
+    api::send(GlobeCommand::FaceFlyby(id));
+}
+
+/// Heliocentric camera distance from its anchor, AU (1e-4–6); eased.
+#[wasm_bindgen(js_name = setHeliocentricDistance)]
+pub fn set_heliocentric_distance(au: f32) {
+    api::send(GlobeCommand::SetHeliocentricDistance(au));
 }
 
 /// Locks the heliocentric camera onto the spacecraft of the mission added
@@ -946,11 +958,12 @@ pub fn ephemeris_geometry(id: &str) -> JsValue {
 
 /// The options a mission is added with, as a plain JavaScript object.
 ///
-/// `origin`/`destination` name frames the solar system actually has —
-/// `"Earth"`/`"Mars"` if omitted, the only pair
-/// [`terramenta_solare::solar_system`] currently adds. Everything else
-/// tunes the search: days ahead to look for a departure, days past that to
-/// allow for arrival, grid resolution, and departure-orbit altitude.
+/// `origin`/`destination` name frames the solar system has (`"Earth"`/`"Mars"`
+/// if omitted). `via` makes it a gravity assist, searched over
+/// `firstLegDays`/`secondLegDays` (`[min, max]`) instead of the arrival
+/// window. Everything else tunes the search: days ahead to look for a
+/// departure, days past that to allow for arrival, grid resolution, and
+/// departure-orbit altitude.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct MissionOptions {
@@ -961,6 +974,9 @@ struct MissionOptions {
     arrival_search_end_days: Option<f64>,
     search_steps: Option<usize>,
     parking_altitude_km: Option<f64>,
+    via: Option<String>,
+    first_leg_days: Option<(f64, f64)>,
+    second_leg_days: Option<(f64, f64)>,
 }
 
 impl MissionOptions {
@@ -983,6 +999,9 @@ impl MissionOptions {
             parking_altitude_km: self
                 .parking_altitude_km
                 .unwrap_or(defaults.parking_altitude_km),
+            via: self.via,
+            first_leg_days: self.first_leg_days.unwrap_or(defaults.first_leg_days),
+            second_leg_days: self.second_leg_days.unwrap_or(defaults.second_leg_days),
         }
     }
 }

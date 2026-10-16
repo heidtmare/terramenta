@@ -362,16 +362,24 @@ export function mountMission(bind, signal) {
  *
  * Shares those two selects with the porkchop plot above rather than keeping
  * its own: the pair worth launching is the pair just planned for, and the
- * globe only knows how to fly between the three bodies `porkchop.bodies()`
- * offers anyway.
+ * globe only knows how to fly between the bodies `porkchop.bodies()` offers
+ * anyway. `Via` adds a gravity assist (default leg ranges).
  */
 function mountLaunch(bind, originSelect, destinationSelect) {
   let launched = 0;
+
+  const viaSelect = el(
+    "select",
+    { class: "select" },
+    el("option", { value: "" }, "None"),
+    ...["Venus", "Earth", "Mars"].map((name) => el("option", { value: name }, name)),
+  );
 
   const launchButton = button("Launch", () => {
     globe.addMission(`mission-${++launched}`, {
       origin: originSelect.value,
       destination: destinationSelect.value,
+      ...(viaSelect.value ? { via: viaSelect.value } : {}),
     });
   });
 
@@ -404,6 +412,7 @@ function mountLaunch(bind, originSelect, destinationSelect) {
   return section(
     "Launch",
     el("p", { class: "detail" }, "Finds the next window from the clock, then flies it (heliocentric view)."),
+    row("Via", viaSelect),
     el("div", { class: "buttons" }, launchButton),
     list,
   );
@@ -423,7 +432,7 @@ function missionRow(id) {
     node,
     sync(mission, sunUnixSeconds) {
       node.dataset.status = mission.status;
-      title.textContent = `${mission.origin} → ${mission.destination}`;
+      title.textContent = [mission.origin, mission.via, mission.destination].filter(Boolean).join(" → ");
       detail.textContent = describeMission(mission, sunUnixSeconds);
     },
   };
@@ -439,7 +448,11 @@ function describeMission(mission, sunUnixSeconds) {
         `window found — departs ${clock(mission.departureUnixSeconds)} ` +
         `(in ${duration(mission.departureUnixSeconds - sunUnixSeconds)}), ` +
         `arrives ${clock(mission.arrivalUnixSeconds)} — ` +
-        `Δv ${mission.departureDeltaVKmS.toFixed(2)} + ${mission.arrivalDeltaVKmS.toFixed(2)} km/s`
+        (mission.flyby
+          ? `Δv ${mission.departureDeltaVKmS.toFixed(2)} + ${mission.flyby.periapsisDeltaVKmS.toFixed(2)} + ` +
+            `${mission.arrivalDeltaVKmS.toFixed(2)} km/s, ${mission.via} flyby ${clock(mission.flyby.unixSeconds)} ` +
+            `at ${Math.round(mission.flyby.periapsisAltitudeKm).toLocaleString()} km`
+          : `Δv ${mission.departureDeltaVKmS.toFixed(2)} + ${mission.arrivalDeltaVKmS.toFixed(2)} km/s`)
       );
     case "enroute":
       return (

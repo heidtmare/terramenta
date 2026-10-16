@@ -23,7 +23,7 @@ use crate::grid::PorkchopGrid;
 /// module is still loading.
 #[wasm_bindgen(js_name = bodies)]
 pub fn bodies() -> JsValue {
-    to_js(&["Sun", "Earth", "Mars"])
+    to_js(&["Sun", "Venus", "Earth", "Mars"])
 }
 
 /// One (departure, arrival) date pair's transfer cost, laid out for a porkchop
