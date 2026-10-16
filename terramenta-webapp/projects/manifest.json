@@ -35,6 +35,11 @@
     "description": "Mission sequence: coast to node, targeted transfer burn, coast, targeted circularization and plane change, drift; segment table."
   },
   {
+    "file": "optimal-transfer.terramenta.json",
+    "name": "Optimal GEO transfer",
+    "description": "SQP minimum-Δv LEO → GEO: plane change split between perigee and apogee, against the targeted all-at-apogee baseline."
+  },
+  {
     "file": "targeted-transfer.terramenta.json",
     "name": "Targeted transfer",
     "description": "Differential correction of rough first-guess burns: Hohmann Δv and timing, low-thrust burn duration."

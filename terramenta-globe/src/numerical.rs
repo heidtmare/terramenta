@@ -1732,7 +1732,7 @@ pub fn target(req: &PropagationRequest, target: &TargetRequest) -> Result<Target
 // --- Mission sequence -----------------------------------------------------------------
 
 /// `runSequence` command: optional `label`, and one of `propagate`, `maneuver`,
-/// `finiteBurn`, `target`.
+/// `finiteBurn`, `target`, `optimize`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CommandOptions {
@@ -1746,6 +1746,8 @@ pub struct CommandOptions {
     pub finite_burn: Option<SequenceBurnOptions>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<SequenceTargetOptions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optimize: Option<SequenceOptimizeOptions>,
 }
 
 /// One of `durationS`, `epoch` (UTC), `to` (`periapsis` | `apoapsis` | `ascendingNode` |
@@ -1822,6 +1824,53 @@ pub struct SequenceVariable {
     pub max_step: Option<f64>,
 }
 
+/// Varies labelled commands in `sequence` within bounds to minimize `minimize` (`deltaV`
+/// or a quantity) or maximize `maximize` (a quantity) at its end, subject to `constraints`
+/// there. `objectiveTolerance` in objective units, default 1e-5; `maxIterations` default 50.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SequenceOptimizeOptions {
+    pub variables: Vec<OptimizeVariableOptions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minimize: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maximize: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub objective_tolerance: Option<f64>,
+    #[serde(default)]
+    pub constraints: Vec<SequenceConstraint>,
+    pub sequence: Vec<CommandOptions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_iterations: Option<usize>,
+}
+
+/// [`SequenceVariable`] plus optional `lower`/`upper` bounds.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OptimizeVariableOptions {
+    pub command: String,
+    pub parameter: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub perturbation: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_step: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lower: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upper: Option<f64>,
+}
+
+/// `relation`: `equal` (default) | `atLeast` | `atMost`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SequenceConstraint {
+    pub quantity: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relation: Option<String>,
+    pub value: f64,
+    pub tolerance: f64,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SequenceGoal {
@@ -1842,7 +1891,7 @@ pub struct SequenceResult {
     /// Impulsive plus finite (rocket equation), km/s.
     pub delta_v_km_s: f64,
     pub final_mass_kg: f64,
-    /// Every target converged.
+    /// Every target and optimize converged.
     pub converged: bool,
 }
 
@@ -1851,7 +1900,7 @@ pub struct SequenceResult {
 pub struct SegmentInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    /// `propagate` | `maneuver` | `finiteBurn` | `target`.
+    /// `propagate` | `maneuver` | `finiteBurn` | `target` | `optimize`.
     pub kind: &'static str,
     pub depth: usize,
     /// Unix s.
@@ -1865,6 +1914,8 @@ pub struct SegmentInfo {
     pub elements: SegmentElements,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<TargetInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub optimize: Option<OptimizeInfo>,
 }
 
 #[derive(Serialize, Debug)]
@@ -1888,6 +1939,42 @@ pub struct TargetInfo {
     /// Request order.
     pub values: Vec<f64>,
     pub goals: Vec<SequenceGoalResult>,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct OptimizeInfo {
+    /// Feasible and stationary.
+    pub converged: bool,
+    pub feasible: bool,
+    pub iterations: usize,
+    pub evaluations: usize,
+    /// Objective units (km/s for `deltaV`).
+    pub objective: f64,
+    pub history: Vec<OptimizeProgress>,
+    /// Request order.
+    pub values: Vec<f64>,
+    pub constraints: Vec<SequenceConstraintResult>,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct OptimizeProgress {
+    pub objective: f64,
+    /// Largest |error| / tolerance; ≤ 1 feasible.
+    pub violation: f64,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SequenceConstraintResult {
+    pub quantity: String,
+    pub relation: &'static str,
+    pub value: f64,
+    pub achieved: f64,
+    /// Equal: achieved − value; inequalities: violation, ≤ 0 when satisfied.
+    pub error: f64,
+    pub met: bool,
 }
 
 #[derive(Serialize, Debug)]
@@ -1936,7 +2023,10 @@ fn sequence_commands(
     commands: &[CommandOptions],
     path: &str,
 ) -> Result<Vec<sequence::Command>, String> {
-    use sequence::{Action, Direction, Goal, Parameter, Stop, Target, TargetVariable};
+    use sequence::{
+        Action, Constraint, Direction, Goal, Objective, Optimize, OptimizeVariable, Relation, Stop,
+        Target, TargetVariable,
+    };
     commands
         .iter()
         .enumerate()
@@ -1947,10 +2037,11 @@ fn sequence_commands(
                 c.maneuver.is_some(),
                 c.finite_burn.is_some(),
                 c.target.is_some(),
+                c.optimize.is_some(),
             ];
             if given.iter().filter(|g| **g).count() != 1 {
                 return Err(format!(
-                    "{at}: need one of propagate, maneuver, finiteBurn, target"
+                    "{at}: need one of propagate, maneuver, finiteBurn, target, optimize"
                 ));
             }
             let action = if let Some(p) = &c.propagate {
@@ -2014,6 +2105,64 @@ fn sequence_commands(
                     direction: b.direction.into(),
                     frame: burn_frame(b.frame.as_deref())?,
                 }
+            } else if let Some(o) = &c.optimize {
+                let at = format!("{at}.optimize");
+                let variables = o
+                    .variables
+                    .iter()
+                    .enumerate()
+                    .map(|(j, v)| {
+                        let (parameter, perturbation, max_step) =
+                            sequence_parameter(&v.parameter, &format!("{at}.variables[{j}]"))?;
+                        Ok(OptimizeVariable {
+                            command: v.command.clone(),
+                            parameter,
+                            perturbation: v.perturbation.unwrap_or(perturbation),
+                            max_step: v.max_step.unwrap_or(max_step),
+                            lower: v.lower.unwrap_or(f64::NEG_INFINITY),
+                            upper: v.upper.unwrap_or(f64::INFINITY),
+                        })
+                    })
+                    .collect::<Result<_, String>>()?;
+                let quantity = |name: &str| {
+                    Quantity::from_name(name).ok_or(format!("{at}: unknown quantity {name:?}"))
+                };
+                let objective = match (o.minimize.as_deref(), o.maximize.as_deref()) {
+                    (Some("deltaV"), None) => Objective::DeltaV,
+                    (Some(q), None) => Objective::Quantity {
+                        quantity: quantity(q)?,
+                        maximize: false,
+                    },
+                    (None, Some(q)) => Objective::Quantity {
+                        quantity: quantity(q)?,
+                        maximize: true,
+                    },
+                    _ => return Err(format!("{at}: need one of minimize, maximize")),
+                };
+                let constraints = o
+                    .constraints
+                    .iter()
+                    .enumerate()
+                    .map(|(j, c)| {
+                        let name = c.relation.as_deref().unwrap_or("equal");
+                        Ok(Constraint {
+                            quantity: quantity(&c.quantity)?,
+                            relation: Relation::from_name(name).ok_or(format!(
+                                "{at}.constraints[{j}]: unknown relation {name:?}"
+                            ))?,
+                            value: c.value,
+                            tolerance: c.tolerance,
+                        })
+                    })
+                    .collect::<Result<_, String>>()?;
+                Action::Optimize(Box::new(Optimize {
+                    variables,
+                    objective,
+                    objective_tolerance: o.objective_tolerance.unwrap_or(1e-5),
+                    constraints,
+                    body: sequence_commands(&o.sequence, &format!("{at}.sequence"))?,
+                    max_iterations: o.max_iterations.unwrap_or(50),
+                }))
             } else {
                 let t = c.target.as_ref().expect("one given");
                 let variables = t
@@ -2021,17 +2170,10 @@ fn sequence_commands(
                     .iter()
                     .enumerate()
                     .map(|(j, v)| {
-                        let (parameter, perturbation, max_step) = match v.parameter.as_str() {
-                            "dv1" => (Parameter::DeltaV(0), 1e-5, 0.5),
-                            "dv2" => (Parameter::DeltaV(1), 1e-5, 0.5),
-                            "dv3" => (Parameter::DeltaV(2), 1e-5, 0.5),
-                            "durationS" => (Parameter::Duration, 1.0, 600.0),
-                            other => {
-                                return Err(format!(
-                                    "{at}.target.variables[{j}]: unknown parameter {other:?}"
-                                ));
-                            }
-                        };
+                        let (parameter, perturbation, max_step) = sequence_parameter(
+                            &v.parameter,
+                            &format!("{at}.target.variables[{j}]"),
+                        )?;
                         Ok(TargetVariable {
                             command: v.command.clone(),
                             parameter,
@@ -2068,6 +2210,18 @@ fn sequence_commands(
             })
         })
         .collect()
+}
+
+/// `(parameter, default perturbation, default maxStep)`.
+fn sequence_parameter(name: &str, at: &str) -> Result<(sequence::Parameter, f64, f64), String> {
+    use sequence::Parameter;
+    Ok(match name {
+        "dv1" => (Parameter::DeltaV(0), 1e-5, 0.5),
+        "dv2" => (Parameter::DeltaV(1), 1e-5, 0.5),
+        "dv3" => (Parameter::DeltaV(2), 1e-5, 0.5),
+        "durationS" => (Parameter::Duration, 1.0, 600.0),
+        other => return Err(format!("{at}: unknown parameter {other:?}")),
+    })
 }
 
 /// Runs `commands` from `propagation`'s state at `start` (its `stop`/`durationS` ignored;
@@ -2141,10 +2295,43 @@ pub fn run_sequence(
         .map(|s| {
             let e = &s.end;
             let delta_v = segment_delta_v(s);
+            let mut optimize = None;
             let (kind, target) = match &s.kind {
                 sequence::SegmentKind::Propagate => ("propagate", None),
                 sequence::SegmentKind::Maneuver(..) => ("maneuver", None),
                 sequence::SegmentKind::FiniteBurn(_) => ("finiteBurn", None),
+                sequence::SegmentKind::Optimize(o) => {
+                    converged &= o.converged;
+                    optimize = Some(OptimizeInfo {
+                        converged: o.converged,
+                        feasible: o.feasible,
+                        iterations: o.iterations,
+                        evaluations: o.evaluations,
+                        objective: o.objective,
+                        history: o
+                            .history
+                            .iter()
+                            .map(|h| OptimizeProgress {
+                                objective: h.objective,
+                                violation: h.violation,
+                            })
+                            .collect(),
+                        values: o.values.clone(),
+                        constraints: o
+                            .constraints
+                            .iter()
+                            .map(|c| SequenceConstraintResult {
+                                quantity: c.constraint.quantity.name().into(),
+                                relation: c.constraint.relation.name(),
+                                value: c.constraint.value,
+                                achieved: c.achieved,
+                                error: c.error,
+                                met: c.met,
+                            })
+                            .collect(),
+                    });
+                    ("optimize", None)
+                }
                 sequence::SegmentKind::Target(t) => {
                     converged &= t.converged;
                     let goals = t
@@ -2188,6 +2375,7 @@ pub fn run_sequence(
                     altitude_km: Quantity::AltitudeKm.of(e),
                 },
                 target,
+                optimize,
             }
         })
         .collect();
@@ -3840,6 +4028,66 @@ mod tests {
             "{} vs {}",
             Quantity::SmaKm.of(end),
             last.elements.sma_km
+        );
+    }
+
+    /// LEO 28.5° → GEO: optimizing both burns' in-plane and normal components beats the
+    /// targeted all-at-apogee plane change.
+    #[test]
+    fn sequence_optimize_splits_the_plane_change() {
+        let propagation: serde_json::Value = serde_json::from_str(
+            r#"{ "initial": { "epoch": "2026-03-20T00:00:00Z",
+                   "elements": { "smaKm": 6678.137, "eccentricity": 0, "inclinationDeg": 28.5,
+                                 "raanDeg": 0, "argPerigeeDeg": 0, "trueAnomalyDeg": 0 } },
+                 "stepS": 120, "vehicle": { "massKg": 3000 },
+                 "forces": { "gravity": [0, 0], "thirdBody": false, "srp": false, "drag": "none" } }"#,
+        )
+        .unwrap();
+        let commands: Vec<CommandOptions> = serde_json::from_str(
+            r#"[
+              { "label": "gto", "optimize": {
+                  "variables": [{ "command": "toi", "parameter": "dv1", "lower": 2, "upper": 3 },
+                                { "command": "toi", "parameter": "dv2" },
+                                { "command": "goi", "parameter": "dv1" },
+                                { "command": "goi", "parameter": "dv2" }],
+                  "minimize": "deltaV",
+                  "constraints": [
+                    { "quantity": "smaKm", "value": 42164, "tolerance": 0.1 },
+                    { "quantity": "eccentricity", "relation": "atMost", "value": 1e-4, "tolerance": 1e-6 },
+                    { "quantity": "inclinationDeg", "relation": "atMost", "value": 0.01, "tolerance": 1e-4 }],
+                  "sequence": [
+                    { "label": "toi", "maneuver": { "deltaVKmS": [2.4, 0, 0], "frame": "vnb", "ispS": 310 } },
+                    { "propagate": { "to": "apoapsis" } },
+                    { "label": "goi", "maneuver": { "deltaVKmS": [1.5, -0.6, 0], "frame": "vnb", "ispS": 310 } } ] } },
+              { "propagate": { "durationS": 3600 } }
+            ]"#,
+        )
+        .unwrap();
+        let out = run_sequence(&propagation, &commands).unwrap();
+        let o = out.segments[0].optimize.as_ref().unwrap();
+        assert!(out.converged && o.converged, "{o:?}");
+        assert_eq!(out.segments[0].kind, "optimize");
+        assert!(o.constraints.iter().all(|c| c.met), "{o:?}");
+        // Two-body: all at apogee 4.2560 km/s; optimum 4.2313 with 2.2° at perigee.
+        assert!((o.objective - out.delta_v_km_s).abs() < 1e-9);
+        assert!(
+            (out.delta_v_km_s - 4.2313).abs() < 2e-3,
+            "{}",
+            out.delta_v_km_s
+        );
+        assert!(
+            o.values[1].abs() > 0.05,
+            "some plane change at perigee: {o:?}"
+        );
+        let req: PropagationRequest = serde_json::from_value(out.propagation).unwrap();
+        assert_eq!(req.maneuvers.len(), 2);
+
+        let mut bad = commands.clone();
+        bad[0].optimize.as_mut().unwrap().maximize = Some("massKg".into());
+        assert!(
+            run_sequence(&propagation, &bad)
+                .unwrap_err()
+                .contains("one of minimize, maximize")
         );
     }
 

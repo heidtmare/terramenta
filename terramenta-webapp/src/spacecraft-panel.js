@@ -289,7 +289,7 @@ function describeInfo({ info, propagation }, state) {
 /** Summary and segment table of a `runSequence` result; a row sets the clock to its start. */
 function sequenceReport(run) {
   const status = `${run.segments.length} segments · Δv ${(run.deltaVKmS * 1000).toFixed(1)} m/s` +
-    `${run.converged ? "" : " · a target did not converge"}`;
+    `${run.converged ? "" : " · a target or optimize did not converge"}`;
   const fixed = (value, digits) => (value === null ? "" : value.toFixed(digits));
   const rows = segmentRows(run).map((segment) =>
     el(
@@ -312,7 +312,7 @@ function sequenceReport(run) {
       el(
         "table",
         { class: "report-table" },
-        el("thead", {}, el("tr", {}, ...["Segment", "Span", "Δv m/s", "Alt km", "e", "i °", "kg / target"].map((text) => el("th", {}, text)))),
+        el("thead", {}, el("tr", {}, ...["Segment", "Span", "Δv m/s", "Alt km", "e", "i °", "kg / status"].map((text) => el("th", {}, text)))),
         el("tbody", {}, ...rows),
       ),
     ),

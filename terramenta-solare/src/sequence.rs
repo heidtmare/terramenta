@@ -11,6 +11,9 @@
 //! - `Target` varies labelled commands in its body ([`Parameter`]) by differential correction
 //!   ([`crate::targeting::solve`]) until goals at the body's end are met, then runs the body
 //!   with the solution.
+//! - `Optimize` varies labelled body commands within bounds to minimize total Δv or a
+//!   quantity at the body's end, subject to equality and inequality constraints there
+//!   ([`crate::optimize::minimize`]), then runs the body with the solution.
 //!
 //! Forward only. Quantities are two-body about Earth (EGM2008 GM), GCRF.
 
@@ -18,10 +21,13 @@ use glam::DVec3;
 
 use crate::force::EGM2008_GM_KM3_S2;
 use crate::maneuver::{BurnFrame, FiniteBurn, ImpulsiveManeuver, LocalFrame};
+use crate::optimize::{self, Evaluation, Progress, Tolerances};
 use crate::propagate::{PropagationError, Propagator, SpacecraftState};
 use crate::targeting::{self, Variable};
 use crate::time::Epoch;
 
+/// Standard gravity for finite-burn Δv, m/s².
+const G0_M_S2: f64 = 9.806_65;
 /// Earth equatorial radius for altitudes, km.
 const EARTH_RADIUS_KM: f64 = 6378.137;
 /// Crossing root tolerance, s.
@@ -238,6 +244,26 @@ pub enum Action {
         frame: BurnFrame,
     },
     Target(Box<Target>),
+    Optimize(Box<Optimize>),
+}
+
+impl Action {
+    /// Nested commands of a target or optimize.
+    fn body(&self) -> Option<&[Command]> {
+        match self {
+            Self::Target(t) => Some(&t.body),
+            Self::Optimize(o) => Some(&o.body),
+            _ => None,
+        }
+    }
+
+    fn body_mut(&mut self) -> Option<&mut Vec<Command>> {
+        match self {
+            Self::Target(t) => Some(&mut t.body),
+            Self::Optimize(o) => Some(&mut o.body),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -279,6 +305,88 @@ pub struct Target {
     pub max_iterations: usize,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct OptimizeVariable {
+    pub command: String,
+    pub parameter: Parameter,
+    pub perturbation: f64,
+    pub max_step: f64,
+    /// ±∞ when unbounded.
+    pub lower: f64,
+    pub upper: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Objective {
+    /// Σ impulsive |Δv| + Σ finite-burn g₀ Isp ln(m₀/m₁) over the body, km/s.
+    DeltaV,
+    /// At the end of the body.
+    Quantity { quantity: Quantity, maximize: bool },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Relation {
+    Equal,
+    AtLeast,
+    AtMost,
+}
+
+impl Relation {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Equal => "equal",
+            Self::AtLeast => "atLeast",
+            Self::AtMost => "atMost",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        [Self::Equal, Self::AtLeast, Self::AtMost]
+            .into_iter()
+            .find(|r| r.name() == name)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Constraint {
+    pub quantity: Quantity,
+    pub relation: Relation,
+    pub value: f64,
+    pub tolerance: f64,
+}
+
+impl Constraint {
+    /// Equal: [`Quantity::error`]; inequalities: amount violated, ≤ 0 when satisfied.
+    pub fn error(&self, s: &SpacecraftState) -> f64 {
+        let e = self.quantity.error(s, self.value);
+        match self.relation {
+            Relation::Equal => e,
+            Relation::AtLeast => -e,
+            Relation::AtMost => e,
+        }
+    }
+
+    /// Within tolerance.
+    pub fn met(&self, error: f64) -> bool {
+        match self.relation {
+            Relation::Equal => error.abs() <= self.tolerance,
+            _ => error <= self.tolerance,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Optimize {
+    pub variables: Vec<OptimizeVariable>,
+    pub objective: Objective,
+    /// Objective units.
+    pub objective_tolerance: f64,
+    /// At the end of `body`.
+    pub constraints: Vec<Constraint>,
+    pub body: Vec<Command>,
+    pub max_iterations: usize,
+}
+
 /// One executed command, in run order; a target's body follows its own entry at `depth + 1`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Segment {
@@ -296,6 +404,33 @@ pub enum SegmentKind {
     Maneuver(ImpulsiveManeuver, DVec3),
     FiniteBurn(FiniteBurn),
     Target(TargetOutcome),
+    Optimize(OptimizeOutcome),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OptimizeOutcome {
+    /// Feasible and stationary.
+    pub converged: bool,
+    pub feasible: bool,
+    pub iterations: usize,
+    /// Body runs.
+    pub evaluations: usize,
+    /// Objective units.
+    pub objective: f64,
+    pub history: Vec<Progress>,
+    /// Variable order.
+    pub values: Vec<f64>,
+    /// Constraint order.
+    pub constraints: Vec<ConstraintOutcome>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ConstraintOutcome {
+    pub constraint: Constraint,
+    pub achieved: f64,
+    /// [`Constraint::error`].
+    pub error: f64,
+    pub met: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -380,11 +515,12 @@ pub fn run_with(
     Ok(out)
 }
 
-/// `commands` with each target replaced by its body at `run`'s solution: the nominal flown
-/// open loop. `run` is a run of `commands`.
+/// `commands` with each target and optimize replaced by its body at `run`'s solution: the
+/// nominal flown open loop. `run` is a run of `commands`.
 pub fn freeze(commands: &[Command], run: &Run) -> Vec<Command> {
     let mut outcomes = run.segments.iter().filter_map(|s| match &s.kind {
         SegmentKind::Target(t) => Some(&t.values),
+        SegmentKind::Optimize(o) => Some(&o.values),
         _ => None,
     });
     let mut out = Vec::new();
@@ -392,7 +528,7 @@ pub fn freeze(commands: &[Command], run: &Run) -> Vec<Command> {
     out
 }
 
-/// Preorder, as [`execute`] records targets.
+/// Preorder, as [`execute`] records targets and optimizes.
 fn flatten<'a>(
     commands: &[Command],
     values: &mut impl Iterator<Item = &'a Vec<f64>>,
@@ -402,7 +538,11 @@ fn flatten<'a>(
         match &c.action {
             Action::Target(t) => {
                 let v = values.next().expect("run of these commands");
-                flatten(&with_values(t, v), values, out);
+                flatten(&target_values(t, v), values, out);
+            }
+            Action::Optimize(o) => {
+                let v = values.next().expect("run of these commands");
+                flatten(&optimize_values(o, v), values, out);
             }
             _ => out.push(c.clone()),
         }
@@ -469,30 +609,7 @@ fn validate(commands: &[Command]) -> Result<(), SequenceError> {
                     return bad(format!("{name}: target needs variables and goals"));
                 }
                 for v in &t.variables {
-                    let target = find(&t.body, &v.command).ok_or_else(|| {
-                        SequenceError::Invalid(format!(
-                            "{name}: no command {:?} in the target body",
-                            v.command
-                        ))
-                    })?;
-                    let fits = matches!(
-                        (&target.action, v.parameter),
-                        (Action::Maneuver { .. }, Parameter::DeltaV(0..=2))
-                            | (Action::FiniteBurn { .. }, Parameter::Duration)
-                            | (
-                                Action::Propagate {
-                                    stop: Stop::Duration(_),
-                                    ..
-                                },
-                                Parameter::Duration
-                            )
-                    );
-                    if !fits {
-                        return bad(format!(
-                            "{name}: {:?} has no {:?} parameter",
-                            v.command, v.parameter
-                        ));
-                    }
+                    validate_variable(name, &t.body, &v.command, v.parameter)?;
                     if !(v.perturbation > 0.0 && v.max_step > 0.0) {
                         return bad(format!("{name}: perturbation and maxStep must be positive"));
                     }
@@ -507,9 +624,66 @@ fn validate(commands: &[Command]) -> Result<(), SequenceError> {
                 }
                 validate(&t.body)?;
             }
+            Action::Optimize(o) => {
+                if o.variables.is_empty() {
+                    return bad(format!("{name}: optimize needs variables"));
+                }
+                for v in &o.variables {
+                    validate_variable(name, &o.body, &v.command, v.parameter)?;
+                    if !(v.perturbation > 0.0 && v.max_step > 0.0) {
+                        return bad(format!("{name}: perturbation and maxStep must be positive"));
+                    }
+                    if v.lower.is_nan() || v.upper.is_nan() || v.lower > v.upper {
+                        return bad(format!("{name}: {:?} bounds out of order", v.command));
+                    }
+                }
+                if o.objective_tolerance.is_nan() || o.objective_tolerance <= 0.0 {
+                    return bad(format!("{name}: objective tolerance must be positive"));
+                }
+                if o.constraints
+                    .iter()
+                    .any(|c| !c.value.is_finite() || c.tolerance.is_nan() || c.tolerance <= 0.0)
+                {
+                    return bad(format!(
+                        "{name}: constraints need finite values and positive tolerances"
+                    ));
+                }
+                validate(&o.body)?;
+            }
         }
     }
     Ok(())
+}
+
+/// `command` exists in `body` and has `parameter`.
+fn validate_variable(
+    name: &str,
+    body: &[Command],
+    command: &str,
+    parameter: Parameter,
+) -> Result<(), SequenceError> {
+    let target = find(body, command).ok_or_else(|| {
+        SequenceError::Invalid(format!("{name}: no command {command:?} in the body"))
+    })?;
+    let fits = matches!(
+        (&target.action, parameter),
+        (Action::Maneuver { .. }, Parameter::DeltaV(0..=2))
+            | (Action::FiniteBurn { .. }, Parameter::Duration)
+            | (
+                Action::Propagate {
+                    stop: Stop::Duration(_),
+                    ..
+                },
+                Parameter::Duration
+            )
+    );
+    if fits {
+        Ok(())
+    } else {
+        Err(SequenceError::Invalid(format!(
+            "{name}: {command:?} has no {parameter:?} parameter"
+        )))
+    }
 }
 
 /// First command labelled `label`, depth first.
@@ -518,10 +692,7 @@ fn find<'a>(commands: &'a [Command], label: &str) -> Option<&'a Command> {
         if c.label.as_deref() == Some(label) {
             return Some(c);
         }
-        match &c.action {
-            Action::Target(t) => find(&t.body, label),
-            _ => None,
-        }
+        c.action.body().and_then(|b| find(b, label))
     })
 }
 
@@ -530,8 +701,8 @@ fn find_mut<'a>(commands: &'a mut [Command], label: &str) -> Option<&'a mut Comm
         if c.label.as_deref() == Some(label) {
             return Some(c);
         }
-        if let Action::Target(t) = &mut c.action
-            && let Some(found) = find_mut(&mut t.body, label)
+        if let Some(body) = c.action.body_mut()
+            && let Some(found) = find_mut(body, label)
         {
             return Some(found);
         }
@@ -571,14 +742,60 @@ fn set_parameter(c: &mut Command, p: Parameter, value: f64) {
     }
 }
 
-/// `body` with variable values applied.
-fn with_values(target: &Target, values: &[f64]) -> Vec<Command> {
-    let mut body = target.body.clone();
-    for (v, &x) in target.variables.iter().zip(values) {
-        let c = find_mut(&mut body, &v.command).expect("validated");
-        set_parameter(c, v.parameter, x);
+/// `body` with `(command, parameter)` values applied.
+fn with_values<'a>(
+    body: &[Command],
+    variables: impl Iterator<Item = (&'a str, Parameter)>,
+    values: &[f64],
+) -> Vec<Command> {
+    let mut body = body.to_vec();
+    for ((command, parameter), &x) in variables.zip(values) {
+        let c = find_mut(&mut body, command).expect("validated");
+        set_parameter(c, parameter, x);
     }
     body
+}
+
+fn target_values(t: &Target, values: &[f64]) -> Vec<Command> {
+    let vars = t
+        .variables
+        .iter()
+        .map(|v| (v.command.as_str(), v.parameter));
+    with_values(&t.body, vars, values)
+}
+
+fn optimize_values(o: &Optimize, values: &[f64]) -> Vec<Command> {
+    let vars = o
+        .variables
+        .iter()
+        .map(|v| (v.command.as_str(), v.parameter));
+    with_values(&o.body, vars, values)
+}
+
+/// Runs `body` from `start` alone.
+fn trial(p: &Propagator, start: &SpacecraftState, body: &[Command]) -> Result<Run, SequenceError> {
+    let mut out = Run {
+        segments: Vec::new(),
+        maneuvers: Vec::new(),
+        finite_burns: Vec::new(),
+        end: *start,
+    };
+    execute(&mut p.clone(), body, 0, &mut out, &mut |_| {})?;
+    Ok(out)
+}
+
+/// Σ impulsive |Δv| + Σ finite-burn g₀ Isp ln(m₀/m₁), km/s.
+pub fn delta_v_km_s(segments: &[Segment]) -> f64 {
+    segments
+        .iter()
+        .map(|s| match &s.kind {
+            SegmentKind::Maneuver(_, dv) => dv.length(),
+            SegmentKind::FiniteBurn(b) if s.end.mass_kg > 0.0 => {
+                G0_M_S2 * 1e-3 * b.isp_s * (s.start.mass_kg / s.end.mass_kg).ln()
+            }
+            _ => 0.0,
+        })
+        .sum()
 }
 
 fn execute(
@@ -657,13 +874,35 @@ fn execute(
                 let outcome = solve(p, &start, t)?;
                 execute(
                     p,
-                    &with_values(t, &outcome.values),
+                    &target_values(t, &outcome.values),
                     depth + 1,
                     out,
                     execution,
                 )?;
                 let segment = &mut out.segments[index];
                 segment.kind = SegmentKind::Target(outcome);
+                segment.end = out.end;
+                continue;
+            }
+            Action::Optimize(o) => {
+                let index = out.segments.len();
+                out.segments.push(Segment {
+                    label: c.label.clone(),
+                    kind: SegmentKind::Propagate,
+                    depth,
+                    start,
+                    end: start,
+                });
+                let outcome = optimize_body(p, &start, o)?;
+                execute(
+                    p,
+                    &optimize_values(o, &outcome.values),
+                    depth + 1,
+                    out,
+                    execution,
+                )?;
+                let segment = &mut out.segments[index];
+                segment.kind = SegmentKind::Optimize(outcome);
                 segment.end = out.end;
                 continue;
             }
@@ -694,22 +933,7 @@ fn solve(
         })
         .collect();
     let tolerances: Vec<f64> = t.goals.iter().map(|g| g.tolerance).collect();
-    let end_of = |x: &[f64]| -> Result<SpacecraftState, SequenceError> {
-        let mut trial = Run {
-            segments: Vec::new(),
-            maneuvers: Vec::new(),
-            finite_burns: Vec::new(),
-            end: *start,
-        };
-        execute(
-            &mut p.clone(),
-            &with_values(t, x),
-            0,
-            &mut trial,
-            &mut |_| {},
-        )?;
-        Ok(trial.end)
-    };
+    let end_of = |x: &[f64]| trial(p, start, &target_values(t, x)).map(|r| r.end);
     let errors = |s: &SpacecraftState| -> Vec<f64> {
         t.goals
             .iter()
@@ -735,6 +959,84 @@ fn solve(
                 value: g.value,
                 achieved: g.quantity.of(&end),
                 error: g.quantity.error(&end, g.value),
+            })
+            .collect(),
+        values: solution.values,
+    })
+}
+
+fn optimize_body(
+    p: &Propagator,
+    start: &SpacecraftState,
+    o: &Optimize,
+) -> Result<OptimizeOutcome, SequenceError> {
+    let variables: Vec<optimize::Variable> = o
+        .variables
+        .iter()
+        .map(|v| {
+            let value = parameter(find(&o.body, &v.command).expect("validated"), v.parameter);
+            optimize::Variable::new(value, v.perturbation, v.max_step).bounded(v.lower, v.upper)
+        })
+        .collect();
+    let (equal, unequal): (Vec<&Constraint>, Vec<&Constraint>) = o
+        .constraints
+        .iter()
+        .partition(|c| c.relation == Relation::Equal);
+    let tolerances = Tolerances {
+        objective: o.objective_tolerance,
+        equalities: equal.iter().map(|c| c.tolerance).collect(),
+        inequalities: unequal.iter().map(|c| c.tolerance).collect(),
+    };
+    let objective = |run: &Run| match o.objective {
+        Objective::DeltaV => delta_v_km_s(&run.segments),
+        Objective::Quantity { quantity, maximize } => {
+            let v = quantity.of(&run.end);
+            if maximize { -v } else { v }
+        }
+    };
+    let solution = optimize::minimize(
+        |x| {
+            let run = trial(p, start, &optimize_values(o, x))?;
+            Ok::<_, SequenceError>(Evaluation {
+                objective: objective(&run),
+                equalities: equal.iter().map(|c| c.error(&run.end)).collect(),
+                inequalities: unequal.iter().map(|c| c.error(&run.end)).collect(),
+            })
+        },
+        &variables,
+        &tolerances,
+        o.max_iterations,
+    )?;
+    let run = trial(p, start, &optimize_values(o, &solution.values))?;
+    let sign = match o.objective {
+        Objective::Quantity { maximize: true, .. } => -1.0,
+        _ => 1.0,
+    };
+    Ok(OptimizeOutcome {
+        converged: solution.converged,
+        feasible: solution.feasible,
+        iterations: solution.iterations,
+        evaluations: solution.evaluations,
+        objective: sign * solution.evaluation.objective,
+        history: solution
+            .history
+            .iter()
+            .map(|h| Progress {
+                objective: sign * h.objective,
+                ..*h
+            })
+            .collect(),
+        constraints: o
+            .constraints
+            .iter()
+            .map(|c| {
+                let error = c.error(&run.end);
+                ConstraintOutcome {
+                    constraint: *c,
+                    achieved: c.quantity.of(&run.end),
+                    error,
+                    met: c.met(error),
+                }
             })
             .collect(),
         values: solution.values,
@@ -813,7 +1115,8 @@ pub fn propagate_until(
     )))
 }
 
-/// Illinois false position on `[a, b]`, each trial propagated from `a`.
+/// Illinois false position on `[a, b]`, each trial propagated from `a`; the result is
+/// propagated to the secant root of the final bracket, so it varies smoothly with the inputs.
 fn refine(
     p: &mut Propagator,
     a: &SpacecraftState,
@@ -823,15 +1126,15 @@ fn refine(
     g: &impl Fn(&SpacecraftState) -> f64,
 ) -> Result<SpacecraftState, SequenceError> {
     let span = b.epoch.seconds_since(a.epoch);
-    let (mut lo, mut hi) = ((0.0, ga), (span, gb));
-    let mut best = *b;
+    // (t, g, Illinois-weighted g).
+    let (mut lo, mut hi) = ((0.0, ga, ga), (span, gb, gb));
     let mut side = 0;
     for _ in 0..100 {
         if hi.0 - lo.0 <= CROSSING_TOLERANCE_S {
             break;
         }
-        let t = if hi.1 != lo.1 {
-            (lo.0 - lo.1 * (hi.0 - lo.0) / (hi.1 - lo.1)).clamp(lo.0, hi.0)
+        let t = if hi.2 != lo.2 {
+            (lo.0 - lo.2 * (hi.0 - lo.0) / (hi.2 - lo.2)).clamp(lo.0, hi.0)
         } else {
             0.5 * (lo.0 + hi.0)
         };
@@ -843,29 +1146,29 @@ fn refine(
         };
         let s = p.propagate(a, a.epoch.advanced_by_seconds(t))?;
         let gt = g(&s);
-        best = s;
         if gt == 0.0 {
             return Ok(s);
         }
         if (gt < 0.0) == (lo.1 < 0.0) {
-            lo = (t, gt);
+            lo = (t, gt, gt);
             if side == -1 {
-                hi.1 *= 0.5;
+                hi.2 *= 0.5;
             }
             side = -1;
         } else {
-            hi = (t, gt);
+            hi = (t, gt, gt);
             if side == 1 {
-                lo.1 *= 0.5;
+                lo.2 *= 0.5;
             }
             side = 1;
         }
     }
-    let t = hi.0;
-    if best.epoch.seconds_since(a.epoch) != t {
-        best = p.propagate(a, a.epoch.advanced_by_seconds(t))?;
-    }
-    Ok(best)
+    let t = if hi.1 != lo.1 {
+        (lo.0 - lo.1 * (hi.0 - lo.0) / (hi.1 - lo.1)).clamp(lo.0, hi.0)
+    } else {
+        hi.0
+    };
+    Ok(p.propagate(a, a.epoch.advanced_by_seconds(t))?)
 }
 
 #[cfg(test)]
@@ -1043,6 +1346,147 @@ mod tests {
         assert!(t.converged, "{t:?}");
         assert_eq!(out.finite_burns.len(), 1);
         assert!(out.end.mass_kg < 1000.0);
+    }
+
+    fn maneuver(dv: DVec3) -> Action {
+        Action::Maneuver {
+            delta_v_km_s: dv,
+            frame: LocalFrame::Vnb,
+            isp_s: Some(300.0),
+        }
+    }
+
+    fn free(command: &str, component: usize) -> OptimizeVariable {
+        OptimizeVariable {
+            command: command.into(),
+            parameter: Parameter::DeltaV(component),
+            perturbation: 1e-6,
+            max_step: 0.3,
+            lower: f64::NEG_INFINITY,
+            upper: f64::INFINITY,
+        }
+    }
+
+    fn equal(quantity: Quantity, value: f64, tolerance: f64) -> Constraint {
+        Constraint {
+            quantity,
+            relation: Relation::Equal,
+            value,
+            tolerance,
+        }
+    }
+
+    #[test]
+    fn optimize_splits_plane_change_between_perigee_and_apogee() {
+        // LEO 28.5° → circular 42 164 km at 10°.
+        let (r1, r2, mu) = (6678.137, 42_164.0, EGM2008_GM_KM3_S2);
+        let inc = 10.0;
+        let vp = (mu / r1).sqrt() * (2.0 * r2 / (r1 + r2)).sqrt();
+        let va = vp * r1 / r2;
+        let vc = (mu / r2).sqrt();
+        let all_at_apogee = (vp - (mu / r1).sqrt())
+            + (va * va + vc * vc - 2.0 * va * vc * 18.5_f64.to_radians().cos()).sqrt();
+
+        let o = Optimize {
+            variables: vec![
+                free("toi", 0),
+                free("toi", 1),
+                free("goi", 0),
+                free("goi", 1),
+            ],
+            objective: Objective::DeltaV,
+            objective_tolerance: 1e-6,
+            // |e| is not differentiable at 0: bound it instead of equating apsides.
+            constraints: vec![
+                equal(Quantity::SmaKm, r2, 0.01),
+                Constraint {
+                    quantity: Quantity::Eccentricity,
+                    relation: Relation::AtMost,
+                    value: 1e-4,
+                    tolerance: 1e-6,
+                },
+                equal(Quantity::InclinationDeg, inc, 1e-4),
+            ],
+            body: vec![
+                cmd(Some("toi"), maneuver(DVec3::new(2.4, 0.0, 0.0))),
+                cmd(None, until(Stop::apoapsis())),
+                cmd(Some("goi"), maneuver(DVec3::new(1.5, -0.4, 0.0))),
+            ],
+            max_iterations: 60,
+        };
+        let out = run(
+            &two_body(),
+            leo(r1, 28.5),
+            &[cmd(Some("gto"), Action::Optimize(Box::new(o)))],
+        )
+        .unwrap();
+        let SegmentKind::Optimize(t) = &out.segments[0].kind else {
+            panic!()
+        };
+        assert!(t.converged, "{t:#?}");
+        assert!(t.constraints.iter().all(|c| c.met));
+        // Analytic optimum (1-D scan of the split): 4.04409 km/s, 1.59° at perigee; 13 m/s
+        // below all-at-apogee.
+        assert!((t.objective - 4.044_09).abs() < 1e-3, "{}", t.objective);
+        assert!(all_at_apogee - t.objective > 0.012);
+        assert!((t.objective - delta_v_km_s(&out.segments[1..])).abs() < 1e-9);
+        let perigee_tilt = t.values[1]
+            .atan2(t.values[0] + (mu / r1).sqrt())
+            .to_degrees();
+        assert!((perigee_tilt.abs() - 1.59).abs() < 0.05, "{perigee_tilt}");
+        assert!((Quantity::InclinationDeg.of(&out.end) - inc).abs() < 1e-4);
+    }
+
+    #[test]
+    fn optimize_respects_bounds_and_inequalities() {
+        // Maximize apogee with a capped burn: bound wins over the inequality.
+        let o = Optimize {
+            variables: vec![OptimizeVariable {
+                lower: 0.0,
+                upper: 0.8,
+                ..free("burn", 0)
+            }],
+            objective: Objective::Quantity {
+                quantity: Quantity::ApogeeAltKm,
+                maximize: true,
+            },
+            objective_tolerance: 1e-3,
+            constraints: vec![Constraint {
+                quantity: Quantity::ApogeeAltKm,
+                relation: Relation::AtMost,
+                value: 10_000.0,
+                tolerance: 0.01,
+            }],
+            body: vec![cmd(Some("burn"), prograde(0.1))],
+            max_iterations: 40,
+        };
+        let commands = [cmd(None, Action::Optimize(Box::new(o.clone())))];
+        let out = run(&two_body(), leo(6678.137, 0.0), &commands).unwrap();
+        let SegmentKind::Optimize(t) = &out.segments[0].kind else {
+            panic!()
+        };
+        assert!(t.converged, "{t:#?}");
+        // Apogee 10 000 km altitude needs ~1.3 km/s: the 0.8 bound is active.
+        assert!((t.values[0] - 0.8).abs() < 1e-9, "{t:#?}");
+        // Frozen: the body at the solution.
+        let frozen = freeze(&commands, &out);
+        assert_eq!(frozen, vec![cmd(Some("burn"), prograde(t.values[0]))]);
+        let replay = run(&two_body(), leo(6678.137, 0.0), &frozen).unwrap();
+        assert_eq!(replay.end, out.end);
+
+        let mut tight = o;
+        tight.constraints[0].value = 2_000.0;
+        let out = run(
+            &two_body(),
+            leo(6678.137, 0.0),
+            &[cmd(None, Action::Optimize(Box::new(tight)))],
+        )
+        .unwrap();
+        let SegmentKind::Optimize(t) = &out.segments[0].kind else {
+            panic!()
+        };
+        assert!(t.converged && t.constraints[0].met, "{t:#?}");
+        assert!((t.objective - 2_000.0).abs() < 0.02, "{}", t.objective);
     }
 
     #[test]

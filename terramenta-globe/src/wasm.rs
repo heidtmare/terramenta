@@ -1309,14 +1309,21 @@ pub fn find_events(propagation: JsValue, options: JsValue) -> Result<JsValue, Js
 ///         { propagate: { to: "apoapsis" } },
 ///       ],
 ///       maxIterations: 25 } },
+///   { label: "gto", optimize: {                     // SQP; segment.optimize reports it
+///       variables: [{ command: "toi", parameter: "dv2", lower: -1, upper: 1 }],
+///       minimize: "deltaV",                          // or a quantity; maximize: a quantity
+///       constraints: [{ quantity: "eccentricity", relation: "atMost", value: 1e-4, tolerance: 1e-6 }],
+///       sequence: [ ... ],                          // commands
+///       objectiveTolerance: 1e-5, maxIterations: 50 } },
 ///   { finiteBurn: { durationS: 120, thrustN: 400, ispS: 300, direction: [1, 0, 0], frame: "vnb" } },
 /// ]);
 /// propagate(resolved);  // maneuvers/finiteBurns/stop resolved; any analysis takes it
-/// // segments: [{ label, kind, depth, start, stop, massKg, deltaVKmS, elements, target }]
+/// // segments: [{ label, kind, depth, start, stop, massKg, deltaVKmS, elements, target, optimize }]
 /// ```
 ///
 /// Quantities as [`target`] goals, plus `radialVelocityKmS`, `argLatitudeDeg`, `latitudeDeg`.
-/// Throws on bad input or an unreached stop; a non-converged target is not an error.
+/// Throws on bad input or an unreached stop; a non-converged target or optimize is not an
+/// error.
 #[wasm_bindgen(js_name = runSequence)]
 pub fn run_sequence(propagation: JsValue, sequence: JsValue) -> Result<JsValue, JsError> {
     let json = |v: &JsValue| -> Result<String, JsError> {

@@ -994,7 +994,8 @@
         "propagate": { "$ref": "#/$defs/sequencePropagate" },
         "maneuver": { "$ref": "#/$defs/sequenceManeuver" },
         "finiteBurn": { "$ref": "#/$defs/sequenceFiniteBurn" },
-        "target": { "$ref": "#/$defs/sequenceTarget" }
+        "target": { "$ref": "#/$defs/sequenceTarget" },
+        "optimize": { "$ref": "#/$defs/sequenceOptimize" }
       }
     },
     "sequencePropagate": {
@@ -1074,6 +1075,53 @@
         },
         "sequence": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/sequenceCommand" } },
         "maxIterations": { "type": "integer", "minimum": 1, "maximum": 200, "description": "Default 25." }
+      }
+    },
+    "sequenceOptimize": {
+      "description": "SQP: varies labelled commands in sequence within bounds to minimize or maximize an objective at its end, subject to constraints there. Exactly one of minimize, maximize.",
+      "type": "object",
+      "required": ["variables", "sequence"],
+      "additionalProperties": false,
+      "properties": {
+        "variables": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["command", "parameter"],
+            "additionalProperties": false,
+            "properties": {
+              "command": { "type": "string", "description": "Label in this optimize's sequence." },
+              "parameter": { "enum": ["dv1", "dv2", "dv3", "durationS"], "description": "dv: maneuver km/s in its frame; durationS: finite burn or durationS propagate." },
+              "perturbation": { "type": "number", "exclusiveMinimum": 0, "description": "Finite-difference step and scale. Default 1e-5 km/s or 1 s." },
+              "maxStep": { "type": "number", "exclusiveMinimum": 0, "description": "Default 0.5 km/s or 600 s." },
+              "lower": { "type": "number" },
+              "upper": { "type": "number" }
+            }
+          }
+        },
+        "minimize": {
+          "anyOf": [{ "const": "deltaV" }, { "$ref": "#/$defs/quantity" }],
+          "description": "deltaV: impulsive plus finite-burn (rocket equation) over the sequence, km/s."
+        },
+        "maximize": { "$ref": "#/$defs/quantity" },
+        "objectiveTolerance": { "type": "number", "exclusiveMinimum": 0, "description": "Objective units; default 1e-5." },
+        "constraints": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["quantity", "value", "tolerance"],
+            "additionalProperties": false,
+            "properties": {
+              "quantity": { "$ref": "#/$defs/quantity" },
+              "relation": { "enum": ["equal", "atLeast", "atMost"], "description": "Default equal." },
+              "value": { "type": "number" },
+              "tolerance": { "type": "number", "exclusiveMinimum": 0 }
+            }
+          }
+        },
+        "sequence": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/sequenceCommand" } },
+        "maxIterations": { "type": "integer", "minimum": 1, "maximum": 500, "description": "Default 50." }
       }
     }
   }

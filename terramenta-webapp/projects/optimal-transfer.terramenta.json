@@ -1,0 +1,109 @@
+{
+  "$schema": "../schema/project.schema.json",
+  "terramenta": 3,
+  "name": "Optimal GEO transfer",
+  "description": "Minimum-Δv LEO → GEO by SQP against the targeted baseline. Both from a 300 km, 28.5° parking orbit at the ascending node. Targeted (yellow): transfer burn for 42 164 km at the descending node, all 28.5° of plane change there. Optimized (cyan): in-plane and normal components of both burns free; minimize total Δv subject to a 42 164 km semi-major axis, e ≤ 1e-4, i ≤ 0.01° — moves ~2° of the plane change to perigee, ~25 m/s less. J2, no third body. Spacecraft tab: segment tables (optimize status, objective), Edit shows the sequences. Analysis: inclination.",
+  "ui": { "tab": "spacecraft" },
+  "frame": "eci",
+  "clock": { "epoch": "2026-03-20T00:00:00Z", "timeScale": 600, "paused": false },
+  "camera": { "lat": 15, "lon": -60, "altitudeKm": 120000 },
+  "spacecraft": [
+    {
+      "id": "targeted",
+      "label": "Targeted",
+      "pointColor": "#ffe66b",
+      "lineColor": "#ffe66ba6",
+      "leadingOrbits": 0,
+      "trailingOrbits": 1,
+      "propagation": {
+        "name": "TARGETED",
+        "objectId": "2026-901A",
+        "initial": {
+          "epoch": "2026-03-20T00:00:00Z",
+          "elements": { "smaKm": 6678.137, "eccentricity": 0, "inclinationDeg": 28.5, "raanDeg": 80, "argPerigeeDeg": 0, "trueAnomalyDeg": 0 }
+        },
+        "stepS": 60,
+        "vehicle": { "massKg": 6000, "dryMassKg": 1500 },
+        "forces": { "gravity": [2, 0], "thirdBody": false, "srp": false, "drag": "none" }
+      },
+      "sequence": [
+        {
+          "label": "TOI",
+          "target": {
+            "variables": [{ "command": "toi-burn", "parameter": "dv1" }],
+            "goals": [{ "quantity": "radiusKm", "value": 42164, "tolerance": 0.1 }],
+            "sequence": [
+              { "label": "toi-burn", "maneuver": { "deltaVKmS": [2.4, 0, 0], "frame": "vnb", "ispS": 320 } },
+              { "label": "transfer", "propagate": { "to": "descendingNode", "stepS": 600 } }
+            ]
+          }
+        },
+        {
+          "label": "GOI",
+          "target": {
+            "variables": [
+              { "command": "goi-burn", "parameter": "dv1" },
+              { "command": "goi-burn", "parameter": "dv2" },
+              { "command": "goi-burn", "parameter": "dv3" }
+            ],
+            "goals": [
+              { "quantity": "smaKm", "value": 42164, "tolerance": 0.1 },
+              { "quantity": "inclinationDeg", "value": 0, "tolerance": 0.01 },
+              { "quantity": "flightPathAngleDeg", "value": 0, "tolerance": 0.001 }
+            ],
+            "sequence": [{ "label": "goi-burn", "maneuver": { "deltaVKmS": [1.4, -0.8, 0], "frame": "vnb", "ispS": 320 } }]
+          }
+        },
+        { "label": "drift", "propagate": { "durationS": 86400 } }
+      ]
+    },
+    {
+      "id": "optimized",
+      "label": "Optimized",
+      "pointColor": "#5ce1ff",
+      "lineColor": "#5ce1ffa6",
+      "leadingOrbits": 0,
+      "trailingOrbits": 1,
+      "propagation": {
+        "name": "OPTIMIZED",
+        "objectId": "2026-902A",
+        "initial": {
+          "epoch": "2026-03-20T00:00:00Z",
+          "elements": { "smaKm": 6678.137, "eccentricity": 0, "inclinationDeg": 28.5, "raanDeg": 80, "argPerigeeDeg": 0, "trueAnomalyDeg": 0 }
+        },
+        "stepS": 60,
+        "vehicle": { "massKg": 6000, "dryMassKg": 1500 },
+        "forces": { "gravity": [2, 0], "thirdBody": false, "srp": false, "drag": "none" }
+      },
+      "sequence": [
+        {
+          "label": "GTO",
+          "optimize": {
+            "variables": [
+              { "command": "toi-burn", "parameter": "dv1", "lower": 2, "upper": 3 },
+              { "command": "toi-burn", "parameter": "dv2" },
+              { "command": "goi-burn", "parameter": "dv1" },
+              { "command": "goi-burn", "parameter": "dv2" },
+              { "command": "goi-burn", "parameter": "dv3" }
+            ],
+            "minimize": "deltaV",
+            "constraints": [
+              { "quantity": "smaKm", "value": 42164, "tolerance": 0.1 },
+              { "quantity": "eccentricity", "relation": "atMost", "value": 1e-4, "tolerance": 1e-6 },
+              { "quantity": "inclinationDeg", "relation": "atMost", "value": 0.01, "tolerance": 1e-4 }
+            ],
+            "sequence": [
+              { "label": "toi-burn", "maneuver": { "deltaVKmS": [2.4, 0, 0], "frame": "vnb", "ispS": 320 } },
+              { "label": "transfer", "propagate": { "to": "descendingNode", "stepS": 600 } },
+              { "label": "goi-burn", "maneuver": { "deltaVKmS": [1.4, 0.8, 0], "frame": "vnb", "ispS": 320 } }
+            ]
+          }
+        },
+        { "label": "drift", "propagate": { "durationS": 86400 } }
+      ]
+    }
+  ],
+  "analysis": {
+    "plots": [{ "id": "inc", "quantity": "inclinationDeg", "spacecraft": ["targeted", "optimized"] }]
+  }
+}

@@ -34,9 +34,13 @@ aiming for parity with it. Pull requests are not being accepted at this time.
   Solar System Barycentre.
 - **Maneuvers and sequences.** Impulsive and finite burns in inertial, VNB,
   RSW, LVLH or body frames. Mission sequences: propagate to epoch, duration,
-  apsis, node or any osculating-quantity crossing; burn; nested targets.
+  apsis, node or any osculating-quantity crossing; burn; nested targets and
+  optimizers.
 - **Targeting.** Newton differential correction with finite-difference
   Jacobians, step caps and backtracking.
+- **Optimization.** Trust-region Sℓ1QP: minimize Δv or any osculating quantity
+  subject to equality/inequality constraints and variable bounds; BFGS,
+  interior-point QP, second-order correction.
 - **Covariance.** State transition matrix from variational equations, SNC
   process noise, RSW/position ellipsoids.
 - **Orbit determination.** Range, range-rate, az/el, RA/Dec and GNSS
@@ -150,6 +154,7 @@ compressed; ground tracks, terminator and orbit far sides to scale.*
 | [`leo-transfer`](terramenta-webapp/projects/leo-transfer.terramenta.json) | Hohmann transfer, covariance, plots, OEM/SPK/CZML export |
 | [`targeted-transfer`](terramenta-webapp/projects/targeted-transfer.terramenta.json) | Differential correction of impulsive and finite burns |
 | [`geo-transfer`](terramenta-webapp/projects/geo-transfer.terramenta.json) | LEO → GEO mission sequence with nested targets |
+| [`optimal-transfer`](terramenta-webapp/projects/optimal-transfer.terramenta.json) | Minimum-Δv LEO → GEO plane-change split vs the targeted baseline |
 | [`differential-drag`](terramenta-webapp/projects/differential-drag.terramenta.json) | Plate-model smallsats: attitude-driven decay, body-frame thrust |
 | [`conjunction-screening`](terramenta-webapp/projects/conjunction-screening.terramenta.json) | TCA, miss, Pc against debris and a catalogue; CDM |
 | [`orbit-determination`](terramenta-webapp/projects/orbit-determination.terramenta.json) | Radar batch LSQ with Cd, GNSS EKF; residuals, TDM |
