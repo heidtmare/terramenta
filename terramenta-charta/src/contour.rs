@@ -214,7 +214,7 @@ mod tests {
         // Punch out the centre sample: every cell touching it should
         // contribute nothing, even though the plane's own value there would
         // have crossed the level.
-        values[1 * xs.len() + 1] = None;
+        values[xs.len() + 1] = None;
         let found = contours(&xs, &ys, &values, &[2.0]);
         assert_eq!(found[0].segments.len(), 0);
     }

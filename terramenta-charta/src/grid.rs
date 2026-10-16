@@ -103,6 +103,7 @@ fn date_axis(start: Epoch, end: Epoch, steps: usize) -> Vec<Epoch> {
 /// [`solve`](terramenta_solare::lambert::solve) takes —
 /// [`TransferDirection::Prograde`] for essentially every real interplanetary
 /// transfer.
+#[allow(clippy::too_many_arguments)]
 pub fn porkchop_grid(
     tree: &FrameTree,
     sun: FrameId,
