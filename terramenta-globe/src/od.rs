@@ -325,6 +325,7 @@ pub fn determine_orbit(req: &OdRequest) -> Result<OdResult, String> {
             .position(|s| s.name == id)
             .ok_or_else(|| format!("unknown station {id:?}"))
     };
+    crate::numerical::earth_only(req.propagation.central_body, "orbit determination")?;
     let (sc, _) = spacecraft_at_start(&req.propagation, &env)?;
     let apriori = *sc.state();
     let mut propagator = numerical_propagator(&sc);

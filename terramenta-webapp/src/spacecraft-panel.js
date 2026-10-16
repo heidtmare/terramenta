@@ -23,13 +23,12 @@ import { download, el, row, section } from "./dom.js";
 import { clock, duration, utcSeconds } from "./format.js";
 import { SPACECRAFT_COLORS as PALETTE } from "./palette.js";
 import { PROJECT_VERSION, layerDisplay, parseProject } from "./project.js";
+import { BODIES } from "./reports.js";
 import { segmentRows } from "./sequence.js";
 import { button, rowList, toggle } from "./widgets.js";
 
 const nextColor = () => PALETTE[globe.recordedSources().spacecraft.size % PALETTE.length];
 
-const MU_EARTH = 398_600.4418;
-const EARTH_RADIUS_KM = 6_378.137;
 const MJD_UNIX_EPOCH = 40_587;
 
 const FRAMES = [
@@ -40,6 +39,11 @@ const FRAMES = [
 ];
 /** Finite burns also thrust along body axes, under the spacecraft's attitude profile. */
 const BURN_FRAMES = [...FRAMES, ["body", "Body"]];
+const CENTRAL_BODIES = [
+  ["earth", "Earth"],
+  ["moon", "Moon"],
+  ["mars", "Mars"],
+];
 const DRAG = [
   ["none", "None"],
   ["exponential", "Exponential"],
@@ -84,7 +88,7 @@ const SEQUENCE_TEMPLATE = [
 
 const INITIAL = [
   ["elements", "Keplerian elements"],
-  ["state", "GCRF state"],
+  ["state", "Inertial state (GCRF/ICRF)"],
   ["tle", "TLE"],
   ["omm", "OMM JSON"],
 ];
@@ -363,6 +367,8 @@ function mountEditor(getState) {
   const title = el("h3", { class: "editor-title" }, "New spacecraft");
   const name = text({ value: "Spacecraft" });
 
+  const centralBody = select(CENTRAL_BODIES, "earth");
+  const body = () => BODIES[centralBody.value.toUpperCase()];
   const initialKind = select(INITIAL, "elements");
   const epoch = text({ placeholder: "2026-01-01T00:00:00Z" });
   const position = vector(["x km", "y km", "z km"]);
@@ -435,7 +441,27 @@ function mountEditor(getState) {
   const degree = number({ value: "8", min: "0", max: "20", step: "1" });
   const order = number({ value: "8", min: "0", max: "20", step: "1" });
   const drag = select(DRAG, "exponential");
-  const thirdBody = toggle("Sun/Moon third body", () => {});
+  const dragRow = row("Drag", drag);
+  const thirdBody = toggle("Third bodies (Sun + Moon/Earth)", () => {});
+  /** Earth only: drag, TLE/OMM. */
+  const showBody = () => {
+    const earth = centralBody.value === "earth";
+    dragRow.hidden = !earth;
+    for (const option of initialKind.options) {
+      if (option.value === "tle" || option.value === "omm") option.disabled = !earth;
+    }
+    if (!earth && (initialKind.value === "tle" || initialKind.value === "omm")) {
+      initialKind.value = "elements";
+      showInitial();
+    }
+  };
+  centralBody.onchange = () => {
+    showBody();
+    const defaults = { smaKm: body().radiusKm + (centralBody.value === "earth" ? 500 : 100) };
+    elements.smaKm.value = String(defaults.smaKm);
+    circular.value = centralBody.value === "earth" ? "500" : "100";
+    fillCircular();
+  };
   const srp = toggle("Solar radiation pressure", () => {});
   const relativity = toggle("Relativity", () => {});
   const integrator = select(INTEGRATORS, "dop853");
@@ -476,8 +502,8 @@ function mountEditor(getState) {
   const error = el("p", { class: "detail error", hidden: true });
 
   function fillCircular() {
-    const radius = EARTH_RADIUS_KM + Number(circular.value || 0);
-    const speed = Math.sqrt(MU_EARTH / radius);
+    const radius = body().radiusKm + Number(circular.value || 0);
+    const speed = Math.sqrt(body().mu / radius);
     const inc = (Number(inclination.value || 0) * Math.PI) / 180;
     const values = [radius, 0, 0, 0, speed * Math.cos(inc), speed * Math.sin(inc)];
     [...position.inputs, ...velocity.inputs].forEach((input, index) => {
@@ -496,9 +522,10 @@ function mountEditor(getState) {
     editingDisplay = null;
     title.textContent = "New spacecraft";
     name.value = `Spacecraft ${globe.recordedSources().spacecraft.size + 1}`;
+    centralBody.value = "earth";
     initialKind.value = "elements";
     epoch.value = "";
-    const defaults = { smaKm: EARTH_RADIUS_KM + 500, eccentricity: 0, inclinationDeg: 51.6, raanDeg: 0, argPerigeeDeg: 0, trueAnomalyDeg: 0 };
+    const defaults = { smaKm: BODIES.EARTH.radiusKm + 500, eccentricity: 0, inclinationDeg: 51.6, raanDeg: 0, argPerigeeDeg: 0, trueAnomalyDeg: 0 };
     for (const [key, input] of Object.entries(elements)) input.value = String(defaults[key]);
     tle.value = "";
     omm.value = "";
@@ -527,6 +554,7 @@ function mountEditor(getState) {
     error.hidden = true;
     fillCircular();
     showInitial();
+    showBody();
     showSequence();
   }
 
@@ -537,6 +565,8 @@ function mountEditor(getState) {
     title.textContent = `Edit ${id}`;
     const p = spacecraft.base ?? spacecraft.propagation;
     name.value = editingDisplay.label ?? p.name ?? id;
+    centralBody.value = p.centralBody ?? "earth";
+    showBody();
     const initial = p.initial;
     if (initial.tle) {
       initialKind.value = "tle";
@@ -572,7 +602,7 @@ function mountEditor(getState) {
     for (const plate of v.plates ?? []) plates.add(plate);
     const f = p.forces ?? {};
     [degree.value, order.value] = (f.gravity ?? [8, 8]).map(String);
-    drag.value = f.drag ?? "exponential";
+    drag.value = f.drag ?? (centralBody.value === "earth" ? "exponential" : "none");
     thirdBody.set(f.thirdBody ?? true);
     srp.set(f.srp ?? true);
     relativity.set(f.relativity ?? false);
@@ -602,6 +632,8 @@ function mountEditor(getState) {
     const label = name.value.trim() || "Spacecraft";
     const id = editing ?? uniqueId(label);
     const propagation = { name: label };
+    const earth = centralBody.value === "earth";
+    if (!earth) propagation.centralBody = centralBody.value;
     if (initialKind.value === "tle") {
       const lines = tle.value
         .split("\n")
@@ -655,7 +687,7 @@ function mountEditor(getState) {
     propagation.forces = {
       gravity: [numeric(degree), numeric(order)],
       thirdBody: thirdBody.input.checked,
-      drag: drag.value,
+      ...(earth ? { drag: drag.value } : {}),
       srp: srp.input.checked,
       relativity: relativity.input.checked,
     };
@@ -733,6 +765,7 @@ function mountEditor(getState) {
     el("summary", {}, "Define a spacecraft"),
     title,
     row("Name", name),
+    row("Central body", centralBody),
     row("Initial", initialKind),
     epochRow,
     elementsFields,
@@ -758,7 +791,7 @@ function mountEditor(getState) {
     plates.node,
     el("h3", { class: "editor-title" }, "Forces"),
     row("Gravity", el("div", { class: "vector two" }, degree, order)),
-    row("Drag", drag),
+    dragRow,
     thirdBody.node,
     srp.node,
     relativity.node,
@@ -798,7 +831,8 @@ function mountEditor(getState) {
     el(
       "p",
       { class: "detail" },
-      "Cowell in GCRF: EGM2008 20×20, Sun/Moon, drag, SRP. TLE/OMM via SGP4 to the start epoch. " +
+      "Cowell about the central body: Earth (GCRF, EGM2008, drag), Moon (ICRF, GRGM900C, lunar principal axes) or " +
+        "Mars (ICRF, JGMRO120F), ≤ 20×20, third bodies, SRP. TLE/OMM via SGP4 to the start epoch (Earth). " +
         "Uncertainty: linear covariance through the state transition matrix; noise is white acceleration spectral density.",
     ),
   );

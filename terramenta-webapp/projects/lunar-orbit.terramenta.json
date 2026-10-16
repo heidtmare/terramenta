@@ -1,0 +1,59 @@
+{
+  "$schema": "../schema/project.schema.json",
+  "terramenta": 3,
+  "name": "Low lunar orbit",
+  "description": "50 km polar lunar orbits, Moon-centred: GRGM900C 20×20 under the lunar principal axes against J2 alone, with Earth and Sun third bodies and SRP. Mascons pull periapsis down by kilometres a day; Reports plots altitude, periapsis and eccentricity. OEM/SPK export are Moon-centred (ICRF); the scene draws them geocentric.",
+  "ui": { "tab": "analysis" },
+  "frame": "eci",
+  "clock": { "epoch": "2027-06-01T00:00:00Z", "timeScale": 600, "paused": false },
+  "camera": { "lat": 0, "lon": 0, "altitudeKm": 900000 },
+  "spacecraft": [
+    {
+      "id": "mascons",
+      "label": "GRGM900C 20×20",
+      "pointColor": "#ffb86b",
+      "lineColor": "#ffb86ba6",
+      "leadingOrbits": 0,
+      "trailingOrbits": 1,
+      "propagation": {
+        "name": "LLO-20X20",
+        "centralBody": "moon",
+        "initial": {
+          "epoch": "2027-06-01T00:00:00Z",
+          "elements": { "smaKm": 1787.4, "eccentricity": 0.0, "inclinationDeg": 90, "raanDeg": 0, "argPerigeeDeg": 0, "trueAnomalyDeg": 0 }
+        },
+        "durationS": 259200,
+        "stepS": 60,
+        "vehicle": { "massKg": 1000, "srpAreaM2": 4 },
+        "forces": { "gravity": [20, 20], "thirdBody": true, "srp": true }
+      }
+    },
+    {
+      "id": "j2",
+      "label": "J2 only",
+      "pointColor": "#8ce0ff",
+      "lineColor": "#8ce0ffa6",
+      "leadingOrbits": 0,
+      "trailingOrbits": 1,
+      "propagation": {
+        "name": "LLO-J2",
+        "centralBody": "moon",
+        "initial": {
+          "epoch": "2027-06-01T00:00:00Z",
+          "elements": { "smaKm": 1787.4, "eccentricity": 0.0, "inclinationDeg": 90, "raanDeg": 0, "argPerigeeDeg": 0, "trueAnomalyDeg": 0 }
+        },
+        "durationS": 259200,
+        "stepS": 60,
+        "vehicle": { "massKg": 1000, "srpAreaM2": 4 },
+        "forces": { "gravity": [2, 0], "thirdBody": true, "srp": true }
+      }
+    }
+  ],
+  "analysis": {
+    "plots": [
+      { "id": "altitude", "quantity": "altitudeKm", "spacecraft": ["mascons", "j2"] },
+      { "id": "periapsis", "quantity": "perigeeAltKm", "spacecraft": ["mascons", "j2"] },
+      { "id": "eccentricity", "quantity": "eccentricity", "spacecraft": ["mascons", "j2"] }
+    ]
+  }
+}

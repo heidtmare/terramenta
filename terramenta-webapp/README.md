@@ -78,7 +78,7 @@ Relative URLs resolve against the app root (the directory holding
 | `overlays` | `{enabled, picking, layers: [{id, ...addOverlay options}]}` | One of `url`/`text` per layer |
 | `ephemerides` | `{enabled, layers: [{id, ...addEphemeris options}]}` | OMM JSON or KVN OEM |
 | `environment` | `{eop, spaceWeather, kernel}` | URLs; see [Spacecraft](#spacecraft) |
-| `spacecraft` | `[{id, ...addEphemeris display options, uncertaintySigma, propagation}]` | `propagation`: `propagate` options; one of `stop`/`durationS`; `initial` a TLE, OMM, GCRF state or `{epoch, elements}`; optional `covariance`; `vehicle.plates` and `"body"` finite burns fly the attitude profile ([Attitude](#attitude)). `uncertaintySigma`: ellipsoid scale, default 3, 0 hides. Id unique across `ephemerides`. Optional `sequence`: see [Mission sequence](#mission-sequence) |
+| `spacecraft` | `[{id, ...addEphemeris display options, uncertaintySigma, propagation}]` | `propagation`: `propagate` options; one of `stop`/`durationS`; `centralBody` `earth` (default), `moon` or `mars`; `initial` a TLE, OMM (Earth), central-body state or `{epoch, elements}`; optional `covariance`; `vehicle.plates` and `"body"` finite burns fly the attitude profile ([Attitude](#attitude)). `uncertaintySigma`: ellipsoid scale, default 3, 0 hides. Id unique across `ephemerides`. Optional `sequence`: see [Mission sequence](#mission-sequence) |
 | `missions` | `[{id, ...addMission options}]` | |
 | `placemarks.enabled`, `keyboard` | bool | |
 | `gnc` | `{enabled, eciAxes, ecefAxes, graticule, graticuleStepDeg, sidereal, track, trackOrbits, focus: {layer, noradId}}` | |
@@ -123,6 +123,7 @@ Listed in [`projects/manifest.json`](projects/manifest.json).
 | [`venus-flyby`](projects/venus-flyby.terramenta.json) | 2034 Earth → Venus → Mars gravity assist, flight panel, `missionFlight` director with flyby zoom |
 | [`mars-windows`](projects/mars-windows.terramenta.json) | Earth → Mars porkchop studies, 2026 and 2028 windows; opens on Analysis |
 | [`leo-transfer`](projects/leo-transfer.terramenta.json) | 500 → 800 km Hohmann transfer vs. coasting reference; CelesTrak EOP and space weather; timeline slows the clock around each burn; RSW covariance with 3σ ellipsoids; altitude, SMA, eccentricity and 1σ in-track plots |
+| [`lunar-orbit`](projects/lunar-orbit.terramenta.json) | 50 km polar lunar orbits, Moon-centred: GRGM900C 20×20 vs J2 only, Earth/Sun third bodies, SRP; altitude, periapsis and eccentricity plots; opens on Analysis |
 | [`ground-contacts`](projects/ground-contacts.terramenta.json) | 700 km SSO for a day over five ground stations; contacts, eclipses, nodes; timeline slows the clock for `polar.aos.svalbard.1` |
 | [`targeted-transfer`](projects/targeted-transfer.terramenta.json) | Rough first-guess burns, solved on the Spacecraft tab: Hohmann Δv and second-burn epoch for a circular 800 km orbit; 20 N finite-burn duration for a 150 km SMA raise |
 | [`attitude-modes`](projects/attitude-modes.terramenta.json) | Three pointing laws over six hours: LVLH observer with a star-tracker sun angle, SSO tracking Svalbard with its array sun-constrained, 6°/s inertial spinner; body axes and boresights on the globe |
@@ -147,7 +148,7 @@ spacecraft, Coverage, Conjunctions, Orbit determination and Monte Carlo while it
 | | Vector tiles | Source (MapLibre boundaries, OSM Shortbread), its source layers and depth, colour, ring fill, streaming on/off |
 | | GeoJSON overlays | Add from URL or local file; bundled samples and USGS feeds; refresh period; picking on/off. Per layer: visibility, colour, clamp to surface, extrude, simplestyle on/off, refresh, remove, feature counts and age |
 | | Satellites | Add OMM from URL or local file; five Celestrak groups. Per layer: visibility, colour, trails and trail window, refresh, remove, and a filterable object list with per-object draw and trail toggles |
-| **Spacecraft** | Spacecraft | Per spacecraft: visibility, colour, trails, span/samples/final mass/final 1σ, edit, go to start, OEM/SPK export, remove. Editor: initial state (Keplerian elements, GCRF state with circular-orbit fill, TLE, OMM), start/duration/step, vehicle, plates (normal, area, specular, diffuse), forces, integrator, impulsive and finite burns (finite: body frame too), uncertainty (frame, 1σ position and velocity, process noise, ellipsoid σ) |
+| **Spacecraft** | Spacecraft | Per spacecraft: visibility, colour, trails, span/samples/final mass/final 1σ, edit, go to start, OEM/SPK export, remove. Editor: central body (Earth, Moon, Mars; drag and TLE/OMM Earth-only), initial state (Keplerian elements, inertial state with circular-orbit fill, TLE, OMM), start/duration/step, vehicle, plates (normal, area, specular, diffuse), forces, integrator, impulsive and finite burns (finite: body frame too), uncertainty (frame, 1σ position and velocity, process noise, ellipsoid σ) |
 | | Targeting | Per target: spacecraft, solve, apply, edit, remove; last solution's variables (initial, solved) and goals (desired, achieved, error; misses in red). Editor: name, spacecraft, iterations, variables (burn, parameter, perturbation, max step), goals (quantity, at, value, tolerance) |
 | | Attitude | Per profile: law, AEM export, edit, remove; sensor angles (or LVLH Euler angles) chart with clock cursor (click to set the clock), min/time/max table. Editor: spacecraft, name, law (align/constrain axes and directions, or inertial quaternion), spin, target (station or site), step, body axes on/off, sensors (name, axis, direction or none, field of view: cone or rectangle, colour, drawing on/off) |
 | | Ground stations | Per station: name, position, altitude, mask, horizon points, edit, remove. Add/edit: name, lat/lon, altitude, mask, horizon (`az:el, …`) or *From terrain* (range, eye height), colour. Drawn as a point overlay |
@@ -245,20 +246,21 @@ Satellites.
 
 - **Samples**: the spacecraft's OEM (`propagate` with `kvn`), parsed per
   segment; cached per propagation.
-- **Quantities**: osculating two-body elements about Earth
-  (μ = 398600.4418 km³/s²) from each GCRF state: altitude, radius, speed, SMA,
-  eccentricity, inclination, RAAN, argument of perigee, true anomaly (argument
-  of latitude when circular), period, perigee/apogee altitude. Altitudes are
-  radius − 6378.137 km, not geodetic. With a covariance: 1σ radial,
+- **Quantities**: osculating two-body elements about the OEM `CENTER_NAME`
+  (`BODIES`: Earth μ = 398600.4418, Moon 4902.80, Mars 42828.38 km³/s²) from
+  each state: altitude, radius, speed, SMA, eccentricity, inclination, RAAN,
+  argument of perigee, true anomaly (argument of latitude when circular),
+  period, perigee/apogee altitude. Altitudes are radius − equatorial radius
+  (6378.137, 1737.4, 3396.19 km), not geodetic. With a covariance: 1σ radial,
   in-track, cross-track and RSS position (m), matched to samples by time.
 - **Δv budget**: from the request by the rocket equation, as the propagator
   models burns: impulsive burns spend propellant only with `ispS`; finite
   burns flow at `thrustN / (ispS·g0)` and stop at dry mass (default
   min(850 kg, wet)).
-- **CSV**: per spacecraft (UTC, GCRF state, every quantity, 1σ columns with a covariance), per plot
+- **CSV**: per spacecraft (UTC, central-body state, every quantity, 1σ columns with a covariance), per plot
   (`utc, spacecraft, value`), per porkchop grid (dates, time of flight,
   departure/arrival/total Δv; unsolved cells empty).
-- **CZML**: all spacecraft, `INERTIAL` frame (ICRF ≈ GCRF), metres, one
+- **CZML**: Earth-centred spacecraft, `INERTIAL` frame (ICRF ≈ GCRF), metres, one
   Lagrange position interval per OEM segment so burns are not interpolated
   across; document clock spans the data.
 - **STAC** ([`stac.js`](src/stac.js), pure): *STAC catalog (zip)* writes a
@@ -345,7 +347,7 @@ options)`.
   1 s) is the finite-difference step and the variable's scale; `maxStep`
   (default 0.1 km/s, 600 s) caps each iteration's change.
 - **Goals**: `quantity` from the report quantities plus `flightPathAngleDeg`
-  and `massKg`, two-body osculating about Earth; `at` `end`, `burnN` (after
+  and `massKg`, two-body osculating about the central body; `at` `end`, `burnN` (after
   the burn), `burnN.before`, `finiteN`, `finiteN.end` or a UTC epoch.
   Angles compare modulo 360°. Met when every |error| ≤ `tolerance`.
 - **Method**: Newton on residuals scaled by tolerance; forward-difference

@@ -396,12 +396,12 @@ test("spacecraft are typed and cross-checked", () => {
       }),
     ),
     [
-      "spacecraft[0].propagation.initial: expected a TLE ({tle}), an OMM ({omm}), a GCRF state ({epoch, positionKm, velocityKmS}) or elements ({epoch, elements}), got {\"tle\":[\"1 only\"]}",
+      "spacecraft[0].propagation.initial: expected a TLE ({tle}), an OMM ({omm}), a central-body state ({epoch, positionKm, velocityKmS}) or elements ({epoch, elements}), got {\"tle\":[\"1 only\"]}",
       "spacecraft[0].propagation.forces.gravity[1]: expected a number ≤ 20, got 30",
       'spacecraft[0].propagation.forces.drag: expected one of none, exponential, harrisPriester, nrlmsise00, got "jacchia"',
       'spacecraft[0].propagation.maneuvers[0].epoch: expected an ISO 8601 date-time, got "soon"',
       "spacecraft[0].propagation.maneuvers[0].deltaVKmS: expected 3 items, got [0.1,0]",
-      'spacecraft[1].propagation.initial: expected a TLE ({tle}), an OMM ({omm}), a GCRF state ({epoch, positionKm, velocityKmS}) or elements ({epoch, elements}), got {"epoch":"2026-01-01T00:00:00Z","positionKm":[1,2,3]}',
+      'spacecraft[1].propagation.initial: expected a TLE ({tle}), an OMM ({omm}), a central-body state ({epoch, positionKm, velocityKmS}) or elements ({epoch, elements}), got {"epoch":"2026-01-01T00:00:00Z","positionKm":[1,2,3]}',
     ],
   );
   assert.deepEqual(

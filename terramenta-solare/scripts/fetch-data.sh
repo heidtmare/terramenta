@@ -20,6 +20,10 @@ fetch() {
 
 # JPL DE440s: 1849–2150, ~32 MB.
 fetch de440s.bsp       "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de440s.bsp"
+# IAU 2015 rotation elements, DE440 GM, DE440 lunar librations (tests/central_body.rs).
+fetch pck00011.tpc     "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/pck/pck00011.tpc"
+fetch gm_de440.tpc     "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/pck/gm_de440.tpc"
+fetch moon_pa_de440_200625.bpc "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/pck/moon_pa_de440_200625.bpc"
 # IERS EOP 14 C04-consistent, IAU 2000A: 1973–present + 1 yr prediction.
 fetch finals2000A.all  "https://datacenter.iers.org/data/9/finals2000A.all"
 # CelesTrak EOP (CSV): x, y, UT1−UTC, LOD, dψ, dε, dX, dY.

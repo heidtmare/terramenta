@@ -24,7 +24,8 @@ aiming for parity with it. Pull requests are not being accepted at this time.
   SGP4 (TLE/OMM); tabulated (Lagrange/Hermite). One `Spacecraft` type switches
   between them mid-mission.
 - **Force models.** EGM2008 spherical harmonics (20×20 embedded, ICGEM `.gfc`
-  to 120×120), third body (DE440 via [`anise`](https://docs.rs/anise) or analytic
+  to 120×120); Moon (GRGM900C) and Mars (JGMRO120F) central bodies, 20×20
+  embedded, PDS SHADR loader, IAU 2015 orientation (lunar principal axes); third body (DE440 via [`anise`](https://docs.rs/anise) or analytic
   Moon), drag (exponential, Harris–Priester, NRLMSISE-00 with CelesTrak space
   weather), SRP with conical shadow, Schwarzschild relativity. Flat-plate
   vehicle models whose drag area and SRP follow the attitude.

@@ -1069,11 +1069,14 @@ pub fn propagation_environment() -> JsValue {
 }
 
 /// Cowell propagation (EGM2008, Sun/Moon, drag, SRP, maneuvers) → CCSDS OEM, GCRF/UTC.
+/// `centralBody` moon/mars: GRGM900C/JGMRO120F under IAU orientation, ICRF axes, no drag;
+/// the OEM is body-centred, the scene layer ([`add_propagated`]) geocentric.
 ///
 /// ```js
 /// const { oem, finalMassKg } = propagate({
 ///   name: "DEMO",
-///   initial: { tle: [line1, line2] },        // or { omm: {...} }
+///   centralBody: "earth",                    // earth | moon | mars
+///   initial: { tle: [line1, line2] },        // or { omm: {...} } (Earth only)
 ///                                            // or { epoch, positionKm, velocityKmS } (GCRF)
 ///   start: "2024-03-01T00:00:00Z",           // default: initial epoch
 ///   durationS: 86400, stepS: 60,             // or stop: ISO UTC
@@ -1083,6 +1086,7 @@ pub fn propagation_environment() -> JsValue {
 ///              plates: [{ normal: [1, 0, 0], areaM2: 2, specular: 0.2, diffuse: 0.3 }] },
 ///   forces: { gravity: [8, 8], thirdBody: true, srp: true, relativity: false,
 ///             drag: "exponential" },         // none | exponential | harrisPriester | nrlmsise00
+///                                            // default exponential (Earth), none otherwise
 ///   integrator: { method: "dop853" },        // dop853 | rkf78 | rk4 (fixedStepS)
 ///   maneuvers: [{ epoch, deltaVKmS: [0.01, 0, 0], frame: "vnb", ispS: 300 }],
 ///   finiteBurns: [{ start, durationS: 120, thrustN: 20, ispS: 220,
@@ -1219,7 +1223,8 @@ pub fn add_propagated(id: String, options: JsValue) -> bool {
     true
 }
 
-/// As [`propagate`], as a Type 13 SPK (`naifId`, default −100900; center 399; J2000).
+/// As [`propagate`], as a Type 13 SPK (`naifId`, default −100900; center 399, 301 or 4;
+/// J2000).
 #[wasm_bindgen(js_name = propagateSpk)]
 pub fn propagate_spk(options: JsValue) -> Result<Vec<u8>, JsError> {
     let request = propagation_request(&options)?;

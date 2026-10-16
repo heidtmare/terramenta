@@ -41,6 +41,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use serde::Deserialize;
+use terramenta_solare::bodies::CentralBody;
 use terramenta_solare::ccsds::Oem;
 use terramenta_solare::earth::TemeGrid;
 use terramenta_solare::interpolate::{Interpolation, SampledEphemeris};
@@ -281,7 +282,13 @@ pub(crate) fn satellite(elements: &sgp4::Elements) -> Option<Satellite> {
 const SYNTHETIC_ID_BASE: u64 = 900_000_000;
 
 /// `(OBJECT_NAME, interpolation, states)`.
-type OemObject = (String, Interpolation, Vec<(Epoch, StateVector)>);
+/// Name, interpolation, TEME states; earliest body-centred state and its centre (period).
+type OemObject = (
+    String,
+    Interpolation,
+    Vec<(Epoch, StateVector)>,
+    (Epoch, StateVector, CentralBody),
+);
 
 fn parse_oem(text: &str) -> Result<Catalogue, OmmError> {
     from_oem(&Oem::from_kvn(text).map_err(|error| OmmError::Malformed(error.to_string()))?)
@@ -298,25 +305,37 @@ pub fn from_oem(oem: &Oem) -> Result<Catalogue, OmmError> {
         TemeGrid::new(|epoch| eop.as_ref().map(|t| t.at(epoch)).unwrap_or_default());
     for segment in &oem.segments {
         let m = &segment.metadata;
-        let to_teme = match m.ref_frame.to_ascii_uppercase().as_str() {
-            _ if !m.center_name.eq_ignore_ascii_case("EARTH") => None,
-            "GCRF" | "EME2000" | "ICRF" | "J2000" => Some(true),
-            "TEME" => Some(false),
+        let center = CentralBody::from_name(&m.center_name);
+        let to_teme = match (center, m.ref_frame.to_ascii_uppercase().as_str()) {
+            (Some(CentralBody::Earth), "GCRF" | "EME2000" | "ICRF" | "J2000") => Some(true),
+            (Some(CentralBody::Earth), "TEME") => Some(false),
+            (Some(_), "EME2000" | "ICRF" | "J2000") => Some(true),
             _ => None,
         };
-        let Some(convert) = to_teme else {
+        let (Some(convert), Some(center), Some(&first)) = (to_teme, center, segment.states.first())
+        else {
             catalogue.rejected += 1;
             continue;
         };
+        // Body-centred → geocentric for the scene.
+        let shift = (center != CentralBody::Earth).then(|| crate::numerical::geocentric(center));
         let entry = objects.entry(m.object_id.clone()).or_insert_with(|| {
             order.push(m.object_id.clone());
             (
                 m.object_name.clone(),
                 m.interpolation.unwrap_or_default(),
                 Vec::new(),
+                (first.0, first.1, center),
             )
         });
+        if first.0 < entry.3.0 {
+            entry.3 = (first.0, first.1, center);
+        }
         entry.2.extend(segment.states.iter().map(|&(epoch, s)| {
+            let s = match &shift {
+                Some(body) => s + body.state_at(epoch),
+                None => s,
+            };
             if !convert {
                 return (epoch, s);
             }
@@ -328,7 +347,8 @@ pub fn from_oem(oem: &Oem) -> Result<Catalogue, OmmError> {
         }));
     }
     for (index, id) in order.iter().enumerate() {
-        let (name, method, mut states) = objects.remove(id).expect("grouped above");
+        let (name, method, mut states, (_, local, center)) =
+            objects.remove(id).expect("grouped above");
         // Stable: a boundary epoch repeated across segments stays a segment break
         // (maneuver), so interpolation does not span it.
         states.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
@@ -337,14 +357,14 @@ pub fn from_oem(oem: &Oem) -> Result<Catalogue, OmmError> {
             continue;
         }
         let first = states[0];
-        let el =
-            OrbitalElements::from_state(first.1, terramenta_solare::bodies::GM_EARTH_KM3_S2, 0.0);
+        let gm = match center {
+            CentralBody::Earth => terramenta_solare::bodies::GM_EARTH_KM3_S2,
+            b => b.gm_km3_s2(),
+        };
+        let el = OrbitalElements::from_state(local, gm, 0.0);
         let span_minutes = states[states.len() - 1].0.seconds_since(first.0) / 60.0;
         let period_minutes = if el.eccentricity < 1.0 && el.semi_major_axis_km > 0.0 {
-            std::f64::consts::TAU
-                * (el.semi_major_axis_km.powi(3) / terramenta_solare::bodies::GM_EARTH_KM3_S2)
-                    .sqrt()
-                / 60.0
+            std::f64::consts::TAU * (el.semi_major_axis_km.powi(3) / gm).sqrt() / 60.0
         } else {
             span_minutes
         };

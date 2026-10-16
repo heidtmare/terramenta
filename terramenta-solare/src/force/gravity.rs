@@ -43,6 +43,10 @@ const STACK_DEGREE: usize = 21;
 
 /// EGM2008, degree/order ≤ 20, tide-free.
 const EGM2008_20: &str = include_str!("egm2008_20.gfc");
+/// GRGM900C (Lemoine et al. 2014), degree/order ≤ 20, lunar principal axes.
+const GRGM900C_20: &str = include_str!("grgm900c_20.sha");
+/// JGMRO120F (Konopliv et al. 2020), degree/order ≤ 20, Mars-fixed.
+const JGMRO120F_20: &str = include_str!("jgmro120f_20.sha");
 
 const fn idx(n: usize, m: usize) -> usize {
     n * (n + 1) / 2 + m
@@ -66,6 +70,70 @@ impl GravityField {
             "embedded EGM2008 is degree 20; load a .gfc for more"
         );
         Self::from_gfc(EGM2008_20, degree).expect("embedded EGM2008")
+    }
+
+    /// Embedded GRGM900C (Moon, principal axes), truncated to `degree` ≤ 20.
+    pub fn grgm900c(degree: usize) -> Self {
+        assert!(
+            degree <= 20,
+            "embedded GRGM900C is degree 20; load a SHADR for more"
+        );
+        Self::from_shadr(GRGM900C_20, degree).expect("embedded GRGM900C")
+    }
+
+    /// Embedded JGMRO120F (Mars), truncated to `degree` ≤ 20.
+    pub fn jgmro120f(degree: usize) -> Self {
+        assert!(
+            degree <= 20,
+            "embedded JGMRO120F is degree 20; load a SHADR for more"
+        );
+        Self::from_shadr(JGMRO120F_20, degree).expect("embedded JGMRO120F")
+    }
+
+    /// PDS SHADR table (`*_sha.tab`), truncated to `max_degree`. Header: radius km, GM km³/s²,
+    /// σGM, degree, order, normalisation (1), ref lon, ref lat; rows `n, m, C, S, σC, σS`.
+    pub fn from_shadr(text: &str, max_degree: usize) -> Result<Self, GfcError> {
+        let fields = |line: &str| -> Vec<f64> {
+            line.split(',')
+                .filter_map(|v| parse_f64(v.trim()))
+                .collect()
+        };
+        let mut lines = text
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| !l.trim().is_empty());
+        let head = lines
+            .next()
+            .map(|(_, l)| fields(l))
+            .filter(|h| h.len() >= 6)
+            .ok_or(GfcError::MissingHeader("SHADR header"))?;
+        if head[5] != 1.0 {
+            return Err(GfcError::MissingHeader("normalised coefficients"));
+        }
+        let degree = max_degree.min(head[3] as usize);
+        let mut field = Self {
+            gm_km3_s2: head[1],
+            radius_km: head[0],
+            max_degree: degree,
+            c: vec![0.0; idx(degree, degree) + 1],
+            s: vec![0.0; idx(degree, degree) + 1],
+        };
+        field.c[0] = 1.0;
+        for (i, line) in lines {
+            let row = fields(line);
+            let [n, m, c, s, ..] = row[..] else {
+                return Err(GfcError::Parse { line: i + 1 });
+            };
+            let (n, m) = (n as usize, m as usize);
+            if n > degree {
+                break;
+            }
+            if m <= n {
+                field.c[idx(n, m)] = c;
+                field.s[idx(n, m)] = s;
+            }
+        }
+        Ok(field)
     }
 
     /// ICGEM `.gfc` (fully normalised), truncated to `max_degree`.
@@ -288,6 +356,18 @@ impl SphericalHarmonics {
     pub fn egm2008(degree: usize, order: usize) -> Self {
         Self::new(GravityField::egm2008(degree), degree, order)
     }
+
+    /// GRGM900C `degree × order` (≤ 20); needs lunar principal axes
+    /// ([`crate::iau::IauOrientation::moon_pa`]).
+    pub fn grgm900c(degree: usize, order: usize) -> Self {
+        Self::new(GravityField::grgm900c(degree), degree, order)
+    }
+
+    /// JGMRO120F `degree × order` (≤ 20); needs Mars-fixed axes
+    /// ([`crate::iau::IauOrientation::mars`]).
+    pub fn jgmro120f(degree: usize, order: usize) -> Self {
+        Self::new(GravityField::jgmro120f(degree), degree, order)
+    }
 }
 
 impl ForceModel for SphericalHarmonics {
@@ -324,6 +404,23 @@ mod tests {
         assert_eq!(f.coefficient(2, 0).0, -0.484165143790815e-03);
         assert_eq!(f.coefficient(20, 20).1, -0.126949126479726e-07);
         assert!((f.j(2) - 1.082_626_173_85e-3).abs() < 1e-14);
+    }
+
+    #[test]
+    #[allow(clippy::excessive_precision)] // file values verbatim
+    fn parses_embedded_shadr() {
+        let moon = GravityField::grgm900c(20);
+        assert_eq!(moon.gm_km3_s2, 4902.79996708864);
+        assert_eq!(moon.radius_km, 1738.0);
+        assert_eq!(moon.coefficient(0, 0).0, 1.0);
+        assert_eq!(moon.coefficient(2, 0).0, -9.0886616361343905e-05);
+        assert_eq!(moon.coefficient(20, 20).1, -3.5878114300843799e-07);
+        let mars = GravityField::jgmro120f(4);
+        assert_eq!(mars.max_degree, 4);
+        assert_eq!(mars.coefficient(2, 0).0, -0.8750219819894000E-03);
+        assert_eq!(mars.coefficient(5, 0), (0.0, 0.0));
+        // Mars J2 ≈ 1.956e-3.
+        assert!((mars.j(2) - 1.9566e-3).abs() < 1e-6, "{}", mars.j(2));
     }
 
     #[test]

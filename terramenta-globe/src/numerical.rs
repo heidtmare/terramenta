@@ -1,9 +1,10 @@
 //! Numerical propagation for the JavaScript API: request → [`terramenta_solare`] spacecraft →
 //! CCSDS OEM text or SPK bytes.
 //!
-//! Third-body Sun/Moon come from a loaded kernel ([`load_kernel`]) or the analytic series.
+//! Third bodies come from a loaded kernel ([`load_kernel`]) or the analytic series.
 //! EOP ([`load_eop`]) feed Earth orientation and TEME↔GCRF; NRLMSISE-00 drag needs
-//! [`load_space_weather`]. States are GCRF, UTC epochs.
+//! [`load_space_weather`]. States are centred on [`PropagationRequest::central_body`]:
+//! GCRF (Earth) or ICRF axes; UTC epochs.
 
 use std::sync::{Arc, LazyLock, RwLock};
 
@@ -12,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use terramenta_solare::attitude::{
     self, AlignConstrain, Direction, Geometry, Law, Profile, Spin, Steering,
 };
-use terramenta_solare::bodies::{GM_MOON_KM3_S2, GM_SUN_KM3_S2};
+use terramenta_solare::bodies::{CentralBody, GM_EARTH_KM3_S2, GM_MOON_KM3_S2, GM_SUN_KM3_S2};
 use terramenta_solare::ccsds::{
     Aem, AemMetadata, AemSegment, Cdm, CdmObject, Header, Oem, OemCovariance, OemMetadata,
     OemSegment, TimeSystem,
@@ -23,10 +24,10 @@ use terramenta_solare::earth::{EarthModel, TerrestrialTransform};
 use terramenta_solare::eop::{EopTable, FinalsKind};
 use terramenta_solare::events::{self, GroundStation, OrbitEventKind, Shadow};
 use terramenta_solare::force::{
-    Drag, EGM2008_GM_KM3_S2, ExponentialAtmosphere, HarrisPriester, Nrlmsise00, Plate, PointMass,
-    Relativity, SolarRadiationPressure, SphericalHarmonics, ThirdBody, Vehicle,
+    Drag, ExponentialAtmosphere, HarrisPriester, Nrlmsise00, Plate, PointMass, Relativity,
+    SolarRadiationPressure, SphericalHarmonics, ThirdBody, Vehicle,
 };
-use terramenta_solare::frame::Relative;
+use terramenta_solare::frame::{FrameTree, Relative};
 use terramenta_solare::interpolate::{Interpolation, SampledEphemeris};
 use terramenta_solare::maneuver::{BurnFrame, FiniteBurn, ImpulsiveManeuver, LocalFrame};
 use terramenta_solare::orbit::OrbitalElements;
@@ -39,8 +40,7 @@ use terramenta_solare::spk::{self, SpkSegment, SpkSegmentKind};
 use terramenta_solare::tle::Sgp4Ephemeris;
 use terramenta_solare::{Ephemeris, Epoch, Propagator, SpacecraftState, StateVector};
 
-/// Earth equatorial radius for SRP shadow, km.
-const EARTH_RADIUS_KM: f64 = 6378.137;
+const EGM2008_GM_KM3_S2: f64 = terramenta_solare::force::EGM2008_GM_KM3_S2;
 /// Default SPK target id for an unnamed spacecraft.
 const DEFAULT_NAIF_ID: i32 = -100_900;
 /// Sample cap per request.
@@ -128,6 +128,9 @@ pub struct PropagationRequest {
     #[serde(default)]
     pub naif_id: Option<i32>,
     pub initial: Initial,
+    /// `earth` (default) | `moon` | `mars`: origin of `initial` and the output.
+    #[serde(default, deserialize_with = "central_body")]
+    pub central_body: CentralBody,
     /// UTC ISO 8601. Default: initial epoch.
     #[serde(default)]
     pub start: Option<String>,
@@ -246,6 +249,15 @@ impl CovarianceOptions {
     }
 }
 
+fn central_body<'de, D: serde::Deserializer<'de>>(d: D) -> Result<CentralBody, D::Error> {
+    let name = String::deserialize(d)?;
+    CentralBody::from_name(&name).ok_or_else(|| {
+        serde::de::Error::custom(format!(
+            "centralBody: expected earth, moon or mars, got {name:?}"
+        ))
+    })
+}
+
 fn default_kvn() -> bool {
     true
 }
@@ -263,7 +275,7 @@ pub enum Initial {
     Omm {
         omm: serde_json::Value,
     },
-    /// GCRF.
+    /// Central-body-centred: GCRF (Earth), ICRF axes otherwise.
     State {
         epoch: String,
         #[serde(rename = "positionKm")]
@@ -271,7 +283,7 @@ pub enum Initial {
         #[serde(rename = "velocityKmS")]
         velocity_km_s: [f64; 3],
     },
-    /// Osculating Keplerian elements, GCRF, EGM2008 GM.
+    /// Osculating Keplerian elements, axes as `State`, central-body field GM.
     Elements {
         epoch: String,
         elements: ElementsOptions,
@@ -300,7 +312,7 @@ pub struct ElementsOptions {
 }
 
 impl ElementsOptions {
-    fn state(&self) -> Result<StateVector, String> {
+    fn state(&self, body: CentralBody) -> Result<StateVector, String> {
         let angles = [
             self.inclination_deg,
             self.raan_deg,
@@ -313,7 +325,7 @@ impl ElementsOptions {
         if !(0.0..1.0).contains(&self.eccentricity) {
             return Err("elements: need 0 ≤ eccentricity < 1".into());
         }
-        if self.sma_km * (1.0 - self.eccentricity) <= EARTH_RADIUS_KM {
+        if self.sma_km * (1.0 - self.eccentricity) <= body.equatorial_radius_km() {
             return Err("elements: perigee below the surface".into());
         }
         Ok(OrbitalElements {
@@ -325,7 +337,7 @@ impl ElementsOptions {
             mean_anomaly_at_epoch: 0.0,
             epoch_seconds: 0.0,
         }
-        .state_at_true_anomaly(EGM2008_GM_KM3_S2, self.true_anomaly_deg.to_radians()))
+        .state_at_true_anomaly(body.gm_km3_s2(), self.true_anomaly_deg.to_radians()))
     }
 }
 
@@ -418,10 +430,13 @@ pub enum DragModel {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ForceOptions {
-    /// `[degree, order]`, EGM2008, ≤ 20. `[0, 0]`: point mass.
+    /// `[degree, order]` ≤ 20 of the central body's field (EGM2008, GRGM900C, JGMRO120F).
+    /// `[0, 0]`: point mass.
     pub gravity: [usize; 2],
+    /// Earth: Sun, Moon. Moon: Sun, Earth. Mars: Sun.
     pub third_body: bool,
-    pub drag: DragModel,
+    /// Earth only. Default: exponential (Earth), none otherwise.
+    pub drag: Option<DragModel>,
     pub srp: bool,
     pub relativity: bool,
 }
@@ -431,7 +446,7 @@ impl Default for ForceOptions {
         Self {
             gravity: [8, 8],
             third_body: true,
-            drag: DragModel::Exponential,
+            drag: None,
             srp: true,
             relativity: false,
         }
@@ -488,6 +503,7 @@ pub struct Propagated {
     pub name: String,
     pub object_id: String,
     pub naif_id: i32,
+    pub center: CentralBody,
     pub states: Vec<SpacecraftState>,
     /// GCRF, one per state; empty without `covariance`.
     pub covariances: Vec<Matrix6>,
@@ -558,26 +574,68 @@ fn burn_frame(s: Option<&str>) -> Result<BurnFrame, String> {
     }
 }
 
+/// Analytic Sun, Venus, Earth, Mars ([`terramenta_solare::solar_system`]) and the Moon.
+static ANALYTIC: LazyLock<Arc<FrameTree>> = LazyLock::new(|| {
+    let mut tree = terramenta_solare::solar_system();
+    let earth = tree.find("Earth").expect("solar_system has Earth");
+    tree.add("Moon", earth, terramenta_solare::moon::Moon);
+    Arc::new(tree)
+});
+
+/// Third body: GM, analytic tree name, NAIF id.
+type Perturber = (f64, &'static str, i32);
+
+const SUN: Perturber = (GM_SUN_KM3_S2, "Sun", naif::SUN);
+
+/// Third bodies of `center`, the Sun first.
+fn perturbers(center: CentralBody) -> &'static [Perturber] {
+    match center {
+        CentralBody::Earth => &[SUN, (GM_MOON_KM3_S2, "Moon", naif::MOON)],
+        CentralBody::Moon => &[SUN, (GM_EARTH_KM3_S2, "Earth", naif::EARTH)],
+        CentralBody::Mars => &[SUN],
+    }
+}
+
+fn tree_name(body: CentralBody) -> &'static str {
+    match body {
+        CentralBody::Earth => "Earth",
+        CentralBody::Moon => "Moon",
+        CentralBody::Mars => "Mars",
+    }
+}
+
+/// `(name, naif)` relative to `center`: kernel when loaded, analytic otherwise.
+fn relative(env: &Environment, target: (&str, i32), center: CentralBody) -> Arc<dyn Ephemeris> {
+    let analytic =
+        Relative::by_name(ANALYTIC.clone(), target.0, tree_name(center)).expect("analytic body");
+    match &env.almanac {
+        Some(a) => Arc::new(
+            KernelEphemeris::new(a.clone(), target.1, center.naif_id()).with_fallback(analytic),
+        ),
+        None => Arc::new(analytic),
+    }
+}
+
+/// Sun relative to `center`.
+fn sun(env: &Environment, center: CentralBody) -> Arc<dyn Ephemeris> {
+    relative(env, (SUN.1, SUN.2), center)
+}
+
 /// Geocentric Sun and Moon: kernel when loaded, analytic otherwise.
 fn sun_and_moon(env: &Environment) -> (Arc<dyn Ephemeris>, Arc<dyn Ephemeris>) {
-    let tree = Arc::new(terramenta_solare::solar_system());
-    let analytic_sun =
-        Relative::by_name(tree, "Sun", "Earth").expect("solar_system has Sun, Earth");
-    match &env.almanac {
-        Some(a) => (
-            Arc::new(
-                KernelEphemeris::new(a.clone(), naif::SUN, naif::EARTH).with_fallback(analytic_sun),
-            ),
-            Arc::new(
-                KernelEphemeris::new(a.clone(), naif::MOON, naif::EARTH)
-                    .with_fallback(terramenta_solare::moon::Moon),
-            ),
-        ),
-        None => (
-            Arc::new(analytic_sun),
-            Arc::new(terramenta_solare::moon::Moon),
-        ),
-    }
+    (
+        sun(env, CentralBody::Earth),
+        relative(env, ("Moon", naif::MOON), CentralBody::Earth),
+    )
+}
+
+/// `body` relative to Earth (GCRF axes), for drawing body-centred states in the scene.
+pub(crate) fn geocentric(body: CentralBody) -> Arc<dyn Ephemeris> {
+    relative(
+        &environment(),
+        (tree_name(body), body.naif_id()),
+        CentralBody::Earth,
+    )
 }
 
 /// `Arc<dyn Ephemeris>` as `impl Ephemeris`.
@@ -622,40 +680,53 @@ pub(crate) fn propagator(
             "gravity [{degree}, {order}]: need order ≤ degree ≤ 20"
         ));
     }
-    let mut p = Propagator::new(integrator).with_orientation(EarthOrientation::new(
-        env.eop.clone(),
-        EarthModel::Iau2006Cio,
-    ));
+    let body = req.central_body;
+    let mut p = Propagator::new(integrator).with_central_body(body);
+    p = match body.iau_orientation() {
+        None => p.with_orientation(EarthOrientation::new(
+            env.eop.clone(),
+            EarthModel::Iau2006Cio,
+        )),
+        Some(o) => p.with_orientation(o),
+    };
     p = if degree >= 2 {
-        p.with_force(SphericalHarmonics::egm2008(degree, order))
+        p.with_force(SphericalHarmonics::new(
+            body.gravity_field(degree),
+            degree,
+            order,
+        ))
     } else {
         p.with_force(PointMass {
-            gm_km3_s2: EGM2008_GM_KM3_S2,
+            gm_km3_s2: body.gm_km3_s2(),
         })
     };
-    let (sun, moon) = sun_and_moon(env);
+    let drag = match (f.drag, body) {
+        (None, CentralBody::Earth) => DragModel::Exponential,
+        (None | Some(DragModel::None), _) => DragModel::None,
+        (Some(d), CentralBody::Earth) => d,
+        (Some(_), _) => return Err(format!("drag: Earth only, not {}", body.name())),
+    };
+    let sun = sun(env, body);
     if let Some(law) = &req.attitude {
         p = p.with_attitude(steering(req, law)?);
     }
-    if f.third_body
-        || f.srp
-        || req.attitude.is_some()
-        || matches!(f.drag, DragModel::HarrisPriester)
+    if f.third_body || f.srp || req.attitude.is_some() || matches!(drag, DragModel::HarrisPriester)
     {
         p = p.with_sun(Shared(sun.clone()));
     }
     if f.third_body {
-        p = p
-            .with_force(ThirdBody::sun(GM_SUN_KM3_S2, Shared(sun.clone())))
-            .with_force(ThirdBody::new(GM_MOON_KM3_S2, Shared(moon)));
+        p = p.with_force(ThirdBody::sun(GM_SUN_KM3_S2, Shared(sun.clone())));
+        for &(gm, name, id) in &perturbers(body)[1..] {
+            p = p.with_force(ThirdBody::new(gm, Shared(relative(env, (name, id), body))));
+        }
     }
     if f.srp {
         p = p.with_force(SolarRadiationPressure::new(
             Shared(sun.clone()),
-            EARTH_RADIUS_KM,
+            body.equatorial_radius_km(),
         ));
     }
-    p = match f.drag {
+    p = match drag {
         DragModel::None => p,
         DragModel::Exponential => p.with_force(Drag::new(ExponentialAtmosphere)),
         DragModel::HarrisPriester => p.with_force(Drag::new(HarrisPriester::new(Shared(sun)))),
@@ -669,7 +740,7 @@ pub(crate) fn propagator(
     };
     if f.relativity {
         p = p.with_force(Relativity {
-            gm_km3_s2: EGM2008_GM_KM3_S2,
+            gm_km3_s2: body.gm_km3_s2(),
         });
     }
     for m in &req.maneuvers {
@@ -748,6 +819,7 @@ pub fn propagate(req: &PropagationRequest) -> Result<Propagated, String> {
         object_id: req.object_id.clone().unwrap_or_else(|| name.clone()),
         name,
         naif_id: req.naif_id.unwrap_or(DEFAULT_NAIF_ID),
+        center: req.central_body,
         states,
         covariances,
     })
@@ -781,6 +853,13 @@ pub(crate) fn spacecraft_at_start(
         Spacecraft::from_sgp4("", s.with_eop(eop), mass).map_err(|e| e.to_string())
     };
     let numerical = || Ok::<_, String>(Propagation::Numerical(Box::new(propagator(req, env)?)));
+    let body = req.central_body;
+    if body != CentralBody::Earth && req.initial.epoch().is_none() {
+        return Err(format!(
+            "initial: TLE/OMM are Earth-centred; give a state or elements about {}",
+            body.name()
+        ));
+    }
     let mut sc = match &req.initial {
         Initial::Tle { tle } => {
             sgp4(Sgp4Ephemeris::from_tle(&tle[0], &tle[1]).map_err(|e| e.to_string())?)?
@@ -806,7 +885,7 @@ pub(crate) fn spacecraft_at_start(
         .with_vehicle(req.vehicle.resolve()?),
         Initial::Elements { epoch: e, elements } => Spacecraft::new(
             "",
-            SpacecraftState::new(epoch(e)?, elements.state()?, mass),
+            SpacecraftState::new(epoch(e)?, elements.state(body)?, mass),
             numerical()?,
         )
         .with_vehicle(req.vehicle.resolve()?),
@@ -871,13 +950,17 @@ impl Propagated {
         states
     }
 
-    /// One segment per maneuver arc; GCRF, UTC, Hermite 7.
+    /// One segment per maneuver arc; GCRF (Earth) or ICRF, UTC, Hermite 7.
     pub fn to_oem(&self) -> Oem {
         let metadata = OemMetadata {
             object_name: self.name.clone(),
             object_id: self.object_id.clone(),
-            center_name: "EARTH".into(),
-            ref_frame: "GCRF".into(),
+            center_name: self.center.name().into(),
+            ref_frame: match self.center {
+                CentralBody::Earth => "GCRF",
+                _ => "ICRF",
+            }
+            .into(),
             time_system: TimeSystem::Utc,
             interpolation: Some(Interpolation::default()),
         };
@@ -905,8 +988,8 @@ impl Propagated {
         }
     }
 
-    /// Type 13 per maneuver arc, center Earth, frame J2000 (GCRF; frame bias ≤ 23 mas
-    /// ignored). Short arcs shrink the window.
+    /// Type 13 per maneuver arc, center [`CentralBody::naif_id`], frame J2000 (ICRF; frame
+    /// bias ≤ 23 mas ignored). Short arcs shrink the window.
     pub fn to_spk(&self) -> Result<Vec<u8>, String> {
         let name: String = self
             .name
@@ -924,7 +1007,7 @@ impl Propagated {
         let segments: Vec<SpkSegment> = arcs(&states)
             .map(|states| SpkSegment {
                 target: self.naif_id,
-                center: naif::EARTH,
+                center: self.center.naif_id(),
                 frame: spk::J2000_FRAME,
                 kind: SpkSegmentKind::Hermite {
                     window: window.min(states.len()),
@@ -1004,6 +1087,14 @@ impl Propagated {
                     .collect(),
             }),
         }
+    }
+}
+
+/// Err for analyses defined on Earth's surface.
+pub(crate) fn earth_only(center: CentralBody, what: &str) -> Result<(), String> {
+    match center {
+        CentralBody::Earth => Ok(()),
+        b => Err(format!("{what}: Earth only, not {}", b.name())),
     }
 }
 
@@ -1159,6 +1250,7 @@ pub struct GroundTrack {
 }
 
 pub fn ground_track(propagated: &Propagated, step_s: f64) -> Result<GroundTrack, String> {
+    earth_only(propagated.center, "ground track")?;
     let states = propagated.ordered_states();
     if states.len() < 2 {
         return Ok(GroundTrack::default());
@@ -1191,8 +1283,8 @@ pub fn ground_track(propagated: &Propagated, step_s: f64) -> Result<GroundTrack,
     Ok(out)
 }
 
-/// Contacts, eclipses (Earth, conical), apsides and nodes (GCRF equator) over the
-/// propagated span. Interpolates the propagated states (Hermite 7), so the propagation
+/// Contacts (Earth only), eclipses (central body, conical), apsides and nodes (GCRF/ICRF
+/// equator) over the propagated span. Interpolates the propagated states (Hermite 7), so the propagation
 /// step bounds accuracy.
 pub fn find_events(propagated: &Propagated, req: &EventRequest) -> Result<Events, String> {
     let step = req.step_s.abs();
@@ -1211,6 +1303,7 @@ pub fn find_events(propagated: &Propagated, req: &EventRequest) -> Result<Events
     let mut out = Events::default();
 
     if !req.stations.is_empty() {
+        earth_only(propagated.center, "stations")?;
         let mut earth = Terrestrial::new(&env, start);
         let mut itrf = |e: Epoch| earth.rotation(e) * ephemeris.position_at(e);
         for s in &req.stations {
@@ -1231,11 +1324,11 @@ pub fn find_events(propagated: &Propagated, req: &EventRequest) -> Result<Events
     }
 
     if req.eclipses {
-        let (sun, _) = sun_and_moon(&env);
+        let sun = sun(&env, propagated.center);
         out.eclipses = events::eclipses(
             &mut |e| ephemeris.position_at(e),
             &mut |e| sun.position_at(e),
-            EARTH_RADIUS_KM,
+            propagated.center.equatorial_radius_km(),
             start,
             stop,
             step,
@@ -1684,7 +1777,8 @@ pub fn target(req: &PropagationRequest, target: &TargetRequest) -> Result<Target
                     }
                 };
                 let q = Quantity::from_name(&g.quantity).expect("validated");
-                let (achieved, error) = (q.of(&state), q.error(&state, g.value));
+                let body = req.central_body;
+                let (achieved, error) = (q.of(&state, body), q.error(&state, g.value, body));
                 Ok((achieved, error))
             })
             .collect()
@@ -2246,6 +2340,7 @@ pub fn run_sequence(
     drop(env);
     let run = sequence::run(&numerical_propagator(&sc), *sc.state(), &commands)
         .map_err(|e| e.to_string())?;
+    let body = req.central_body;
 
     let mut resolved = propagation.clone();
     let object = resolved
@@ -2366,13 +2461,13 @@ pub fn run_sequence(
                 mass_kg: e.mass_kg,
                 delta_v_km_s: delta_v,
                 elements: SegmentElements {
-                    sma_km: Quantity::SmaKm.of(e),
-                    eccentricity: Quantity::Eccentricity.of(e),
-                    inclination_deg: Quantity::InclinationDeg.of(e),
-                    raan_deg: Quantity::RaanDeg.of(e),
-                    arg_perigee_deg: Quantity::ArgPerigeeDeg.of(e),
-                    true_anomaly_deg: Quantity::TrueAnomalyDeg.of(e),
-                    altitude_km: Quantity::AltitudeKm.of(e),
+                    sma_km: Quantity::SmaKm.of(e, body),
+                    eccentricity: Quantity::Eccentricity.of(e, body),
+                    inclination_deg: Quantity::InclinationDeg.of(e, body),
+                    raan_deg: Quantity::RaanDeg.of(e, body),
+                    arg_perigee_deg: Quantity::ArgPerigeeDeg.of(e, body),
+                    true_anomaly_deg: Quantity::TrueAnomalyDeg.of(e, body),
+                    altitude_km: Quantity::AltitudeKm.of(e, body),
                 },
                 target,
                 optimize,
@@ -2683,7 +2778,8 @@ pub fn monte_carlo(
     .map_err(|e| format!("nominal: {e}"))?;
 
     let end0 = out.nominal.end;
-    let nominal_values: Vec<f64> = quantities.iter().map(|q| q.of(&end0)).collect();
+    let body = req.central_body;
+    let nominal_values: Vec<f64> = quantities.iter().map(|q| q.of(&end0, body)).collect();
     let rsw = LocalFrame::Rsw
         .to_inertial(end0.position_km, end0.velocity_km_s)
         .transpose();
@@ -2694,7 +2790,7 @@ pub fn monte_carlo(
                 .iter()
                 .zip(&nominal_values)
                 .map(|(q, &n)| {
-                    let x = q.of(&end);
+                    let x = q.of(&end, body);
                     if q.is_angle() {
                         n + (x - n + 180.0).rem_euclid(360.0) - 180.0
                     } else {
@@ -2973,6 +3069,9 @@ fn steering(req: &PropagationRequest, law: &AttitudeLaw) -> Result<Steering, Str
     let mut steering = Steering::new(profile(law, start).map_err(|e| format!("attitude: {e}"))?);
     steering.target_body_fixed_km =
         site(law, steering.uses_target()).map_err(|e| format!("attitude: {e}"))?;
+    if steering.uses_target() {
+        earth_only(req.central_body, "attitude target")?;
+    }
     Ok(steering)
 }
 
@@ -3022,8 +3121,8 @@ impl Pointing {
     }
 }
 
-/// Samples `att` over the propagated span every `stepS` (and at its end). Sun from
-/// [`sun_and_moon`]; the target site through full Earth orientation.
+/// Samples `att` over the propagated span every `stepS` (and at its end). Sun relative to
+/// the central body; the target site (Earth only) through full Earth orientation.
 pub fn attitude(propagated: &Propagated, att: &AttitudeRequest) -> Result<AttitudeSamples, String> {
     let states = propagated.ordered_states();
     let (Some(&(start, _)), Some(&(stop, _))) = (states.first(), states.last()) else {
@@ -3037,11 +3136,14 @@ pub fn attitude(propagated: &Propagated, att: &AttitudeRequest) -> Result<Attitu
         ));
     }
     let pointing = pointing(att, start)?;
+    if pointing.site.is_some() {
+        earth_only(propagated.center, "attitude target")?;
+    }
     let sensors = &pointing.sensors;
 
     let ephemeris = SampledEphemeris::new(states, Interpolation::default());
     let env = environment();
-    let (sun, _) = sun_and_moon(&env);
+    let sun = sun(&env, propagated.center);
     let mut earth = Terrestrial::new(&env, start);
     let mut teme_grid = terramenta_solare::earth::TemeGrid::new(|e| {
         env.eop.as_ref().map(|t| t.at(e)).unwrap_or_default()
@@ -3268,6 +3370,7 @@ pub fn coverage(req: &CoverageRequest) -> Result<CoverageResult, String> {
     let (mut start, mut stop) = (None::<Epoch>, None::<Epoch>);
     for (i, o) in req.spacecraft.iter().enumerate() {
         let what = |e: String| format!("spacecraft[{i}]: {e}");
+        earth_only(o.propagation.central_body, "coverage").map_err(what)?;
         let states = trajectory(&o.propagation).map_err(what)?.ordered_states();
         let (Some(&(first, _)), Some(&(last, _))) = (states.first(), states.last()) else {
             return Err(what("no states".into()));
@@ -3585,6 +3688,7 @@ fn screen(
         kvn: false,
         ..req.primary.clone()
     })?;
+    let center = primary.center;
     let states = primary.ordered_states();
     let (first, last) = (states[0].0, states[states.len() - 1].0);
     let start = req
@@ -3617,6 +3721,17 @@ fn screen(
         ];
         if given.iter().filter(|g| **g).count() != 1 {
             return Err("each secondary needs one of propagation, tle, omm, layer".into());
+        }
+        match &s.propagation {
+            Some(p) if p.central_body != center => {
+                return Err(format!(
+                    "secondary centralBody {} differs from the primary's {}",
+                    p.central_body.name(),
+                    center.name()
+                ));
+            }
+            Some(_) => {}
+            None => earth_only(center, "TLE/OMM/layer secondaries")?,
         }
         if let Some(p) = &s.propagation {
             let out = propagate(&PropagationRequest {
@@ -3898,7 +4013,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!((out.failed, out.unconverged), (0, 0));
-        assert!((out.nominal.values[1] - Quantity::SmaKm.of(&last)).abs() < 1e-6);
+        assert!(
+            (out.nominal.values[1] - Quantity::SmaKm.of(&last, CentralBody::Earth)).abs() < 1e-6
+        );
         assert!((out.nominal.mass_kg - last.mass_kg).abs() < 1e-9);
         assert!((out.nominal.duration_s - 5400.0).abs() < 1e-6);
         let d = out.dispersion.unwrap();
@@ -4024,9 +4141,9 @@ mod tests {
         let end = p.states.last().unwrap();
         assert!((end.mass_kg - out.final_mass_kg).abs() < 1e-6);
         assert!(
-            (Quantity::SmaKm.of(end) - last.elements.sma_km).abs() < 0.05,
+            (Quantity::SmaKm.of(end, CentralBody::Earth) - last.elements.sma_km).abs() < 0.05,
             "{} vs {}",
-            Quantity::SmaKm.of(end),
+            Quantity::SmaKm.of(end, CentralBody::Earth),
             last.elements.sma_km
         );
     }
@@ -4105,7 +4222,8 @@ mod tests {
             let mut json = base.clone();
             json_merge(&mut json, patch);
             let req: PropagationRequest = serde_json::from_value(json).unwrap();
-            propagate(&req).map(|p| Quantity::SmaKm.of(p.states.last().unwrap()))
+            propagate(&req)
+                .map(|p| Quantity::SmaKm.of(p.states.last().unwrap(), CentralBody::Earth))
         };
         let ram = serde_json::json!({
             "primary": { "body": [1, 0, 0], "to": "velocity" },
@@ -4707,8 +4825,8 @@ mod tests {
         // Perigee at the ascending node + 90°: the northernmost point of the orbit.
         assert!((s.position_km.length() - 6930.0).abs() < 1e-6);
         assert!((s.position_km.z / s.position_km.length() - 98f64.to_radians().sin()).abs() < 1e-9);
-        assert!((Quantity::SmaKm.of(s) - 7000.0).abs() < 1e-6);
-        assert!((Quantity::InclinationDeg.of(s) - 98.0).abs() < 1e-9);
+        assert!((Quantity::SmaKm.of(s, CentralBody::Earth) - 7000.0).abs() < 1e-6);
+        assert!((Quantity::InclinationDeg.of(s, CentralBody::Earth) - 98.0).abs() < 1e-9);
         let low = r#"{ "initial": { "epoch": "2026-01-01T00:00:00Z",
                    "elements": { "smaKm": 6500, "eccentricity": 0.1, "inclinationDeg": 0,
                                  "raanDeg": 0, "argPerigeeDeg": 0, "trueAnomalyDeg": 0 } },
@@ -4943,5 +5061,125 @@ mod tests {
         assert_eq!(out.horizon[9][0], 90.0);
         assert!(out.horizon.iter().all(|&[_, el]| (-0.1..0.0).contains(&el)));
         assert!(terrain_horizon(&req, &rgba[4..]).is_err());
+    }
+
+    fn lunar(extra: &str) -> PropagationRequest {
+        request(&format!(
+            r#"{{ "centralBody": "moon",
+                 "initial": {{ "epoch": "2027-06-01T00:00:00Z",
+                   "elements": {{ "smaKm": 1837.4, "eccentricity": 0.001, "inclinationDeg": 90,
+                                 "raanDeg": 0, "argPerigeeDeg": 0, "trueAnomalyDeg": 0 }} }},
+                 "durationS": 86400, "stepS": 120, "vehicle": {{ "massKg": 500 }}{extra} }}"#
+        ))
+    }
+
+    #[test]
+    fn lunar_orbit_is_moon_centred() {
+        let req = lunar(r#", "forces": { "gravity": [20, 20] }"#);
+        let out = propagate(&req).unwrap();
+        assert_eq!(out.center, CentralBody::Moon);
+        let low = out
+            .states
+            .iter()
+            .map(|s| s.position_km.length())
+            .fold(f64::INFINITY, f64::min);
+        assert!(low > 1737.4 + 50.0 && low < 1837.4, "{low}");
+        let oem = out.to_oem();
+        let m = &oem.segments[0].metadata;
+        assert_eq!(
+            (m.center_name.as_str(), m.ref_frame.as_str()),
+            ("MOON", "ICRF")
+        );
+        // Scene: geocentric, ~384 000 km out.
+        let layer = crate::omm::from_oem(&oem).unwrap();
+        let sat = &layer.satellites[0];
+        assert!(
+            (sat.period_minutes - 118.0).abs() < 3.0,
+            "{}",
+            sat.period_minutes
+        );
+        let d = DVec3::from_array(
+            sat.position_teme_km(out.states[0].epoch.to_unix_seconds())
+                .unwrap(),
+        )
+        .length();
+        assert!((356_000.0..407_000.0).contains(&d), "{d}");
+    }
+
+    #[test]
+    fn non_earth_rejects_earth_only_inputs() {
+        let drag = propagate(&lunar(r#", "forces": { "drag": "exponential" }"#));
+        assert!(drag.err().unwrap().contains("drag: Earth only"));
+        let tle = request(
+            r#"{ "centralBody": "mars", "durationS": 600,
+                 "initial": { "tle": [
+                   "1 25544U 98067A   24061.50000000  .00016717  00000-0  10270-3 0  9005",
+                   "2 25544  51.6416 247.4627 0006703 130.5360 325.0288 15.72125391563537"] } }"#,
+        );
+        assert!(propagate(&tle).err().unwrap().contains("TLE/OMM"));
+        let out = propagate(&lunar("")).unwrap();
+        let track = ground_track(&out, 60.0);
+        assert!(track.err().unwrap().contains("Earth only"));
+        let bad: Result<PropagationRequest, _> =
+            serde_json::from_str(r#"{ "centralBody": "pluto", "initial": { "tle": ["", ""] } }"#);
+        assert!(bad.err().unwrap().to_string().contains("centralBody"));
+    }
+
+    #[test]
+    fn mars_spk_and_events_use_mars() {
+        let req = request(
+            r#"{ "centralBody": "mars",
+                 "initial": { "epoch": "2030-01-01T00:00:00Z",
+                   "elements": { "smaKm": 3796.19, "eccentricity": 0.01, "inclinationDeg": 93,
+                                 "raanDeg": 40, "argPerigeeDeg": 0, "trueAnomalyDeg": 0 } },
+                 "durationS": 21600, "stepS": 60, "forces": { "gravity": [8, 8] } }"#,
+        );
+        let out = propagate(&req).unwrap();
+        let spk = out.to_spk().unwrap();
+        let almanac = Arc::new(spice::load_kernel_bytes(Almanac::default(), &spk).unwrap());
+        let s = out.states[100];
+        let got = KernelEphemeris::new(almanac, DEFAULT_NAIF_ID, naif::MARS_BARYCENTER)
+            .try_state_at(s.epoch)
+            .unwrap();
+        assert!((got.position_km - s.position_km).length() < 1e-6);
+        let events = find_events(
+            &out,
+            &serde_json::from_str(r#"{ "eclipses": true, "apsides": true }"#).unwrap(),
+        )
+        .unwrap();
+        // ~2 h orbit: three periapses in 6 h.
+        let peri = events
+            .orbit
+            .iter()
+            .filter(|e| e.kind == "periapsis")
+            .count();
+        assert!((2..=4).contains(&peri), "{peri}");
+        // Low orbit, polar: Mars shadows every revolution (or never, near full-Sun beta).
+        assert!(events.eclipses.len() <= 8);
+    }
+
+    #[test]
+    fn lunar_sequence_altitudes_use_the_moon() {
+        let propagation = serde_json::to_value(serde_json::json!({
+            "centralBody": "moon",
+            "initial": { "epoch": "2027-06-01T00:00:00Z",
+                "elements": { "smaKm": 2237.4, "eccentricity": 0.0, "inclinationDeg": 30,
+                              "raanDeg": 0, "argPerigeeDeg": 0, "trueAnomalyDeg": 0 } },
+            "durationS": 60, "stepS": 60,
+            "forces": { "gravity": [0, 0], "thirdBody": false, "srp": false }
+        }))
+        .unwrap();
+        let commands: Vec<CommandOptions> = serde_json::from_value(serde_json::json!([
+            { "maneuver": { "deltaVKmS": [-0.05, 0, 0], "frame": "vnb" } },
+            { "propagate": { "to": "periapsis", "stepS": 300 } }
+        ]))
+        .unwrap();
+        let out = run_sequence(&propagation, &commands).unwrap();
+        let alt = out.segments.last().unwrap().elements.altitude_km;
+        // Two-body about the Moon: r_p = r k / (2 − k), k = (v / v_c)².
+        let (gm, r) = (CentralBody::Moon.gm_km3_s2(), 2237.4);
+        let k = (((gm / r).sqrt() - 0.05) / (gm / r).sqrt()).powi(2);
+        let want = r * k / (2.0 - k) - CentralBody::Moon.equatorial_radius_km();
+        assert!((alt - want).abs() < 0.01, "{alt} vs {want}");
     }
 }

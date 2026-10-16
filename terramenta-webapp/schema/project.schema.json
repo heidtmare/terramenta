@@ -603,7 +603,7 @@
             "argPerigeeDeg", "trueAnomalyDeg", "periodMin", "perigeeAltKm", "apogeeAltKm",
             "sigmaRadialM", "sigmaInTrackM", "sigmaCrossTrackM", "sigmaPositionM"
           ],
-          "description": "src/reports.js PLOT_QUANTITIES; osculating two-body about Earth, altitudes over the equatorial radius; sigma* from propagation.covariance."
+          "description": "src/reports.js PLOT_QUANTITIES; osculating two-body about the central body, altitudes over its equatorial radius; sigma* from propagation.covariance."
         },
         "spacecraft": { "type": "array", "minItems": 1, "items": { "type": "string" }, "description": "Spacecraft ids." }
       }
@@ -802,8 +802,12 @@
         "name": { "type": "string", "description": "OEM OBJECT_NAME." },
         "objectId": { "type": "string", "description": "OEM OBJECT_ID; default name." },
         "naifId": { "type": "integer", "description": "SPK target; default -100900." },
+        "centralBody": {
+          "enum": ["earth", "moon", "mars"],
+          "description": "Origin of initial and the OEM; default earth. Moon/Mars: ICRF axes, GRGM900C/JGMRO120F gravity, no drag, state or elements only."
+        },
         "initial": {
-          "title": "a TLE ({tle}), an OMM ({omm}), a GCRF state ({epoch, positionKm, velocityKmS}) or elements ({epoch, elements})",
+          "title": "a TLE ({tle}), an OMM ({omm}), a central-body state ({epoch, positionKm, velocityKmS}) or elements ({epoch, elements})",
           "anyOf": [
             {
               "type": "object",
@@ -879,14 +883,17 @@
           "additionalProperties": false,
           "properties": {
             "gravity": {
-              "description": "[degree, order], EGM2008, ≤ 20; [0, 0] point mass.",
+              "description": "[degree, order] ≤ 20 of the central body's field (EGM2008, GRGM900C, JGMRO120F); [0, 0] point mass.",
               "type": "array",
               "items": { "type": "integer", "minimum": 0, "maximum": 20 },
               "minItems": 2,
               "maxItems": 2
             },
             "thirdBody": { "type": "boolean" },
-            "drag": { "enum": ["none", "exponential", "harrisPriester", "nrlmsise00"] },
+            "drag": {
+              "enum": ["none", "exponential", "harrisPriester", "nrlmsise00"],
+              "description": "Earth only; default exponential (Earth), none otherwise."
+            },
             "srp": { "type": "boolean" },
             "relativity": { "type": "boolean" }
           }
@@ -981,7 +988,7 @@
       }
     },
     "quantity": {
-      "description": "Osculating, two-body about Earth (EGM2008 GM), GCRF; altitudes above the equatorial radius.",
+      "description": "Osculating, two-body about the central body (field GM), GCRF/ICRF; altitudes above its equatorial radius.",
       "type": "string",
       "enum": ["altitudeKm", "radiusKm", "speedKmS", "radialVelocityKmS", "smaKm", "eccentricity", "inclinationDeg", "raanDeg", "argPerigeeDeg", "trueAnomalyDeg", "argLatitudeDeg", "latitudeDeg", "periodMin", "perigeeAltKm", "apogeeAltKm", "flightPathAngleDeg", "massKg"]
     },
