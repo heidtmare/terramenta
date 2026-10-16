@@ -21,6 +21,7 @@ import { attitudesErrors, attitudesSection, flightOptions } from "./attitude.js"
 import { conjunctionErrors, conjunctionStudies } from "./conjunction.js";
 import { COVERAGE_LAYER, coverageErrors, coverageStudies } from "./coverage.js";
 import { DIRECTORS } from "./director.js";
+import { monteCarloErrors, monteCarloStudies } from "./monte-carlo.js";
 import { odErrors, odStudies } from "./od.js";
 import { applyEnvironment, recordedEnvironment } from "./environment.js";
 import { STATION_LAYER, eventsErrors, eventsSection, savedStations } from "./events.js";
@@ -276,6 +277,7 @@ function referenceErrors(project) {
   errors.push(...coverageErrors(project, { spacecraftIds }).map((error) => `analysis.${error}`));
   errors.push(...conjunctionErrors(project, { spacecraftIds, ephemerisIds }).map((error) => `analysis.${error}`));
   errors.push(...odErrors(project, { spacecraftIds }).map((error) => `analysis.${error}`));
+  errors.push(...monteCarloErrors(project, { spacecraftIds }).map((error) => `analysis.${error}`));
   errors.push(...eventsErrors(project));
   errors.push(...targetsErrors(project));
   errors.push(...attitudesErrors(project));
@@ -554,6 +556,8 @@ export function captureProject(state, base = {}) {
     stationIds: new Set(savedStations().map((station) => station.id)),
   });
   if (orbitDetermination.length) analysis.orbitDetermination = orbitDetermination;
+  const monteCarlo = monteCarloStudies({ spacecraftIds: new Set(sources.spacecraft.keys()) });
+  if (monteCarlo.length) analysis.monteCarlo = monteCarlo;
   if (Object.keys(analysis).length) project.analysis = analysis;
   Object.assign(project, targetsSection({ spacecraftIds: new Set(sources.spacecraft.keys()) }));
   Object.assign(project, attitudesSection({ spacecraftIds: new Set(sources.spacecraft.keys()) }));

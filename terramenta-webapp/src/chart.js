@@ -1,5 +1,6 @@
 /**
- * Inline SVG charts: `svg()` element builder and a time-series line chart.
+ * Inline SVG charts: `svg()` element builder, a time-series line chart, a
+ * histogram and a scatter plot.
  * Sizes are viewBox units; CSS scales the element to its container.
  */
 
@@ -116,6 +117,90 @@ export function lineChart({ series, markers = [], unit = "", width = 320, height
       cursor.setAttribute("x2", toX(t));
     },
   };
+}
+
+/**
+ * Bars of `counts` over `edges` (`counts.length + 1` ascending). `marker`: a
+ * value drawn as a rule (nominal). `unit` labels the x axis.
+ */
+export function histogramChart({ edges, counts, marker, color, unit = "", width = 320, height = 160 }) {
+  const node = svg("svg", { class: "line-chart", viewBox: `0 0 ${width} ${height}`, role: "img" });
+  if (!counts.length) {
+    node.append(svg("text", { class: "chart-empty", x: width / 2, y: height / 2, "text-anchor": "middle" }, "No data"));
+    return node;
+  }
+  let [xMin, xMax] = [Math.min(edges[0], marker ?? Infinity), Math.max(edges.at(-1), marker ?? -Infinity)];
+  if (xMax === xMin) [xMin, xMax] = [xMin - (Math.abs(xMin) || 1) * 1e-6, xMax + (Math.abs(xMax) || 1) * 1e-6];
+  const { toX, toY, parts } = numericAxes({ xMin, xMax, yMin: 0, yMax: Math.max(...counts), width, height, xUnit: unit });
+  const bars = counts.map((count, index) => {
+    const x0 = edges[index] === edges[index + 1] ? toX(edges[index]) - 2 : toX(edges[index]);
+    const x1 = edges[index] === edges[index + 1] ? toX(edges[index]) + 2 : toX(edges[index + 1]);
+    return svg(
+      "rect",
+      { class: "chart-bar", fill: color, x: x0, y: toY(count), width: Math.max(x1 - x0 - 0.5, 0.5), height: toY(0) - toY(count) },
+      svg("title", {}, `${tickText(edges[index])} – ${tickText(edges[index + 1])}: ${count}`),
+    );
+  });
+  const rule = Number.isFinite(marker)
+    ? svg("line", { class: "chart-marker", x1: toX(marker), x2: toX(marker), y1: MARGIN.top, y2: toY(0) }, svg("title", {}, `Nominal ${tickText(marker)}`))
+    : null;
+  node.append(...parts.grid, ...bars, rule ?? "", parts.frame, ...parts.labels);
+  return node;
+}
+
+/** `points`: `[[x, y]]`, drawn as dots; `origin` adds a cross at (0, 0). */
+export function scatterChart({ points, color, xUnit = "", yUnit = "", origin = false, width = 320, height = 220 }) {
+  const node = svg("svg", { class: "line-chart", viewBox: `0 0 ${width} ${height}`, role: "img" });
+  const finite = points.filter(([x, y]) => Number.isFinite(x) && Number.isFinite(y));
+  if (!finite.length) {
+    node.append(svg("text", { class: "chart-empty", x: width / 2, y: height / 2, "text-anchor": "middle" }, "No data"));
+    return node;
+  }
+  const pad = (lo, hi) => (hi === lo ? [lo - (Math.abs(lo) || 1) * 0.01, hi + (Math.abs(hi) || 1) * 0.01] : [lo, hi]);
+  const [xMin, xMax] = pad(...extent(finite.map(([x]) => x).concat(origin ? [0] : [])));
+  const [yMin, yMax] = pad(...extent(finite.map(([, y]) => y).concat(origin ? [0] : [])));
+  const { toX, toY, parts } = numericAxes({ xMin, xMax, yMin, yMax, width, height, xUnit, yUnit });
+  const dots = finite.map(([x, y]) => svg("circle", { class: "chart-dot", fill: color, cx: toX(x).toFixed(1), cy: toY(y).toFixed(1), r: 1.8 }));
+  const cross = origin
+    ? [
+        svg("line", { class: "chart-marker", x1: toX(0) - 5, x2: toX(0) + 5, y1: toY(0), y2: toY(0) }),
+        svg("line", { class: "chart-marker", x1: toX(0), x2: toX(0), y1: toY(0) - 5, y2: toY(0) + 5 }),
+      ]
+    : [];
+  node.append(...parts.grid, ...dots, ...cross, parts.frame, ...parts.labels);
+  return node;
+}
+
+/** Linear x and y axes with nice ticks; ranges widened to them. */
+function numericAxes({ xMin, xMax, yMin, yMax, width, height, xUnit = "", yUnit = "" }) {
+  const xTicks = niceTicks(xMin, xMax, TICKS);
+  const yTicks = niceTicks(yMin, yMax || 1, TICKS);
+  [xMin, xMax] = [Math.min(xMin, xTicks[0]), Math.max(xMax, xTicks.at(-1))];
+  [yMin, yMax] = [Math.min(yMin, yTicks[0]), Math.max(yMax, yTicks.at(-1))];
+  const plotWidth = width - MARGIN.left - MARGIN.right;
+  const plotHeight = height - MARGIN.top - MARGIN.bottom;
+  const toX = (x) => MARGIN.left + ((x - xMin) / (xMax - xMin)) * plotWidth;
+  const toY = (y) => MARGIN.top + plotHeight - ((y - yMin) / (yMax - yMin)) * plotHeight;
+  const grid = yTicks.flatMap((value) => [
+    svg("line", { class: "chart-grid", x1: MARGIN.left, x2: width - MARGIN.right, y1: toY(value), y2: toY(value) }),
+    svg("text", { class: "chart-label", x: MARGIN.left - 6, y: toY(value) + 3, "text-anchor": "end" }, tickText(value)),
+  ]);
+  const labels = xTicks.map((value, index) =>
+    svg(
+      "text",
+      {
+        class: "chart-label",
+        x: toX(value),
+        y: height - MARGIN.bottom + 14,
+        "text-anchor": index === 0 ? "start" : index === xTicks.length - 1 ? "end" : "middle",
+      },
+      tickText(value),
+    ),
+  );
+  if (xUnit) labels.push(svg("text", { class: "chart-label", x: width - MARGIN.right, y: height - 4, "text-anchor": "end" }, xUnit));
+  if (yUnit) labels.push(svg("text", { class: "chart-label", x: MARGIN.left - 6, y: MARGIN.top - 6, "text-anchor": "end" }, yUnit));
+  const frame = svg("rect", { class: "chart-frame", x: MARGIN.left, y: MARGIN.top, width: plotWidth, height: plotHeight });
+  return { toX, toY, parts: { grid, labels, frame } };
 }
 
 /** Min and max of each of `BUCKETS` time buckets, in time order; small series untouched. */

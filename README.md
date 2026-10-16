@@ -42,6 +42,9 @@ aiming for parity with it. Pull requests are not being accepted at this time.
 - **Orbit determination.** Range, range-rate, az/el, RA/Dec and GNSS
   measurements with light time; batch least squares (Cd/Cr solve-for, σ
   editing) and EKF (Joseph form, gating); simulated tracking.
+- **Monte Carlo.** Dispersed mission sequences or burn plans: initial state
+  from covariance (Cholesky), Δv magnitude/pointing, thrust, Isp, mass; open
+  loop or re-targeted per trial; end-quantity statistics, sample covariance.
 - **Conjunction assessment.** Range-minimum TCA search, Foster 2D Pc, Alfano
   max Pc, RSW miss geometry.
 - **Events.** Ground-station contacts with elevation and terrain-horizon masks,

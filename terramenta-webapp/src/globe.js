@@ -135,6 +135,7 @@ const UNTRACKED = new Set([
   "terrainHorizon",
   "conjunctions",
   "determineOrbit",
+  "monteCarlo",
 ]);
 
 let changeListener = null;
@@ -781,6 +782,17 @@ export const conjunctions = (options) => required().conjunctions(options);
  * Full option list: `terramenta-globe/src/wasm.rs`, `determine_orbit`.
  */
 export const determineOrbit = (options) => required().determineOrbit(options);
+
+/**
+ * Monte Carlo of `sequence` (or, `null`, `propagation`'s own burns): `options`
+ * `{samples?, seed?, guidance?, quantities?, maneuverMagnitudeSigma?,
+ * maneuverPointingSigmaDeg?, thrustSigma?, ispSigma?, burnPointingSigmaDeg?,
+ * massSigmaKg?}` → `{samples, failed, unconverged, quantities, nominal,
+ * trials, summaries, deltaVKmS, durationS, dispersion}`. Synchronous; throws on
+ * bad input or a failed nominal. Full option list: `terramenta-globe/src/wasm.rs`,
+ * `monte_carlo`.
+ */
+export const monteCarlo = (propagation, sequence, options) => required().monteCarlo(propagation, sequence, options);
 
 /**
  * Mission sequence from `propagation`'s initial state: `{propagation,

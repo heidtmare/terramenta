@@ -1,0 +1,75 @@
+{
+  "$schema": "../schema/project.schema.json",
+  "terramenta": 3,
+  "name": "Monte Carlo",
+  "description": "500 → 800 km raise as a mission sequence: target the raise burn for 7178 km apoapsis radius, coast, target the circularization burn for 7178 km semi-major axis, coast an orbit. EGM2008 4×4. Dispersions: initial state from the covariance (RSW 100/500/100 m, 0.1/0.5/0.1 m/s), 1% Δv magnitude, 0.5° pointing, 2 kg mass. Analysis tab → Monte Carlo: Run. Open loop flies the nominal burns; closed loop re-targets each trial from its true state.",
+  "ui": { "tab": "analysis" },
+  "frame": "eci",
+  "clock": { "epoch": "2026-01-01T00:00:00Z", "timeScale": 60, "paused": false },
+  "camera": { "lat": 20, "lon": -40, "altitudeKm": 30000 },
+  "spacecraft": [
+    {
+      "id": "raise",
+      "label": "Raise · 500 → 800 km",
+      "pointColor": "#ffb86b",
+      "lineColor": "#ffb86ba6",
+      "leadingOrbits": 0,
+      "trailingOrbits": 1,
+      "trailPath": "orbit",
+      "propagation": {
+        "name": "RAISE",
+        "initial": {
+          "epoch": "2026-01-01T00:00:00Z",
+          "elements": { "smaKm": 6878.137, "eccentricity": 0, "inclinationDeg": 51.6, "raanDeg": 30, "argPerigeeDeg": 0, "trueAnomalyDeg": 0 }
+        },
+        "stepS": 30,
+        "vehicle": { "massKg": 500, "dryMassKg": 400 },
+        "forces": { "gravity": [4, 4], "thirdBody": false, "srp": false, "drag": "none" },
+        "covariance": { "frame": "rsw", "positionSigmaKm": [0.1, 0.5, 0.1], "velocitySigmaKmS": [0.0001, 0.0005, 0.0001] }
+      },
+      "sequence": [
+        {
+          "label": "raise",
+          "target": {
+            "variables": [{ "command": "raise-burn", "parameter": "dv1" }],
+            "goals": [{ "quantity": "radiusKm", "value": 7178.137, "tolerance": 0.01 }],
+            "sequence": [
+              { "label": "raise-burn", "maneuver": { "deltaVKmS": [0.08, 0, 0], "frame": "vnb", "ispS": 300 } },
+              { "label": "transfer", "propagate": { "to": "apoapsis", "stepS": 300 } }
+            ]
+          }
+        },
+        {
+          "label": "circularize",
+          "target": {
+            "variables": [{ "command": "circularize-burn", "parameter": "dv1" }],
+            "goals": [{ "quantity": "smaKm", "value": 7178.137, "tolerance": 0.01 }],
+            "sequence": [{ "label": "circularize-burn", "maneuver": { "deltaVKmS": [0.08, 0, 0], "frame": "vnb", "ispS": 300 } }]
+          }
+        },
+        { "label": "coast", "propagate": { "durationS": 6000 } }
+      ]
+    }
+  ],
+  "analysis": {
+    "monteCarlo": [
+      {
+        "id": "open",
+        "label": "Open loop",
+        "spacecraft": "raise",
+        "samples": 1000,
+        "dispersions": { "maneuverMagnitudeSigma": 0.01, "maneuverPointingSigmaDeg": 0.5, "massSigmaKg": 2 },
+        "quantities": ["altitudeKm", "smaKm", "eccentricity", "inclinationDeg", "perigeeAltKm", "apogeeAltKm"]
+      },
+      {
+        "id": "closed",
+        "label": "Closed loop",
+        "spacecraft": "raise",
+        "samples": 500,
+        "guidance": "closed",
+        "dispersions": { "maneuverMagnitudeSigma": 0.01, "maneuverPointingSigmaDeg": 0.5, "massSigmaKg": 2 },
+        "quantities": ["altitudeKm", "smaKm", "eccentricity", "inclinationDeg", "perigeeAltKm", "apogeeAltKm"]
+      }
+    ]
+  }
+}

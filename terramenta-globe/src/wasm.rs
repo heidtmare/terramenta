@@ -1333,6 +1333,56 @@ pub fn run_sequence(propagation: JsValue, sequence: JsValue) -> Result<JsValue, 
     Ok(to_js(&out))
 }
 
+/// Monte Carlo dispersion of a mission `sequence` (as [`run_sequence`]), or with `sequence`
+/// `null`, of `propagation`'s own `maneuvers`/`finiteBurns` to its stop (non-overlapping).
+/// The initial state is drawn from `propagation.covariance`; 1σ execution errors per burn.
+///
+/// ```js
+/// const r = monteCarlo(propagation, sequence, {
+///   samples: 200, seed: 1,                  // ≤ 5000; trial k reproducible from (seed, k)
+///   guidance: "open",                       // open: nominal target solutions | closed: re-solved per trial
+///   maneuverMagnitudeSigma: 0.01,           // fraction
+///   maneuverPointingSigmaDeg: 0.5,          // per transverse axis
+///   thrustSigma: 0.02, ispSigma: 0.005,     // fractions
+///   burnPointingSigmaDeg: 0.5, massSigmaKg: 1,
+///   quantities: ["altitudeKm", "smaKm"],    // at the end; default altitudeKm, smaKm, eccentricity, inclinationDeg, raanDeg
+/// });
+/// // r: { samples, failed, unconverged, quantities, nominal, trials, summaries, deltaVKmS, durationS, dispersion }
+/// // trial / nominal: { values, deltaVKmS, durationS, offsetRswKm, massKg, converged, error? }
+/// // summary: { count, mean, sigma, min, max, p05, p50, p95 } | null; angles unwrapped about the nominal
+/// // dispersion: { meanPositionKm, meanVelocityKmS, covariance (GCRF lower triangle), sigmaRsw, ellipsoidKm } | null
+/// ```
+///
+/// Synchronous. Throws on bad input or a failed nominal; failed trials carry `error`.
+#[wasm_bindgen(js_name = monteCarlo)]
+pub fn monte_carlo(
+    propagation: JsValue,
+    sequence: JsValue,
+    options: JsValue,
+) -> Result<JsValue, JsError> {
+    let json = |v: &JsValue| -> Result<String, JsError> {
+        js_sys::JSON::stringify(v)
+            .map(String::from)
+            .map_err(|_| JsError::new("options are not JSON-serialisable"))
+    };
+    let propagation: serde_json::Value =
+        serde_json::from_str(&json(&propagation)?).map_err(|e| JsError::new(&e.to_string()))?;
+    let commands: Option<Vec<crate::numerical::CommandOptions>> = if sequence.is_null_or_undefined()
+    {
+        None
+    } else {
+        Some(serde_json::from_str(&json(&sequence)?).map_err(|e| JsError::new(&e.to_string()))?)
+    };
+    let options: crate::numerical::MonteCarloOptions = if options.is_null_or_undefined() {
+        serde_json::from_str("{}").expect("defaults")
+    } else {
+        serde_json::from_str(&json(&options)?).map_err(|e| JsError::new(&e.to_string()))?
+    };
+    let out = crate::numerical::monte_carlo(&propagation, commands.as_deref(), &options)
+        .map_err(|e| JsError::new(&e))?;
+    Ok(to_js(&out))
+}
+
 /// Differential correction of `propagation`'s burns (as [`propagate`]) to meet `options.goals`.
 ///
 /// ```js

@@ -1911,6 +1911,20 @@ fn frame_name(frame: LocalFrame) -> &'static str {
     }
 }
 
+/// Maneuver Δv, or finite burn Δv by the rocket equation, km/s.
+fn segment_delta_v(s: &sequence::Segment) -> Option<f64> {
+    match &s.kind {
+        sequence::SegmentKind::Maneuver(_, dv) => Some(dv.length()),
+        sequence::SegmentKind::FiniteBurn(b) => Some(
+            b.isp_s
+                * terramenta_solare::force::G0_M_S2
+                * 1e-3
+                * (s.start.mass_kg / s.end.mass_kg).ln(),
+        ),
+        _ => None,
+    }
+}
+
 fn burn_frame_name(frame: BurnFrame) -> &'static str {
     match frame {
         BurnFrame::Local(f) => frame_name(f),
@@ -2119,7 +2133,6 @@ pub fn run_sequence(
         serde_json::to_value(burns).expect("serializable"),
     );
 
-    let g0 = terramenta_solare::force::G0_M_S2 * 1e-3;
     let mut total = 0.0;
     let mut converged = true;
     let segments = run
@@ -2127,14 +2140,11 @@ pub fn run_sequence(
         .iter()
         .map(|s| {
             let e = &s.end;
-            let (kind, delta_v, target) = match &s.kind {
-                sequence::SegmentKind::Propagate => ("propagate", None, None),
-                sequence::SegmentKind::Maneuver(_, dv) => ("maneuver", Some(dv.length()), None),
-                sequence::SegmentKind::FiniteBurn(b) => (
-                    "finiteBurn",
-                    Some(b.isp_s * g0 * (s.start.mass_kg / s.end.mass_kg).ln()),
-                    None,
-                ),
+            let delta_v = segment_delta_v(s);
+            let (kind, target) = match &s.kind {
+                sequence::SegmentKind::Propagate => ("propagate", None),
+                sequence::SegmentKind::Maneuver(..) => ("maneuver", None),
+                sequence::SegmentKind::FiniteBurn(_) => ("finiteBurn", None),
                 sequence::SegmentKind::Target(t) => {
                     converged &= t.converged;
                     let goals = t
@@ -2149,7 +2159,6 @@ pub fn run_sequence(
                         .collect();
                     (
                         "target",
-                        None,
                         Some(TargetInfo {
                             converged: t.converged,
                             iterations: t.iterations,
@@ -2188,6 +2197,378 @@ pub fn run_sequence(
         delta_v_km_s: total,
         final_mass_kg: run.end.mass_kg,
         converged,
+    })
+}
+
+// --- Monte Carlo ----------------------------------------------------------------------
+
+/// `monteCarlo` options. 1σ execution errors (0 disables); the initial state is dispersed
+/// by `propagation.covariance` (process noise ignored).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MonteCarloOptions {
+    #[serde(default = "default_mc_samples")]
+    pub samples: usize,
+    #[serde(default = "default_mc_seed")]
+    pub seed: u64,
+    /// `open` (nominal target solutions, default) | `closed` (re-solved per trial).
+    #[serde(default)]
+    pub guidance: Option<String>,
+    /// Impulsive Δv magnitude, fraction.
+    #[serde(default)]
+    pub maneuver_magnitude_sigma: f64,
+    #[serde(default)]
+    pub maneuver_pointing_sigma_deg: f64,
+    /// Fraction.
+    #[serde(default)]
+    pub thrust_sigma: f64,
+    /// Fraction.
+    #[serde(default)]
+    pub isp_sigma: f64,
+    #[serde(default)]
+    pub burn_pointing_sigma_deg: f64,
+    #[serde(default)]
+    pub mass_sigma_kg: f64,
+    /// Summarised at the end; [`Quantity`] names. Default [`DEFAULT_MC_QUANTITIES`].
+    #[serde(default)]
+    pub quantities: Option<Vec<String>>,
+}
+
+fn default_mc_samples() -> usize {
+    100
+}
+
+fn default_mc_seed() -> u64 {
+    1
+}
+
+pub const MAX_MC_SAMPLES: usize = 5000;
+pub const DEFAULT_MC_QUANTITIES: [Quantity; 5] = [
+    Quantity::AltitudeKm,
+    Quantity::SmaKm,
+    Quantity::Eccentricity,
+    Quantity::InclinationDeg,
+    Quantity::RaanDeg,
+];
+
+/// `monteCarlo` result. Angles are unwrapped about the nominal (may leave `[0, 360)`).
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MonteCarloResult {
+    pub samples: usize,
+    pub failed: usize,
+    /// Closed loop: trials with an unconverged target.
+    pub unconverged: usize,
+    pub quantities: Vec<String>,
+    pub nominal: TrialResult,
+    pub trials: Vec<TrialResult>,
+    /// Successful trials; `quantities` order.
+    pub summaries: Vec<Option<StatSummary>>,
+    pub delta_v_km_s: Option<StatSummary>,
+    pub duration_s: Option<StatSummary>,
+    /// End states of successful trials; `None` below two.
+    pub dispersion: Option<EndDispersion>,
+}
+
+#[derive(Serialize, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TrialResult {
+    /// `quantities` order; empty on failure.
+    pub values: Vec<f64>,
+    pub delta_v_km_s: f64,
+    /// Start to end, s.
+    pub duration_s: f64,
+    /// End position minus nominal end, nominal RSW, km.
+    pub offset_rsw_km: [f64; 3],
+    pub mass_kg: f64,
+    pub converged: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Serialize, Debug, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+pub struct StatSummary {
+    pub count: usize,
+    pub mean: f64,
+    pub sigma: f64,
+    pub min: f64,
+    pub max: f64,
+    pub p05: f64,
+    pub p50: f64,
+    pub p95: f64,
+}
+
+impl From<terramenta_solare::monte_carlo::Summary> for StatSummary {
+    fn from(s: terramenta_solare::monte_carlo::Summary) -> Self {
+        Self {
+            count: s.count,
+            mean: s.mean,
+            sigma: s.sigma,
+            min: s.min,
+            max: s.max,
+            p05: s.p05,
+            p50: s.p50,
+            p95: s.p95,
+        }
+    }
+}
+
+/// Sample covariance of the end `[r, v]` (epochs differ when the last stop is a crossing).
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct EndDispersion {
+    /// GCRF, km, km/s.
+    pub mean_position_km: [f64; 3],
+    pub mean_velocity_km_s: [f64; 3],
+    /// GCRF lower triangle (21).
+    pub covariance: Vec<f64>,
+    /// 1σ in the nominal end's RSW: `[r, s, w, ṙ, ṡ, ẇ]`, km, km/s.
+    pub sigma_rsw: [f64; 6],
+    /// Position 1σ ellipsoid semi-axes, descending, km.
+    pub ellipsoid_km: [f64; 3],
+}
+
+/// Sequence commands flying `req`'s burns to its stop, for a spacecraft without a sequence.
+/// Burns must not overlap; maneuvers at or after stop do not fire, finite burns are cut there.
+fn burn_commands(req: &PropagationRequest, start: Epoch) -> Result<Vec<sequence::Command>, String> {
+    use sequence::{Action, Command, Stop};
+    let stop = match (&req.stop, req.duration_s) {
+        (Some(s), _) => epoch(s)?,
+        (None, Some(d)) => start.advanced_by_seconds(d),
+        (None, None) => return Err("need stop or durationS".into()),
+    };
+    if stop.seconds_since(start) < 0.0 {
+        return Err("stop before start".into());
+    }
+    let mut events: Vec<(Epoch, Action)> = Vec::new();
+    for m in &req.maneuvers {
+        events.push((
+            epoch(&m.epoch)?,
+            Action::Maneuver {
+                delta_v_km_s: m.delta_v_km_s.into(),
+                frame: local_frame(m.frame.as_deref())?,
+                isp_s: m.isp_s,
+            },
+        ));
+    }
+    for b in &req.finite_burns {
+        events.push((
+            epoch(&b.start)?,
+            Action::FiniteBurn {
+                duration_s: b.duration_s,
+                thrust_n: b.thrust_n,
+                isp_s: b.isp_s,
+                direction: b.direction.into(),
+                frame: burn_frame(b.frame.as_deref())?,
+            },
+        ));
+    }
+    events.sort_by(|a, b| a.0.seconds_since(b.0).total_cmp(&0.0));
+    let at = |e: Epoch| Action::Propagate {
+        stop: Stop::Epoch(e),
+        count: 1,
+        step_s: DEFAULT_SEQUENCE_STEP_S,
+        max_duration_s: DEFAULT_MAX_DURATION_S,
+    };
+    let mut commands = Vec::new();
+    let mut now = start;
+    for (e, mut action) in events {
+        if e.seconds_since(start) < 0.0 {
+            return Err(format!("burn at {} before start", utc_iso(e)));
+        }
+        if e.seconds_since(now) < 0.0 {
+            return Err(format!(
+                "burn at {} overlaps a finite burn; use a sequence",
+                utc_iso(e)
+            ));
+        }
+        if e.seconds_since(stop) >= 0.0 {
+            continue;
+        }
+        commands.push(Command {
+            label: None,
+            action: at(e),
+        });
+        now = e;
+        if let Action::FiniteBurn { duration_s, .. } = &mut action {
+            *duration_s = duration_s.min(stop.seconds_since(e));
+            now = e.advanced_by_seconds(*duration_s);
+        }
+        commands.push(Command {
+            label: None,
+            action,
+        });
+    }
+    commands.push(Command {
+        label: None,
+        action: at(stop),
+    });
+    Ok(commands)
+}
+
+/// Monte Carlo of `commands` (or, without, `propagation`'s own burns) from `propagation`'s
+/// state at `start`.
+pub fn monte_carlo(
+    propagation: &serde_json::Value,
+    commands: Option<&[CommandOptions]>,
+    options: &MonteCarloOptions,
+) -> Result<MonteCarloResult, String> {
+    use terramenta_solare::monte_carlo::{self as mc, Dispersions, Guidance};
+    let mut req: PropagationRequest =
+        serde_json::from_value(propagation.clone()).map_err(|e| format!("propagation: {e}"))?;
+    if !(1..=MAX_MC_SAMPLES).contains(&options.samples) {
+        return Err(format!("samples: 1–{MAX_MC_SAMPLES}"));
+    }
+    let guidance = match options.guidance.as_deref() {
+        None | Some("open") => Guidance::Open,
+        Some("closed") => Guidance::Closed,
+        Some(other) => return Err(format!("guidance: expected open or closed, got {other:?}")),
+    };
+    let sigmas = [
+        ("maneuverMagnitudeSigma", options.maneuver_magnitude_sigma),
+        (
+            "maneuverPointingSigmaDeg",
+            options.maneuver_pointing_sigma_deg,
+        ),
+        ("thrustSigma", options.thrust_sigma),
+        ("ispSigma", options.isp_sigma),
+        ("burnPointingSigmaDeg", options.burn_pointing_sigma_deg),
+        ("massSigmaKg", options.mass_sigma_kg),
+    ];
+    if let Some((name, _)) = sigmas.iter().find(|(_, x)| !(x.is_finite() && *x >= 0.0)) {
+        return Err(format!("{name} must be finite and non-negative"));
+    }
+    let quantities = match &options.quantities {
+        None => DEFAULT_MC_QUANTITIES.to_vec(),
+        Some(names) => names
+            .iter()
+            .map(|n| Quantity::from_name(n).ok_or(format!("quantities: unknown {n:?}")))
+            .collect::<Result<_, _>>()?,
+    };
+    let state_covariance = req.covariance.take().map(|c| c.resolve()).transpose()?;
+    let env = environment();
+    let commands = match commands {
+        Some(c) => {
+            if !req.maneuvers.is_empty() || !req.finite_burns.is_empty() {
+                return Err("propagation: maneuvers and finiteBurns come from the sequence".into());
+            }
+            if c.is_empty() {
+                return Err("sequence is empty".into());
+            }
+            sequence_commands(c, "sequence")?
+        }
+        None => {
+            let start = match req.start.as_deref() {
+                Some(s) => epoch(s)?,
+                None => spacecraft_at_start(&req, &env)?.1,
+            };
+            let commands = burn_commands(&req, start)?;
+            req.maneuvers.clear();
+            req.finite_burns.clear();
+            commands
+        }
+    };
+    let (sc, _) = spacecraft_at_start(&req, &env)?;
+    drop(env);
+    let s0 = *sc.state();
+    let dispersions = Dispersions {
+        state: state_covariance.map(|(frame, p, _)| {
+            covariance::from_local(&p, frame, s0.position_km, s0.velocity_km_s)
+        }),
+        mass_kg: options.mass_sigma_kg,
+        maneuver_magnitude: options.maneuver_magnitude_sigma,
+        maneuver_pointing_rad: options.maneuver_pointing_sigma_deg.to_radians(),
+        thrust: options.thrust_sigma,
+        isp: options.isp_sigma,
+        burn_pointing_rad: options.burn_pointing_sigma_deg.to_radians(),
+    };
+    let out = mc::run(
+        &numerical_propagator(&sc),
+        s0,
+        &commands,
+        &dispersions,
+        guidance,
+        options.samples,
+        options.seed,
+    )
+    .map_err(|e| format!("nominal: {e}"))?;
+
+    let end0 = out.nominal.end;
+    let nominal_values: Vec<f64> = quantities.iter().map(|q| q.of(&end0)).collect();
+    let rsw = LocalFrame::Rsw
+        .to_inertial(end0.position_km, end0.velocity_km_s)
+        .transpose();
+    let result = |run: &sequence::Run| {
+        let end = run.end;
+        TrialResult {
+            values: quantities
+                .iter()
+                .zip(&nominal_values)
+                .map(|(q, &n)| {
+                    let x = q.of(&end);
+                    if q.is_angle() {
+                        n + (x - n + 180.0).rem_euclid(360.0) - 180.0
+                    } else {
+                        x
+                    }
+                })
+                .collect(),
+            delta_v_km_s: run.segments.iter().filter_map(segment_delta_v).sum(),
+            duration_s: end.epoch.seconds_since(s0.epoch),
+            offset_rsw_km: (rsw * (end.position_km - end0.position_km)).to_array(),
+            mass_kg: end.mass_kg,
+            converged: run.segments.iter().all(|s| match &s.kind {
+                sequence::SegmentKind::Target(t) => t.converged,
+                _ => true,
+            }),
+            error: None,
+        }
+    };
+    let nominal = result(&out.nominal);
+    let trials: Vec<TrialResult> = out
+        .trials
+        .iter()
+        .map(|t| match &t.outcome {
+            Ok(run) => result(run),
+            Err(e) => TrialResult {
+                error: Some(e.to_string()),
+                ..Default::default()
+            },
+        })
+        .collect();
+    let ok: Vec<&TrialResult> = trials.iter().filter(|t| t.error.is_none()).collect();
+    let summary = |f: &dyn Fn(&TrialResult) -> f64| {
+        mc::summarize(&ok.iter().map(|t| f(t)).collect::<Vec<_>>()).map(StatSummary::from)
+    };
+    let ends: Vec<SpacecraftState> = out
+        .trials
+        .iter()
+        .filter_map(|t| t.outcome.as_ref().ok().map(|r| r.end))
+        .collect();
+    let dispersion = mc::state_covariance(&ends).map(|(mean, p)| {
+        let local = covariance::to_local(&p, LocalFrame::Rsw, end0.position_km, end0.velocity_km_s);
+        EndDispersion {
+            mean_position_km: [mean[0], mean[1], mean[2]],
+            mean_velocity_km_s: [mean[3], mean[4], mean[5]],
+            covariance: covariance::lower_triangle(&p).to_vec(),
+            sigma_rsw: covariance::sigmas(&local),
+            ellipsoid_km: covariance::position_ellipsoid(&p).0,
+        }
+    });
+    Ok(MonteCarloResult {
+        samples: options.samples,
+        failed: trials.len() - ok.len(),
+        unconverged: ok.iter().filter(|t| !t.converged).count(),
+        quantities: quantities.iter().map(|q| q.name().to_string()).collect(),
+        summaries: (0..quantities.len())
+            .map(|i| summary(&|t| t.values[i]))
+            .collect(),
+        delta_v_km_s: summary(&|t| t.delta_v_km_s),
+        duration_s: summary(&|t| t.duration_s),
+        dispersion,
+        nominal,
+        trials,
     })
 }
 
@@ -3300,6 +3681,109 @@ mod tests {
 
     fn request(json: &str) -> PropagationRequest {
         serde_json::from_str(json).unwrap()
+    }
+
+    fn mc_options(json: serde_json::Value) -> MonteCarloOptions {
+        serde_json::from_value(json).unwrap()
+    }
+
+    /// Without a sequence the propagation's own burns fly; undispersed trials end on
+    /// `propagate`'s last state.
+    #[test]
+    fn monte_carlo_flies_the_propagation_burns() {
+        let propagation = serde_json::json!({
+            "initial": { "epoch": "2026-03-20T00:00:00Z",
+                "elements": { "smaKm": 6878.137, "eccentricity": 0.001, "inclinationDeg": 51.6,
+                              "raanDeg": 10, "argPerigeeDeg": 0, "trueAnomalyDeg": 0 } },
+            "durationS": 5400, "stepS": 60, "vehicle": { "massKg": 500 },
+            "forces": { "gravity": [4, 4], "thirdBody": false, "srp": false, "drag": "none" },
+            "maneuvers": [{ "epoch": "2026-03-20T00:20:00Z", "deltaVKmS": [0.01, 0, 0], "frame": "vnb", "ispS": 220 }],
+            "finiteBurns": [{ "start": "2026-03-20T00:40:00Z", "durationS": 120, "thrustN": 20,
+                              "ispS": 220, "direction": [0, 0, 1], "frame": "vnb" }]
+        });
+        let flown = propagate(&serde_json::from_value(propagation.clone()).unwrap()).unwrap();
+        let last = *flown.states.last().unwrap();
+        let out = monte_carlo(
+            &propagation,
+            None,
+            &mc_options(serde_json::json!({ "samples": 2 })),
+        )
+        .unwrap();
+        assert_eq!((out.failed, out.unconverged), (0, 0));
+        assert!((out.nominal.values[1] - Quantity::SmaKm.of(&last)).abs() < 1e-6);
+        assert!((out.nominal.mass_kg - last.mass_kg).abs() < 1e-9);
+        assert!((out.nominal.duration_s - 5400.0).abs() < 1e-6);
+        let d = out.dispersion.unwrap();
+        assert!(d.sigma_rsw.iter().all(|s| *s < 1e-9), "{:?}", d.sigma_rsw);
+
+        let options = mc_options(serde_json::json!({
+            "samples": 20, "seed": 4, "maneuverMagnitudeSigma": 0.05, "maneuverPointingSigmaDeg": 1,
+            "thrustSigma": 0.02, "ispSigma": 0.01, "burnPointingSigmaDeg": 1, "massSigmaKg": 5,
+            "quantities": ["smaKm", "raanDeg"] }));
+        let out = monte_carlo(&propagation, None, &options).unwrap();
+        let sma = out.summaries[0].unwrap();
+        assert!(sma.sigma > 0.1 && sma.sigma < 20.0, "{sma:?}");
+        // Unwrapped about the nominal.
+        assert!((out.summaries[1].unwrap().mean - out.nominal.values[1]).abs() < 1.0);
+        assert!(out.delta_v_km_s.unwrap().sigma > 0.0);
+        let again = monte_carlo(&propagation, None, &options).unwrap();
+        assert_eq!(again.trials[7].values, out.trials[7].values);
+    }
+
+    #[test]
+    fn monte_carlo_closed_loop_meets_the_goal_from_dispersed_states() {
+        let propagation = serde_json::json!({
+            "initial": { "epoch": "2026-03-20T00:00:00Z",
+                "elements": { "smaKm": 6678.137, "eccentricity": 0, "inclinationDeg": 28.5,
+                              "raanDeg": 0, "argPerigeeDeg": 0, "trueAnomalyDeg": 0 } },
+            "durationS": 60, "stepS": 120, "vehicle": { "massKg": 3000 },
+            "forces": { "gravity": [0, 0], "thirdBody": false, "srp": false, "drag": "none" },
+            "covariance": { "positionSigmaKm": [0.5, 2, 0.5], "velocitySigmaKmS": [0.001, 0.0005, 0.0005] }
+        });
+        let commands: Vec<CommandOptions> = serde_json::from_value(serde_json::json!([
+            { "target": {
+                "variables": [{ "command": "burn", "parameter": "dv1" }],
+                "goals": [{ "quantity": "radiusKm", "value": 20000, "tolerance": 0.01 }],
+                "sequence": [
+                  { "label": "burn", "maneuver": { "deltaVKmS": [1, 0, 0], "frame": "vnb" } },
+                  { "propagate": { "to": "apoapsis", "stepS": 900 } } ] } }
+        ]))
+        .unwrap();
+        let run = |guidance: &str| {
+            let options = mc_options(serde_json::json!({
+                "samples": 6, "guidance": guidance, "quantities": ["radiusKm"] }));
+            monte_carlo(&propagation, Some(&commands), &options).unwrap()
+        };
+        let closed = run("closed");
+        assert_eq!((closed.failed, closed.unconverged), (0, 0));
+        let r = closed.summaries[0].unwrap();
+        assert!(r.max - r.min < 0.02, "{r:?}");
+        assert!(closed.delta_v_km_s.unwrap().sigma > 0.0);
+        let open = run("open");
+        assert!(open.summaries[0].unwrap().sigma > 1.0);
+        assert!(open.delta_v_km_s.unwrap().sigma < 1e-12);
+    }
+
+    #[test]
+    fn monte_carlo_rejects_bad_options() {
+        let propagation = serde_json::json!({
+            "initial": { "epoch": "2026-03-20T00:00:00Z",
+                "elements": { "smaKm": 7000, "eccentricity": 0, "inclinationDeg": 0,
+                              "raanDeg": 0, "argPerigeeDeg": 0, "trueAnomalyDeg": 0 } },
+            "durationS": 3600,
+            "forces": { "gravity": [0, 0], "thirdBody": false, "srp": false, "drag": "none" },
+            "finiteBurns": [{ "start": "2026-03-20T00:10:00Z", "durationS": 600, "thrustN": 1,
+                              "ispS": 300, "direction": [1, 0, 0] }],
+            "maneuvers": [{ "epoch": "2026-03-20T00:15:00Z", "deltaVKmS": [0.001, 0, 0] }]
+        });
+        let err = |options: serde_json::Value| {
+            monte_carlo(&propagation, None, &mc_options(options)).unwrap_err()
+        };
+        assert!(err(serde_json::json!({})).contains("overlaps"));
+        assert!(err(serde_json::json!({ "samples": 0 })).contains("samples"));
+        assert!(err(serde_json::json!({ "guidance": "x" })).contains("guidance"));
+        assert!(err(serde_json::json!({ "thrustSigma": -1 })).contains("thrustSigma"));
+        assert!(err(serde_json::json!({ "quantities": ["x"] })).contains("quantities"));
     }
 
     /// LEO → GEO: targeted TOI, coast to apoapsis, targeted circularization + plane change.
