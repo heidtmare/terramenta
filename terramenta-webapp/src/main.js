@@ -56,9 +56,11 @@ function setCollapsed(collapsed) {
 
 /** Builds the per-project UI; see `workspace.initWorkspace`. */
 function mountProject(readout, feature) {
-  return (project, source, signal) => {
+  return (project, source, signal, { restore = false } = {}) => {
     const ui = project.ui ?? {};
     subtitle.textContent = project.name ?? "Untitled";
+    const tab = restore ? (panelRoot.querySelector(".panel-tab.selected")?.dataset.tab ?? ui.tab) : ui.tab;
+    const scrollTop = restore ? (panelRoot.querySelector(".panel-body")?.scrollTop ?? 0) : 0;
     panelRoot.replaceChildren();
 
     const flight = ui.panel === "flight";
@@ -70,12 +72,17 @@ function mountProject(readout, feature) {
           source,
           signal,
         })
-      : mountPanel(panelRoot, { project, source, tab: ui.tab, signal });
+      : mountPanel(panelRoot, { project, source, tab, signal });
 
     const showReadout = ui.readout !== false;
     readoutRoot.hidden = !showReadout;
     featureRoot.hidden ||= !showReadout;
-    setCollapsed(Boolean(ui.collapsed));
+    if (restore) {
+      const body = panelRoot.querySelector(".panel-body");
+      if (body) body.scrollTop = scrollTop;
+    } else {
+      setCollapsed(Boolean(ui.collapsed));
+    }
 
     return {
       sync(state) {

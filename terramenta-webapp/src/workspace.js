@@ -14,6 +14,11 @@
  * - Recent projects: last `RECENT_LIMIT` opened, in IndexedDB `RECENT_KEY`.
  *   Local files keep their text (up to `RECENT_TEXT_LIMIT` characters).
  * - Drop: a project file dropped anywhere on the page opens.
+ * - Undo/redo: whole-scene snapshots. Edits settle for `CHECKPOINT_DELAY_MS`,
+ *   then the scene before them goes on the undo stack (`HISTORY_LIMIT` deep).
+ *   Clock time, rate, pause, camera position and view are not history: they
+ *   are excluded from the comparison and kept live on restore. Restoring
+ *   reapplies the snapshot like `open`, without the prompt or recents.
  */
 
 import * as globe from "./globe.js";
@@ -47,6 +52,8 @@ const RECOVERY_KEY = "recovery";
 const RECENT_KEY = "recent";
 const RECENT_LIMIT = 8;
 const RECENT_TEXT_LIMIT = 4_000_000;
+const HISTORY_LIMIT = 50;
+const CHECKPOINT_DELAY_MS = 400;
 
 let mountView = null;
 let view = null;
@@ -60,10 +67,21 @@ let autosaveTimer = null;
 let recovery = null;
 let recent = [];
 const subscribers = new Set();
+/** `{project, key}` entries; `baseline` is the scene they lead to. */
+let undoStack = [];
+let redoStack = [];
+let baseline = null;
+/** Capture `baseline` on the next state (after an open settles). */
+let needsBaseline = false;
+let checkpointTimer = null;
+let restoring = false;
+/** History key of the scene as last saved or opened; `null` if never saved. */
+let savedKey = null;
 
 /**
- * `mount(project, source, signal)` builds the UI for a project and returns
- * `{sync(state)}`; `signal` aborts when the project is closed.
+ * `mount(project, source, signal, {restore})` builds the UI for a project and
+ * returns `{sync(state)}`; `signal` aborts when the project is closed.
+ * `restore`: an undo/redo of the same project — keep tab, scroll and layout.
  */
 export async function initWorkspace({ mount }) {
   mountView = mount;
@@ -83,6 +101,7 @@ export async function initWorkspace({ mount }) {
     lastState = state;
     view?.sync(state);
     globe.quietly(() => runTimeline(state));
+    if (needsBaseline && !checkpointTimer) settleBaseline();
   });
   globe.onSceneChange(markDirty);
   onTimelineEdit(markDirty);
@@ -99,6 +118,7 @@ export async function initWorkspace({ mount }) {
   });
   addEventListener("pagehide", () => dirty && autosave());
   installDrop();
+  installShortcuts();
 }
 
 /** Starts the globe on the open project. Call once, after the first `open`. */
@@ -107,9 +127,17 @@ export async function start(canvasSelector) {
   started = true;
 }
 
-/** `{project, source, dirty, recovery, recent, state}` for the Project section. */
+/** `{project, source, dirty, recovery, recent, state, canUndo, canRedo}` for the Project section. */
 export function snapshot() {
-  return { ...current, dirty, recovery, recent, state: lastState };
+  return {
+    ...current,
+    dirty,
+    recovery,
+    recent,
+    state: lastState,
+    canUndo: undoStack.length > 0 || checkpointTimer !== null,
+    canRedo: redoStack.length > 0,
+  };
 }
 
 /** `callback()` whenever `snapshot()` changes; returns an unsubscribe. */
@@ -135,38 +163,49 @@ export async function open(loaded, { force = false, recent: listed = true } = {}
   if (!force && !confirmDiscard()) return false;
   if (dirty) store.remove(AUTOSAVE_KEY);
 
+  resetHistory();
+  current = { project: loaded.project, source: loaded.source };
+  const opened = mountScene(loaded.project);
+
+  if (loaded.param === SESSION_SOURCE) stashProject(loaded);
+  setProjectParam(loaded.param);
+  setDirty(false);
+  await Promise.all([
+    applySpacecraft(loaded.project, () => opened === generation),
+    listed ? remember(loaded) : null,
+  ]);
+  if (opened === generation) needsBaseline = true;
+  return true;
+}
+
+/**
+ * Resets the globe and applies `project` with its UI, for `current.source`.
+ * `options` go to the view's `mount`. Returns the new generation; spacecraft
+ * are left to the caller.
+ */
+function mountScene(project, options = {}) {
   view?.abort();
   if (started) globe.reset();
   globe.quietly(() => {
     // This app draws its own readout; a project's `hud` overrides.
     globe.setHudVisible(false);
-    applyProject(loaded.project);
-    if (started && loaded.project.view === "heliocentric") globe.setView("heliocentric");
+    applyProject(project);
+    if (started && project.view === "heliocentric") globe.setView("heliocentric");
   });
 
-  current = { project: loaded.project, source: loaded.source };
-  openTimeline(loaded.project);
-  openAnalysis(loaded.project);
-  openEvents(loaded.project);
-  openTargets(loaded.project);
-  openAttitudes(loaded.project);
-  openCoverage(loaded.project);
-  openConjunctions(loaded.project);
-  openOrbitDetermination(loaded.project);
+  openTimeline(project);
+  openAnalysis(project);
+  openEvents(project);
+  openTargets(project);
+  openAttitudes(project);
+  openCoverage(project);
+  openConjunctions(project);
+  openOrbitDetermination(project);
   const controller = new AbortController();
-  view = { ...mountView(loaded.project, loaded.source, controller.signal), abort: () => controller.abort() };
+  view = { ...mountView(project, current.source, controller.signal, options), abort: () => controller.abort() };
   // The last snapshot is the old scene.
   lastState = null;
-
-  if (loaded.param === SESSION_SOURCE) stashProject(loaded);
-  setProjectParam(loaded.param);
-  setDirty(false);
-  const opened = ++generation;
-  await Promise.all([
-    applySpacecraft(loaded.project, () => opened === generation),
-    listed ? remember(loaded) : null,
-  ]);
-  return true;
+  return ++generation;
 }
 
 export const openUrl = async (url) => open(await fetchProject(url));
@@ -236,11 +275,13 @@ export function save() {
   if (!project) return;
   downloadProject(project);
   store.remove(AUTOSAVE_KEY);
+  savedKey = historyKey(project);
   setDirty(false);
 }
 
 function markDirty() {
   if (!current) return;
+  if (!restoring) scheduleCheckpoint();
   if (!dirty) setDirty(true);
   clearTimeout(autosaveTimer);
   autosaveTimer = setTimeout(autosave, AUTOSAVE_DELAY_MS);
@@ -257,6 +298,126 @@ function setDirty(value) {
 function autosave() {
   const project = dirty ? capture() : null;
   if (project) store.set(AUTOSAVE_KEY, { project, source: current.source, savedAt: Date.now() });
+}
+
+// --- Undo/redo ------------------------------------------------------------------
+
+export const undo = () => restore(undoStack, redoStack);
+export const redo = () => restore(redoStack, undoStack);
+
+function resetHistory() {
+  undoStack = [];
+  redoStack = [];
+  baseline = null;
+  needsBaseline = false;
+  savedKey = null;
+  clearTimeout(checkpointTimer);
+  checkpointTimer = null;
+}
+
+function settleBaseline() {
+  const project = capture();
+  if (!project) return;
+  needsBaseline = false;
+  baseline = { project, key: historyKey(project) };
+  if (!dirty) savedKey = baseline.key;
+}
+
+function scheduleCheckpoint() {
+  const notifying = checkpointTimer === null;
+  clearTimeout(checkpointTimer);
+  checkpointTimer = setTimeout(checkpoint, CHECKPOINT_DELAY_MS);
+  if (notifying) notify();
+}
+
+/** Records the scene before the settled edits, if they changed anything. */
+function checkpoint() {
+  clearTimeout(checkpointTimer);
+  checkpointTimer = null;
+  const project = capture();
+  if (project) {
+    const key = historyKey(project);
+    if (!baseline) {
+      // Edited before the opened scene was captured: nothing to go back to.
+      needsBaseline = false;
+    } else if (key !== baseline.key) {
+      undoStack.push(baseline);
+      if (undoStack.length > HISTORY_LIMIT) undoStack.shift();
+      redoStack = [];
+    }
+    baseline = { project, key };
+  }
+  notify();
+}
+
+/** Moves the scene one step from `from` to `to`; ignored while one is applying. */
+async function restore(from, to) {
+  if (restoring || !current) return false;
+  if (checkpointTimer) checkpoint();
+  const target = from.pop();
+  if (!target || !baseline) return false;
+  to.push(baseline);
+  baseline = target;
+
+  restoring = true;
+  try {
+    const project = withLiveView(target.project);
+    const opened = mountScene(project, { restore: true });
+    if (target.key === savedKey) {
+      store.remove(AUTOSAVE_KEY);
+      setDirty(false);
+    } else {
+      markDirty();
+    }
+    await applySpacecraft(project, () => opened === generation);
+  } finally {
+    restoring = false;
+  }
+  return true;
+}
+
+/** `project` with the live clock, camera position and view. */
+function withLiveView(project) {
+  const live = capture();
+  if (!live) return project;
+  const { epoch, timeScale, paused } = live.clock;
+  const { lat, lon, altitudeKm } = live.camera;
+  return {
+    ...project,
+    view: live.view,
+    clock: { ...project.clock, epoch, timeScale, paused },
+    camera: { ...project.camera, lat, lon, altitudeKm },
+  };
+}
+
+/** `project` as compared for history: without what `withLiveView` keeps. */
+function historyKey(project) {
+  const { view, clock = {}, camera = {}, ...rest } = project;
+  const { epoch, timeScale, paused, ...clockKept } = clock;
+  const { lat, lon, altitudeKm, ...cameraKept } = camera;
+  return JSON.stringify({ ...rest, clock: clockKept, camera: cameraKept });
+}
+
+const TEXT_FIELDS =
+  "textarea, input:not([type=checkbox], [type=radio], [type=range], [type=button], [type=file], [type=color])";
+
+/** Cmd/Ctrl+Z undo, Shift+Cmd/Ctrl+Z or Ctrl+Y redo, Cmd/Ctrl+S save; text fields keep their own. */
+function installShortcuts() {
+  addEventListener("keydown", (event) => {
+    if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
+    const key = event.key.toLowerCase();
+    if (key === "s") {
+      event.preventDefault();
+      save();
+      return;
+    }
+    if (key !== "z" && key !== "y") return;
+    const target = event.target;
+    if (target instanceof HTMLElement && (target.isContentEditable || target.matches(TEXT_FIELDS))) return;
+    event.preventDefault();
+    if (key === "y" || event.shiftKey) redo();
+    else undo();
+  });
 }
 
 // --- Drop ----------------------------------------------------------------------
