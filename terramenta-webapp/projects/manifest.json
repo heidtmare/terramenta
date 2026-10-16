@@ -15,6 +15,11 @@
     "description": "Saved Earth → Mars porkchop studies, 2026 and 2028."
   },
   {
+    "file": "venus-flyby.terramenta.json",
+    "name": "Earth → Venus → Mars",
+    "description": "Directed 2034 Venus gravity assist to Mars: guidance burns, close-in flyby, SOI-coloured trail."
+  },
+  {
     "file": "leo-transfer.terramenta.json",
     "name": "LEO Hohmann transfer",
     "description": "Cowell-propagated 500 → 800 km Hohmann transfer with a coasting reference; covariance and 3σ ellipsoids, plots, Δv budget, CSV/CZML/OEM/SPK export."

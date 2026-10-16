@@ -256,7 +256,7 @@ export const toggleFrame = () => required().toggleFrame();
 // --- Heliocentric view ------------------------------------------------------
 // A separate axis from the reference frame above: this switches which body
 // the whole scene is drawn around — the Earth-centered globe, or the
-// heliocentric view of the Sun, Earth and Mars around the Solar System
+// heliocentric view of the Sun, Venus, Earth and Mars around the Solar System
 // Barycentre. A request for the view already showing, or made mid-transition,
 // is silently ignored.
 
@@ -266,14 +266,20 @@ export const setView = (mode) => required().setView(mode);
 export const toggleView = () => required().toggleView();
 
 /**
- * Re-anchors the heliocentric camera on `"sun"`, `"earth"`, `"mars"` or
- * `"barycenter"`, keeping its current yaw, pitch and distance. Ignored
- * outside the heliocentric view.
+ * Re-anchors the heliocentric camera on `"sun"`, `"venus"`, `"earth"`,
+ * `"mars"` or `"barycenter"`, keeping its current yaw, pitch and distance.
+ * Ignored outside the heliocentric view.
  */
 export function setHeliocentricAnchor(anchor) {
   sources.camera = { anchor };
   return required().setHeliocentricAnchor(anchor);
 }
+
+/** Turns the heliocentric camera to look down onto mission `id`'s flyby plane. */
+export const faceFlyby = (id) => required().faceFlyby(id);
+
+/** Heliocentric camera distance from its anchor, AU (1e-4–6); eased. */
+export const setHeliocentricDistance = (au) => required().setHeliocentricDistance(au);
 
 /**
  * Locks the heliocentric camera onto a mission's spacecraft, by the id it was
@@ -626,10 +632,10 @@ export const ephemerisGeometry = (id) => required().ephemerisGeometry(id);
  * addMission("mars-2", { departureSearchDays: 400, arrivalSearchEndDays: 900 });
  * ```
  *
- * Options: `origin`, `destination` (frame names `terramenta_solare::solar_system`
- * adds — `"Earth"`/`"Mars"` if omitted, the only pair a mission can actually fly
- * between), `departureSearchDays`, `arrivalSearchStartDays`, `arrivalSearchEndDays`,
- * `searchSteps` and `parkingAltitudeKm`.
+ * Options: `origin`, `destination` (`"Venus"`, `"Earth"`, `"Mars"`; default
+ * Earth → Mars), `departureSearchDays`, `arrivalSearchStartDays`,
+ * `arrivalSearchEndDays`, `searchSteps`, `parkingAltitudeKm`; `via` (gravity
+ * assist) with `firstLegDays`/`secondLegDays` (`[min, max]`).
  *
  * Returns whether the options could be read.
  */

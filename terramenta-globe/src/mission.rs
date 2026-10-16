@@ -25,6 +25,11 @@
 //! sensitivity to departure velocity, to miss the destination by many SOI
 //! radii.
 //!
+//! [`MissionRequest::via`] makes it a gravity assist: a three-axis search
+//! ([`terramenta_solare::flyby::find_best_flyby`]) and
+//! [`terramenta_solare::flyby::FlybyGuidance`] on the spacecraft
+//! ([`crate::solar::Guidance`]) for the correction and periapsis burns.
+//!
 //! A mission's own condition is also read out as [`MissionInfo`], flattened
 //! for [`crate::api::GlobeState`] through [`MissionReport`] so an interface
 //! can show a launch without reaching into this module's state machine.
@@ -34,14 +39,20 @@
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use serde::Serialize;
-use terramenta_solare::bodies::{GM_SUN_KM3_S2, sphere_of_influence_km};
+use terramenta_solare::bodies::{
+    EARTH_MEAN_RADIUS_KM, GM_SUN_KM3_S2, GM_VENUS_KM3_S2, MARS_MEAN_RADIUS_KM,
+    VENUS_MEAN_RADIUS_KM, sphere_of_influence_km,
+};
+use terramenta_solare::flyby::{
+    FlybyBody, FlybyGuidance, FlybyPlan, FlybySearch, find_best_flyby, flyby_primary_chain,
+};
 use terramenta_solare::lambert::TransferDirection;
 use terramenta_solare::mission::{TransferPlan, find_best_transfer_window};
 use terramenta_solare::spacecraft::Primary;
 use terramenta_solare::time::hifitime::TimeScale;
 use terramenta_solare::{Epoch, FrameId, escape_injection_state};
 
-use crate::solar::{SolarSystem, TrackedSpacecraft, spawn_spacecraft};
+use crate::solar::{Guidance, SolarSystem, TrackedSpacecraft, spawn_spacecraft};
 use crate::time::SimClock;
 use crate::trail::MissionTrail;
 
@@ -70,6 +81,13 @@ pub struct MissionRequest {
     /// surface — a token parking-orbit altitude; no launch/parking orbit is
     /// modeled.
     pub parking_altitude_km: f64,
+    /// Gravity-assist body. Replaces the arrival search with
+    /// [`MissionRequest::first_leg_days`] × [`MissionRequest::second_leg_days`].
+    pub via: Option<String>,
+    /// Origin → `via` duration range, days.
+    pub first_leg_days: (f64, f64),
+    /// `via` → destination duration range, days.
+    pub second_leg_days: (f64, f64),
 }
 
 impl Default for MissionRequest {
@@ -83,6 +101,9 @@ impl Default for MissionRequest {
             arrival_search_end_days: 420.0,
             search_steps: 17,
             parking_altitude_km: 300.0,
+            via: None,
+            first_leg_days: (80.0, 250.0),
+            second_leg_days: (120.0, 400.0),
         }
     }
 }
@@ -92,6 +113,7 @@ enum MissionState {
     Searching,
     Waiting {
         plan: TransferPlan,
+        flyby: Option<FlybyPlan>,
         origin_frame: FrameId,
         destination_frame: FrameId,
     },
@@ -103,13 +125,18 @@ enum MissionState {
         /// camera to follow.
         frame: FrameId,
         plan: TransferPlan,
+        flyby: Option<FlybyPlan>,
         destination_frame: FrameId,
+        via_frame: Option<FrameId>,
         last_primary: FrameId,
         /// When the spacecraft's primary first became the Sun — set by
         /// [`log_mission_progress`] the tick it detects the escape, since it
         /// is a physical event this module observes rather than one Lambert
         /// scored in advance.
         escape_unix_seconds: Option<f64>,
+        /// Flyby SOI entry and exit, observed.
+        encounter_unix_seconds: Option<f64>,
+        exit_unix_seconds: Option<f64>,
         /// When the spacecraft's primary first became `destination_frame` —
         /// set the same way, and generally a little after
         /// [`TransferPlan::arrival`]: that date is the idealised patched-conic
@@ -182,6 +209,25 @@ impl MissionSettings {
             self.retired.push(entity);
         }
         true
+    }
+
+    /// Mission `id`'s flyby plane normal (`v̂∞in × v̂∞out`, ICRF), once planned.
+    pub(crate) fn flyby_normal(&self, id: &str) -> Option<bevy::math::DVec3> {
+        let mission = self
+            .missions
+            .iter()
+            .find(|mission| mission.request.id == id)?;
+        let flyby = match mission.state {
+            MissionState::Waiting { flyby, .. } | MissionState::Launched { flyby, .. } => flyby?,
+            _ => return None,
+        };
+        Some(
+            flyby
+                .flyby
+                .v_infinity_in_km_s
+                .cross(flyby.flyby.v_infinity_out_km_s)
+                .normalize(),
+        )
     }
 
     /// The id of the first mission still tracked, in the order they were
@@ -294,6 +340,20 @@ fn search_missions(
         let arrival_end =
             search_start.advanced_by_seconds(mission.request.arrival_search_end_days * 86_400.0);
 
+        if let Some(via) = mission.request.via.clone() {
+            mission.state = search_flyby(
+                &mission.request,
+                &via,
+                &solar_system,
+                sun_frame,
+                origin_frame,
+                destination_frame,
+                search_start,
+                departure_end,
+            );
+            continue;
+        }
+
         let plan = find_best_transfer_window(
             solar_system.tree(),
             sun_frame,
@@ -324,6 +384,7 @@ fn search_missions(
                 );
                 MissionState::Waiting {
                     plan,
+                    flyby: None,
                     origin_frame,
                     destination_frame,
                 }
@@ -339,6 +400,96 @@ fn search_missions(
             }
         };
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn search_flyby(
+    request: &MissionRequest,
+    via: &str,
+    solar_system: &SolarSystem,
+    sun_frame: FrameId,
+    origin_frame: FrameId,
+    destination_frame: FrameId,
+    departure_start: Epoch,
+    departure_end: Epoch,
+) -> MissionState {
+    let Some(body) = solar_system
+        .find(via)
+        .and_then(|frame| flyby_body(via, frame))
+    else {
+        warn!("mission {}: unknown flyby body {via:?}", request.id);
+        return MissionState::Failed {
+            reason: "unknown body",
+        };
+    };
+    let search = FlybySearch {
+        departure_start,
+        departure_end,
+        first_leg_days: request.first_leg_days,
+        second_leg_days: request.second_leg_days,
+        steps: request.search_steps,
+    };
+    let Some(flyby) = find_best_flyby(
+        solar_system.tree(),
+        sun_frame,
+        GM_SUN_KM3_S2,
+        origin_frame,
+        &body,
+        destination_frame,
+        &search,
+    ) else {
+        warn!(
+            "mission {}: no {}-{via}-{} flyby found in the search range",
+            request.id, request.origin, request.destination
+        );
+        return MissionState::Failed {
+            reason: "no flyby trajectory found in the search range",
+        };
+    };
+    info!(
+        "mission {}: flyby found — departing {} {}, {via} {} at {:.0} km, arriving {} {} \
+         ({:.2} km/s total)",
+        request.id,
+        request.origin,
+        format_epoch(flyby.first_leg.departure),
+        format_epoch(flyby.flyby_epoch()),
+        flyby.flyby.periapsis_radius_km - body_radius_km(via).unwrap_or(0.0),
+        request.destination,
+        format_epoch(flyby.second_leg.arrival),
+        flyby.total_delta_v_km_s(),
+    );
+    MissionState::Waiting {
+        plan: flyby.overall(),
+        flyby: Some(flyby),
+        origin_frame,
+        destination_frame,
+    }
+}
+
+/// Lowest flyby periapsis altitude allowed, km.
+const FLYBY_MIN_ALTITUDE_KM: f64 = 300.0;
+
+fn body_radius_km(name: &str) -> Option<f64> {
+    match name {
+        "Venus" => Some(VENUS_MEAN_RADIUS_KM),
+        "Earth" => Some(EARTH_MEAN_RADIUS_KM),
+        "Mars" => Some(MARS_MEAN_RADIUS_KM),
+        _ => None,
+    }
+}
+
+fn flyby_body(name: &str, frame: FrameId) -> Option<FlybyBody> {
+    let gm_km3_s2 = match name {
+        "Venus" => GM_VENUS_KM3_S2,
+        "Earth" => terramenta_solare::bodies::GM_EARTH_KM3_S2,
+        "Mars" => terramenta_solare::bodies::GM_MARS_KM3_S2,
+        _ => return None,
+    };
+    Some(FlybyBody {
+        frame,
+        gm_km3_s2,
+        min_periapsis_radius_km: body_radius_km(name)? + FLYBY_MIN_ALTITUDE_KM,
+    })
 }
 
 /// Spawns the spacecraft for every [`MissionState::Waiting`] mission whose
@@ -370,7 +521,13 @@ fn launch_missions(
         missions, launches, ..
     } = &mut *settings;
     for mission in missions {
-        if let MissionState::Launched { entity, plan, .. } = mission.state {
+        if let MissionState::Launched {
+            entity,
+            plan,
+            flyby,
+            ..
+        } = mission.state
+        {
             if clock.unix_seconds < plan.departure.to_unix_seconds() {
                 let bodies = solar_system
                     .find(&mission.request.origin)
@@ -381,6 +538,7 @@ fn launch_missions(
                 commands.entity(entity).despawn();
                 mission.state = MissionState::Waiting {
                     plan,
+                    flyby,
                     origin_frame,
                     destination_frame,
                 };
@@ -388,12 +546,13 @@ fn launch_missions(
             continue;
         }
 
-        let (plan, origin_frame, destination_frame) = match mission.state {
+        let (plan, flyby, origin_frame, destination_frame) = match mission.state {
             MissionState::Waiting {
                 plan,
+                flyby,
                 origin_frame,
                 destination_frame,
-            } => (plan, origin_frame, destination_frame),
+            } => (plan, flyby, origin_frame, destination_frame),
             _ => continue,
         };
         if clock.unix_seconds < plan.departure.to_unix_seconds() {
@@ -436,22 +595,56 @@ fn launch_missions(
             origin_primary.gm_km3_s2,
         );
 
+        let via = match (&mission.request.via, flyby) {
+            (Some(name), Some(_)) => {
+                let resolved = solar_system.find(name).and_then(|frame| {
+                    Some((
+                        flyby_body(name, frame)?,
+                        primary_for(name, frame, sun_frame)?,
+                    ))
+                });
+                let Some(resolved) = resolved else {
+                    mission.state = MissionState::Failed {
+                        reason: "unknown body",
+                    };
+                    continue;
+                };
+                Some(resolved)
+            }
+            _ => None,
+        };
+
+        let legs: Vec<(FrameId, TransferPlan)> = match (flyby, &via) {
+            (Some(flyby), Some((body, _))) => vec![
+                (origin_frame, flyby.first_leg),
+                (body.frame, flyby.second_leg),
+            ],
+            _ => vec![(origin_frame, plan)],
+        };
         let trail = MissionTrail::plan(
             &solar_system,
-            &plan,
-            origin_frame,
+            &legs,
             destination_frame,
+            via.as_ref().map(|(body, _)| body.frame),
             sun_frame,
             departure_state,
             origin_primary.gm_km3_s2,
             origin_soi_km,
         );
 
-        let primary = Primary {
-            orbits: Some(Box::new(
-                Primary::sun(sun_frame).with_capture_candidates(vec![destination_primary]),
-            )),
-            ..origin_primary
+        let primary = match &via {
+            Some((_, via_primary)) => flyby_primary_chain(
+                origin_primary,
+                sun_frame,
+                via_primary.clone(),
+                destination_primary,
+            ),
+            None => Primary {
+                orbits: Some(Box::new(
+                    Primary::sun(sun_frame).with_capture_candidates(vec![destination_primary]),
+                )),
+                ..origin_primary
+            },
         };
 
         info!(
@@ -471,14 +664,28 @@ fn launch_missions(
         );
         *launches += 1;
         let frame = bundle.0.0;
-        let entity = commands.spawn((bundle, trail)).id();
+        let mut spawned = commands.spawn((bundle, trail));
+        if let (Some(flyby), Some((body, _))) = (flyby, &via) {
+            spawned.insert(Guidance(FlybyGuidance::new(
+                flyby,
+                sun_frame,
+                body,
+                destination_frame,
+                plan.departure,
+            )));
+        }
+        let entity = spawned.id();
         mission.state = MissionState::Launched {
             entity,
             frame,
             plan,
+            flyby,
             destination_frame,
+            via_frame: via.as_ref().map(|(body, _)| body.frame),
             last_primary: origin_frame,
             escape_unix_seconds: None,
+            encounter_unix_seconds: None,
+            exit_unix_seconds: None,
             capture_unix_seconds: None,
         };
     }
@@ -515,8 +722,11 @@ fn log_mission_progress(
         let MissionState::Launched {
             entity,
             destination_frame,
+            via_frame,
             last_primary,
             escape_unix_seconds,
+            encounter_unix_seconds,
+            exit_unix_seconds,
             capture_unix_seconds,
             ..
         } = &mut mission.state
@@ -531,7 +741,7 @@ fn log_mission_progress(
         if current == *last_primary {
             continue;
         }
-        *last_primary = current;
+        let previous = std::mem::replace(last_primary, current);
 
         // The two hand-offs a patched-conic transfer ever makes: away from
         // the origin's SOI (primary becomes the Sun) and into the
@@ -539,8 +749,12 @@ fn log_mission_progress(
         // the simulated clock the moment each is observed, for
         // [`MissionInfo::phases`] to report alongside the Lambert-planned
         // departure/arrival dates.
-        if Some(current) == sun_frame {
+        if Some(current) == sun_frame && Some(previous) == *via_frame {
+            *exit_unix_seconds = Some(clock.unix_seconds);
+        } else if Some(current) == sun_frame {
             *escape_unix_seconds = Some(clock.unix_seconds);
+        } else if Some(current) == *via_frame {
+            *encounter_unix_seconds = Some(clock.unix_seconds);
         } else if current == *destination_frame {
             *capture_unix_seconds = Some(clock.unix_seconds);
         }
@@ -564,6 +778,7 @@ fn primary_for(name: &str, frame: FrameId, sun_frame: FrameId) -> Option<Primary
         "Sun" => Some(Primary::sun(frame)),
         "Earth" => Some(Primary::earth(frame, sun_frame)),
         "Mars" => Some(Primary::mars(frame, sun_frame)),
+        "Venus" => Some(Primary::venus(frame, sun_frame)),
         _ => None,
     }
 }
@@ -593,6 +808,8 @@ pub struct MissionInfo {
     pub id: String,
     pub origin: String,
     pub destination: String,
+    /// Gravity-assist body, if any.
+    pub via: Option<String>,
     /// `"searching"`, `"waiting"`, `"enroute"`, `"arrived"` or `"failed"`.
     pub status: &'static str,
     /// Set from `"waiting"` onward — a plan has been found by then.
@@ -600,15 +817,43 @@ pub struct MissionInfo {
     pub arrival_unix_seconds: Option<f64>,
     pub departure_delta_v_km_s: Option<f64>,
     pub arrival_delta_v_km_s: Option<f64>,
+    /// Set from `"waiting"` onward for a flyby mission.
+    pub flyby: Option<FlybyInfo>,
+    /// Executed guidance burns (flyby missions), in order.
+    pub burns: Vec<BurnInfo>,
     /// Set only for `"enroute"` or `"arrived"` — the body the spacecraft
     /// currently orbits, `terramenta_solare::solar_system`'s own name for it.
     pub orbiting: Option<String>,
     /// Set only for `"failed"`.
     pub reason: Option<&'static str>,
-    /// The mission's milestones, always in this order: departure, escape
-    /// (from `origin`'s sphere of influence), arrival (the Lambert-planned
-    /// date) and capture (by `destination`). See [`MissionPhase`].
+    /// Milestones, in order: departure, escape, then for a flyby encounter
+    /// (SOI entry), flyby (periapsis), exit (SOI exit); then arrival (planned)
+    /// and capture. See [`MissionPhase`].
     pub phases: Vec<MissionPhase>,
+}
+
+/// Designed flyby hyperbola.
+#[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct FlybyInfo {
+    /// Planned periapsis epoch (heliocentric plan).
+    pub unix_seconds: f64,
+    pub periapsis_altitude_km: f64,
+    pub turn_angle_deg: f64,
+    pub v_infinity_in_km_s: f64,
+    pub v_infinity_out_km_s: f64,
+    pub periapsis_delta_v_km_s: f64,
+    /// Departure v∞ + periapsis burn + arrival v∞.
+    pub total_delta_v_km_s: f64,
+}
+
+#[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BurnInfo {
+    /// `"cruise"`, `"approach"`, `"periapsis"` or `"retarget"`.
+    pub id: &'static str,
+    pub unix_seconds: f64,
+    pub delta_v_km_s: f64,
 }
 
 /// One milestone in a mission's timeline, for an interface to build a
@@ -616,12 +861,13 @@ pub struct MissionInfo {
 ///
 /// Always reported, even before it is known — `unix_seconds` is `None` until
 /// then, rather than the entry being left out, so an interface can render a
-/// fixed four-stop timeline and grey out what is not there yet instead of
-/// reflowing as the mission progresses.
+/// fixed timeline and grey out what is not there yet instead of reflowing as
+/// the mission progresses.
 #[derive(Serialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct MissionPhase {
-    /// `"departure"`, `"escape"`, `"arrival"` or `"capture"`.
+    /// `"departure"`, `"escape"`, `"encounter"`, `"flyby"`, `"exit"`,
+    /// `"arrival"` or `"capture"`.
     pub id: &'static str,
     pub label: String,
     pub unix_seconds: Option<f64>,
@@ -647,121 +893,169 @@ impl MissionPhase {
     }
 }
 
+/// Observed milestone times.
+#[derive(Default, Clone, Copy)]
+struct Observed {
+    escape: Option<f64>,
+    encounter: Option<f64>,
+    periapsis: Option<f64>,
+    exit: Option<f64>,
+    capture: Option<f64>,
+}
+
 impl MissionInfo {
     fn new(request: &MissionRequest, status: &'static str) -> Self {
         Self {
             id: request.id.clone(),
             origin: request.origin.clone(),
             destination: request.destination.clone(),
+            via: request.via.clone(),
             status,
             departure_unix_seconds: None,
             arrival_unix_seconds: None,
             departure_delta_v_km_s: None,
             arrival_delta_v_km_s: None,
+            flyby: None,
+            burns: Vec::new(),
             orbiting: None,
             reason: None,
             phases: Vec::new(),
         }
     }
 
-    fn with_plan(mut self, plan: &TransferPlan) -> Self {
+    fn with_plan(mut self, plan: &TransferPlan, flyby: Option<&FlybyPlan>) -> Self {
         self.departure_unix_seconds = Some(plan.departure.to_unix_seconds());
         self.arrival_unix_seconds = Some(plan.arrival.to_unix_seconds());
         self.departure_delta_v_km_s = Some(plan.departure_delta_v_magnitude_km_s());
         self.arrival_delta_v_km_s = Some(plan.arrival_delta_v_magnitude_km_s());
+        self.flyby = flyby.map(|flyby| {
+            let radius = self.via.as_deref().and_then(body_radius_km).unwrap_or(0.0);
+            FlybyInfo {
+                unix_seconds: flyby.flyby_epoch().to_unix_seconds(),
+                periapsis_altitude_km: flyby.flyby.periapsis_radius_km - radius,
+                turn_angle_deg: flyby.flyby.turn_angle_rad.to_degrees(),
+                v_infinity_in_km_s: flyby.flyby.v_infinity_in_km_s.length(),
+                v_infinity_out_km_s: flyby.flyby.v_infinity_out_km_s.length(),
+                periapsis_delta_v_km_s: flyby.flyby.periapsis_delta_v_km_s,
+                total_delta_v_km_s: flyby.total_delta_v_km_s(),
+            }
+        });
         self
     }
 
-    /// Fills in [`MissionInfo::phases`] — always all four milestones, drawing
-    /// the departure/arrival dates from whatever [`MissionInfo::with_plan`]
-    /// already set, and escape/capture from [`log_mission_progress`]'s own
-    /// observations. Called for every mission regardless of state, so a
-    /// mission still searching (or one that failed) reports the same four
-    /// milestones with everything past what is known left as `None`.
-    fn with_phases(
-        mut self,
-        escape_unix_seconds: Option<f64>,
-        capture_unix_seconds: Option<f64>,
-        sun_unix_seconds: f64,
-    ) -> Self {
-        let departure_unix_seconds = self.departure_unix_seconds;
-        let arrival_unix_seconds = self.arrival_unix_seconds;
-        self.phases = vec![
-            MissionPhase::new(
+    /// Fills in [`MissionInfo::phases`] — every milestone, drawing
+    /// departure/arrival (and the planned periapsis) from
+    /// [`MissionInfo::with_plan`], the rest from observation. Called for every
+    /// mission regardless of state.
+    fn with_phases(mut self, observed: Observed, sun_unix_seconds: f64) -> Self {
+        let phase =
+            |id, label, unix_seconds| MissionPhase::new(id, label, unix_seconds, sun_unix_seconds);
+        let mut phases = vec![
+            phase(
                 "departure",
                 format!("Depart {}", self.origin),
-                departure_unix_seconds,
-                sun_unix_seconds,
+                self.departure_unix_seconds,
             ),
-            MissionPhase::new(
-                "escape",
-                format!("Escape {}", self.origin),
-                escape_unix_seconds,
-                sun_unix_seconds,
-            ),
-            MissionPhase::new(
+            phase("escape", format!("Escape {}", self.origin), observed.escape),
+        ];
+        if let Some(via) = &self.via {
+            let planned = self.flyby.as_ref().map(|flyby| flyby.unix_seconds);
+            phases.extend([
+                phase("encounter", format!("Enter {via} SOI"), observed.encounter),
+                phase(
+                    "flyby",
+                    format!("{via} flyby"),
+                    observed.periapsis.or(planned),
+                ),
+                phase("exit", format!("Leave {via} SOI"), observed.exit),
+            ]);
+        }
+        phases.extend([
+            phase(
                 "arrival",
                 format!("Arrive at {}", self.destination),
-                arrival_unix_seconds,
-                sun_unix_seconds,
+                self.arrival_unix_seconds,
             ),
-            MissionPhase::new(
+            phase(
                 "capture",
                 format!("Captured by {}", self.destination),
-                capture_unix_seconds,
-                sun_unix_seconds,
+                observed.capture,
             ),
-        ];
+        ]);
+        self.phases = phases;
         self
     }
 }
+
+type SpacecraftQuery<'w, 's> =
+    Query<'w, 's, (&'static TrackedSpacecraft, Option<&'static Guidance>)>;
 
 impl Mission {
     fn describe(
         &self,
         solar_system: &SolarSystem,
-        spacecraft: &Query<&TrackedSpacecraft>,
+        spacecraft: &SpacecraftQuery,
         sun_unix_seconds: f64,
     ) -> MissionInfo {
         match &self.state {
-            MissionState::Searching => MissionInfo::new(&self.request, "searching").with_phases(
-                None,
-                None,
-                sun_unix_seconds,
-            ),
-            MissionState::Waiting { plan, .. } => MissionInfo::new(&self.request, "waiting")
-                .with_plan(plan)
-                .with_phases(None, None, sun_unix_seconds),
+            MissionState::Searching => MissionInfo::new(&self.request, "searching")
+                .with_phases(Observed::default(), sun_unix_seconds),
+            MissionState::Waiting { plan, flyby, .. } => MissionInfo::new(&self.request, "waiting")
+                .with_plan(plan, flyby.as_ref())
+                .with_phases(Observed::default(), sun_unix_seconds),
             MissionState::Launched {
                 entity,
                 plan,
+                flyby,
                 destination_frame,
                 escape_unix_seconds,
+                encounter_unix_seconds,
+                exit_unix_seconds,
                 capture_unix_seconds,
                 ..
             } => {
-                let orbiting = spacecraft
-                    .get(*entity)
-                    .ok()
-                    .map(|craft| craft.0.primary_frame());
+                let craft = spacecraft.get(*entity).ok();
+                let orbiting = craft.map(|(craft, _)| craft.0.primary_frame());
+                let burns: Vec<BurnInfo> = craft
+                    .and_then(|(_, guidance)| guidance)
+                    .map(|guidance| {
+                        guidance
+                            .0
+                            .burns()
+                            .iter()
+                            .map(|burn| BurnInfo {
+                                id: burn.kind.id(),
+                                unix_seconds: burn.epoch.to_unix_seconds(),
+                                delta_v_km_s: burn.delta_v_km_s.length(),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let periapsis = burns
+                    .iter()
+                    .find(|burn| burn.id == "periapsis")
+                    .map(|burn| burn.unix_seconds);
                 let arrived = orbiting == Some(*destination_frame);
                 let mut info =
                     MissionInfo::new(&self.request, if arrived { "arrived" } else { "enroute" })
-                        .with_plan(plan)
+                        .with_plan(plan, flyby.as_ref())
                         .with_phases(
-                            *escape_unix_seconds,
-                            *capture_unix_seconds,
+                            Observed {
+                                escape: *escape_unix_seconds,
+                                encounter: *encounter_unix_seconds,
+                                periapsis,
+                                exit: *exit_unix_seconds,
+                                capture: *capture_unix_seconds,
+                            },
                             sun_unix_seconds,
                         );
+                info.burns = burns;
                 info.orbiting = orbiting.map(|frame| solar_system.tree().name(frame).to_string());
                 info
             }
             MissionState::Failed { reason } => {
-                let mut info = MissionInfo::new(&self.request, "failed").with_phases(
-                    None,
-                    None,
-                    sun_unix_seconds,
-                );
+                let mut info = MissionInfo::new(&self.request, "failed")
+                    .with_phases(Observed::default(), sun_unix_seconds);
                 info.reason = Some(reason);
                 info
             }
@@ -773,7 +1067,7 @@ impl MissionSettings {
     fn describe(
         &self,
         solar_system: &SolarSystem,
-        spacecraft: &Query<&TrackedSpacecraft>,
+        spacecraft: &SpacecraftQuery,
         sun_unix_seconds: f64,
     ) -> Vec<MissionInfo> {
         self.missions
@@ -785,14 +1079,14 @@ impl MissionSettings {
 
 /// What the state snapshot reads missions through: [`MissionSettings`]
 /// itself, the [`TrackedSpacecraft`] query for which body a launched mission
-/// currently orbits, and [`SolarSystem`] to name it. One parameter rather
-/// than three because a system may only take sixteen, same as
-/// [`crate::placemark::PlacemarkPicks`].
+/// currently orbits (and its [`Guidance`] burns), and [`SolarSystem`] to name
+/// it. One parameter rather than three because a system may only take
+/// sixteen, same as [`crate::placemark::PlacemarkPicks`].
 #[derive(SystemParam)]
 pub struct MissionReport<'w, 's> {
     settings: Res<'w, MissionSettings>,
     solar_system: Res<'w, SolarSystem>,
-    spacecraft: Query<'w, 's, &'static TrackedSpacecraft>,
+    spacecraft: SpacecraftQuery<'w, 's>,
 }
 
 impl MissionReport<'_, '_> {
@@ -805,6 +1099,7 @@ impl MissionReport<'_, '_> {
 #[cfg(test)]
 mod tests {
     use bevy::app::TaskPoolPlugin;
+    use bevy::ecs::system::SystemState;
 
     use super::*;
     use crate::frame::ReferenceFrame;
@@ -1167,6 +1462,82 @@ mod tests {
         let second = spacecraft_frame(&mut app).expect("the mission never relaunched");
         assert_ne!(first, second);
         assert_eq!(camera_frame(&app), Some(second));
+    }
+
+    /// Earth–Venus–Mars from the 2034 window: escape, Venus SOI in and out,
+    /// Mars capture, with all four guidance burns reported.
+    #[test]
+    fn a_venus_flyby_mission_reaches_mars() {
+        let start = Epoch::from_utc(2034, 6, 1, 0, 0, 0.0).to_unix_seconds();
+        let mut app = App::new();
+        app.add_plugins(TaskPoolPlugin::default())
+            .init_resource::<ReferenceFrame>()
+            .init_resource::<ViewState>()
+            .insert_resource(SimClock {
+                unix_seconds: start,
+                ..SimClock::default()
+            })
+            .add_plugins(SolarSystemPlugin)
+            .add_plugins(MissionPlugin {
+                initial: Vec::new(),
+            });
+        app.world_mut()
+            .resource_mut::<MissionSettings>()
+            .add(MissionRequest {
+                id: "evm".to_string(),
+                via: Some("Venus".to_string()),
+                search_steps: 13,
+                ..MissionRequest::default()
+            });
+
+        let mut captured = false;
+        // Ticks of 6 h; guidance sub-steps.
+        for _ in 0..(450 * 4) {
+            app.world_mut().resource_mut::<SimClock>().unix_seconds += 6.0 * 3_600.0;
+            app.update();
+            if let Some(MissionState::Launched {
+                capture_unix_seconds: Some(_),
+                ..
+            }) = app
+                .world()
+                .resource::<MissionSettings>()
+                .missions
+                .first()
+                .map(|mission| &mission.state)
+            {
+                captured = true;
+                break;
+            }
+        }
+        assert!(captured, "never captured at Mars");
+
+        let now = app.world().resource::<SimClock>().unix_seconds;
+        let mut state = SystemState::<MissionReport>::new(app.world_mut());
+        let info = state.get(app.world()).unwrap().describe(now).remove(0);
+        let ids: Vec<_> = info.phases.iter().map(|phase| phase.id).collect();
+        assert_eq!(
+            ids,
+            [
+                "departure",
+                "escape",
+                "encounter",
+                "flyby",
+                "exit",
+                "arrival",
+                "capture"
+            ]
+        );
+        let times: Vec<f64> = info
+            .phases
+            .iter()
+            .filter(|phase| phase.id != "arrival")
+            .map(|phase| phase.unix_seconds.expect("observed"))
+            .collect();
+        assert!(times.windows(2).all(|pair| pair[0] <= pair[1]), "{times:?}");
+        let burns: Vec<_> = info.burns.iter().map(|burn| burn.id).collect();
+        assert_eq!(burns, ["cruise", "approach", "periapsis", "retarget"]);
+        assert_eq!(info.status, "arrived");
+        assert!(info.flyby.unwrap().periapsis_altitude_km >= FLYBY_MIN_ALTITUDE_KM);
     }
 
     /// An unknown body name fails the search cleanly rather than panicking.

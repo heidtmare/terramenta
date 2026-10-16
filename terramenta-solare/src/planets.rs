@@ -1,4 +1,4 @@
-//! Earth and Mars, as seen from the Solar System Barycentre.
+//! Venus, Earth and Mars, as seen from the Solar System Barycentre.
 //!
 //! Each is stated the way the JPL low-precision planetary theory publishes
 //! it: mean orbital elements at J2000.0 and their rate per Julian century,
@@ -111,6 +111,35 @@ const EARTH_ELEMENTS: KeplerianSeries = KeplerianSeries {
     },
 };
 
+/// Standish, JPL "Keplerian Elements for Approximate Positions of the Major
+/// Planets", Table 1 (1800–2050).
+const VENUS_ELEMENTS: KeplerianSeries = KeplerianSeries {
+    semi_major_axis_au: Rate {
+        at_j2000: 0.723_335_66,
+        per_century: 0.000_003_90,
+    },
+    eccentricity: Rate {
+        at_j2000: 0.006_776_72,
+        per_century: -0.000_041_07,
+    },
+    inclination_deg: Rate {
+        at_j2000: 3.394_676_05,
+        per_century: -0.000_788_90,
+    },
+    mean_longitude_deg: Rate {
+        at_j2000: 181.979_099_50,
+        per_century: 58_517.815_387_29,
+    },
+    longitude_of_periapsis_deg: Rate {
+        at_j2000: 131.602_467_18,
+        per_century: 0.002_683_29,
+    },
+    longitude_of_ascending_node_deg: Rate {
+        at_j2000: 76.679_842_55,
+        per_century: -0.277_694_18,
+    },
+};
+
 const MARS_ELEMENTS: KeplerianSeries = KeplerianSeries {
     semi_major_axis_au: Rate {
         at_j2000: 1.523_710_34,
@@ -163,6 +192,9 @@ impl Ephemeris for HeliocentricPlanet {
     }
 }
 
+pub const VENUS: HeliocentricPlanet = HeliocentricPlanet {
+    series: &VENUS_ELEMENTS,
+};
 pub const EARTH: HeliocentricPlanet = HeliocentricPlanet {
     series: &EARTH_ELEMENTS,
 };
@@ -176,7 +208,7 @@ mod tests {
 
     #[test]
     fn position_matches_state() {
-        for planet in [EARTH, MARS] {
+        for planet in [VENUS, EARTH, MARS] {
             for days in [0.0, 500.0, -3_000.0] {
                 let epoch = Epoch::J2000.advanced_by_seconds(days * 86_400.0);
                 let d = planet.position_at(epoch) - planet.state_at(epoch).position_km;
@@ -211,6 +243,31 @@ mod tests {
                 "{days}d: {distance_au} AU"
             );
         }
+    }
+
+    #[test]
+    fn venus_stays_inside_earths_orbit() {
+        for days in [0.0, 100.0, 225.0, 3_000.0] {
+            let epoch = Epoch::J2000.advanced_by_seconds(days * 86_400.0);
+            let sun = ssb_relative_state(epoch);
+            let venus = VENUS.state_at(epoch);
+            let distance_au = (venus.position_km - sun.position_km).length() / AU_KM;
+            assert!(
+                (0.71..0.73).contains(&distance_au),
+                "{days}d: {distance_au} AU"
+            );
+        }
+    }
+
+    /// Greatest eastern elongation 2020-03-24: 46.1° (USNO).
+    #[test]
+    fn venus_elongation_matches_almanac() {
+        let epoch = Epoch::from_utc(2020, 3, 24, 22, 0, 0.0);
+        let sun = ssb_relative_position(epoch);
+        let earth = EARTH.position_at(epoch);
+        let venus = VENUS.position_at(epoch);
+        let elongation = (sun - earth).angle_between(venus - earth).to_degrees();
+        assert!((elongation - 46.1).abs() < 0.3, "{elongation}");
     }
 
     #[test]

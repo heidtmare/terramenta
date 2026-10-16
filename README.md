@@ -56,7 +56,9 @@ aiming for parity with it. Pull requests are not being accepted at this time.
   march with refraction.
 - **Interplanetary.** Lambert (Vallado universal variables), dated transfer
   planning, launch-window search, Hohmann baseline, patched conics with
-  sphere-of-influence handoff, v∞ → parking-orbit departure.
+  sphere-of-influence handoff, v∞ → parking-orbit departure. Powered
+  gravity-assist search (two Lambert legs, periapsis solve) and flyby guidance:
+  B-plane cruise correction, approach, periapsis burn, retarget.
 
 ### Validation
 
@@ -79,8 +81,9 @@ Details and the NRLMSISE-00 driver caveat: [terramenta-solare](terramenta-solare
 - SGP4 satellite layers from OMM (Celestrak groups), propagated every frame;
   numerically propagated spacecraft with trails, 3σ ellipsoids, body axes,
   boresights and sensor footprints; H3 coverage cells.
-- Heliocentric view (Sun, Earth, Mars) with an animated transition; flown
-  Earth → Mars missions from window search through capture.
+- Heliocentric view (Sun, Venus, Earth, Mars) with an animated transition,
+  zoomable to true scale at a planet; flown missions, direct or by gravity
+  assist, from window search through capture, trail tinted per SOI.
 - `f64` [GeoArrow](https://geoarrow.org) geometry store; zero-copy
   `Float64Array` views into WASM memory. Cursor picking for every layer.
 - One command/state API ([`api.rs`](terramenta-globe/src/api.rs)) for
@@ -149,6 +152,7 @@ compressed; ground tracks, terminator and orbit far sides to scale.*
 | [`orbit-determination`](terramenta-webapp/projects/orbit-determination.terramenta.json) | Radar batch LSQ with Cd, GNSS EKF; residuals, TDM |
 | [`mars-windows`](terramenta-webapp/projects/mars-windows.terramenta.json) | Earth → Mars porkchops, 2026 and 2028 |
 | [`mars-mission`](terramenta-webapp/projects/mars-mission.terramenta.json) | Directed Earth → Mars flight |
+| [`venus-flyby`](terramenta-webapp/projects/venus-flyby.terramenta.json) | Directed 2034 Earth → Venus → Mars gravity assist |
 
 ## Components
 

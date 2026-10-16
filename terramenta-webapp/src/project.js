@@ -509,6 +509,7 @@ export function captureProject(state, base = {}) {
     ...(sources.missions.get(mission.id) ?? {}),
     origin: mission.origin,
     destination: mission.destination,
+    ...(mission.via ? { via: mission.via } : {}),
   }));
 
   project.placemarks = { enabled: state.placemarks.enabled };

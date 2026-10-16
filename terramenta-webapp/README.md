@@ -73,7 +73,7 @@ Relative URLs resolve against the app root (the directory holding
 | `view` | `"globe"` \| `"heliocentric"` | Initial view, no transition |
 | `frame` | `"ecef"` \| `"eci"` | `setFrame` |
 | `clock` | `{epoch, timeScale, paused, shaded}` | `epoch`: ISO 8601 UTC or `"now"` |
-| `camera` | `{lat, lon, altitudeKm, follow \| anchor}` | `lookAt`; `follow`: mission id; `anchor`: `sun`/`earth`/`mars`/`barycenter` |
+| `camera` | `{lat, lon, altitudeKm, follow \| anchor}` | `lookAt`; `follow`: mission id; `anchor`: `sun`/`venus`/`earth`/`mars`/`barycenter` |
 | `imagery`, `vectorTiles` | `{enabled, layer, style?}` | `layer`: preset label or index |
 | `overlays` | `{enabled, picking, layers: [{id, ...addOverlay options}]}` | One of `url`/`text` per layer |
 | `ephemerides` | `{enabled, layers: [{id, ...addEphemeris options}]}` | OMM JSON or KVN OEM |
@@ -120,6 +120,7 @@ Listed in [`projects/manifest.json`](projects/manifest.json).
 | --- | --- |
 | [`overview`](projects/overview.terramenta.json) | Geometry tour, extruded cube, USGS past hour (60 s refresh), Celestrak `stations` |
 | [`mars-mission`](projects/mars-mission.terramenta.json) | Earth → Mars, flight panel, `missionFlight` director, Earth layers off |
+| [`venus-flyby`](projects/venus-flyby.terramenta.json) | 2034 Earth → Venus → Mars gravity assist, flight panel, `missionFlight` director with flyby zoom |
 | [`mars-windows`](projects/mars-windows.terramenta.json) | Earth → Mars porkchop studies, 2026 and 2028 windows; opens on Analysis |
 | [`leo-transfer`](projects/leo-transfer.terramenta.json) | 500 → 800 km Hohmann transfer vs. coasting reference; CelesTrak EOP and space weather; timeline slows the clock around each burn; RSW covariance with 3σ ellipsoids; altitude, SMA, eccentricity and 1σ in-track plots |
 | [`ground-contacts`](projects/ground-contacts.terramenta.json) | 700 km SSO for a day over five ground stations; contacts, eclipses, nodes; timeline slows the clock for `polar.aos.svalbard.1` |
@@ -159,7 +160,7 @@ spacecraft, Coverage, Conjunctions and Orbit determination while it has neither 
 | | Coverage | Per study: spacecraft, access, H3 resolution, region, step; run/re-run, show/hide on the globe, shaded metric, CSV, GeoJSON, edit, remove; cells seen, mean time covered, max gap (median and worst cell), mean revisit; metric legend. Editor: name, spacecraft, access (line of sight or sensor FOV), mask, resolution, bounds, step |
 | | Porkchop plot | Origin/destination bodies, departure/arrival date ranges, grid steps; contoured total-Δv SVG from `terramenta-charta`, minimum marked and listed, grid CSV |
 | | Porkchop studies | Save the inputs under a label (same label replaces); Open fills and computes; remove. The first study opens with the project |
-| | Launch | Calls `addMission` for the selected pair. Per mission: status, dates, Δv, remove |
+| | Launch | Calls `addMission` for the selected pair, optionally `via` a gravity-assist body. Per mission: status, dates, Δv, flyby, remove |
 | **View** | Clock | Run/pause, rate (1× to 86,400×), jump to now or by hours/days, terminator shading |
 | | Reference frame | ECEF / ECI |
 | | Frame overlay (*closed*) | ECI and ECEF triads, graticule and spacing, sidereal arc, followed satellite's orbit and ground track over a set number of orbits; GMST, quaternion and per-frame speeds |
@@ -472,7 +473,7 @@ snapshot.
 | --- | --- | --- |
 | Spacecraft | `<id>.start`, `.end`, `.burnN`, `.finiteN`, `.finiteN.end` | none |
 | Searched | `<id>.aos.<station>.N`, `.los.<station>.N`, `.umbraN`, `.umbraN.end`, `.penumbraN`, `.penumbraN.end`, `.periapsisN`, `.apoapsisN`, `.ascendingNodeN`, `.descendingNodeN` ([Events](#events); N per kind from 1) | none |
-| Missions | `<id>.departure`, `.escape`, `.arrival`, `.capture` (once known) | none |
+| Missions | `<id>.departure`, `.escape`, `.encounter`, `.flyby`, `.exit` (gravity assist), `.arrival`, `.capture` (once known) | none |
 | Director | `director-*` | generated, not saved |
 | Project | `timeline.events[].id` (no dots) | `actions` |
 
@@ -484,8 +485,8 @@ before it jumps forward to it, once per open.
 Actions: `timeScale` (number or `"max"`; keeps the clock's direction),
 `rampDoublingS` (doubles the rate every N wall-clock seconds up to the
 maximum), `paused`, `view`, `frame`, `focus: {layer, noradId?}` (default:
-the layer's first object), `follow` (mission id), `camera: {lat, lon,
-altitudeKm}`.
+the layer's first object), `follow` (mission id), `helioDistanceAu`,
+`faceFlyby` (mission id), `camera: {lat, lon, altitudeKm}`.
 
 Directed (`timeline.directed`, default true): when the latest event at or
 before the clock changes — played past, scrubbed, jumped — the baseline
@@ -502,10 +503,11 @@ request repeats until it lands.
 (`director.mission`, else the first), no tabs.
 
 - **Clock**: directed on/off, run/pause, forward/backward, rate slider.
-- **Mission**: status line and four phase buttons (departure, escape, arrival,
-  capture) that jump the clock to each milestone once known and highlight when
+- **Mission**: status line, flyby design (altitude, turn, v∞, Δv) and executed
+  burns, and a button per phase (departure, escape, [encounter, flyby, exit,]
+  arrival, capture) that jumps the clock to it once known and highlights when
   reached.
-- **Look at**: Sun, Earth, Mars, barycentre, or spacecraft
+- **Look at**: Sun, Venus, Earth, Mars, barycentre, or spacecraft
   (`setHeliocentricAnchor` / `followMission`).
 - **Project**: as the Project tab.
 
@@ -518,13 +520,17 @@ the project's own events and shown read-only. Fields are typed in the schema
 in `$defs/director`.
 
 `missionFlight` — `{mission, launchLeadSeconds = 3600, departureTimeScale = 600,
-departureDoublingSeconds = 2}`:
+departureDoublingSeconds = 2, flybyTimeScale = 900}`:
 
 | At | Actions |
 | --- | --- |
 | `skipTo`, `<mission>.departure − launchLeadSeconds` | `departureTimeScale`, globe view |
 | `<mission>.departure` | `departureTimeScale`, `rampDoublingS: departureDoublingSeconds` |
 | `<mission>.escape` | `"max"`, heliocentric view |
+| `<mission>.flyby − 3 d` | `8 × flybyTimeScale`, `helioDistanceAu: 0.03`, `faceFlyby` |
+| `<mission>.flyby − 8 h` | `flybyTimeScale`, `helioDistanceAu: 0.0015` |
+| `<mission>.flyby + 8 h` | `8 × flybyTimeScale`, `helioDistanceAu: 0.03` |
+| `<mission>.flyby + 3 d` | `"max"`, `helioDistanceAu: 1.5` |
 | `<mission>.capture` | pause |
 
 ## Data flow
@@ -591,6 +597,7 @@ projects/
   manifest.json                 Bundled project list
   overview.terramenta.json      Layers tour
   mars-mission.terramenta.json  Directed Earth → Mars flight
+  venus-flyby.terramenta.json   Directed Earth → Venus → Mars gravity assist
   mars-windows.terramenta.json  Porkchop studies
   leo-transfer.terramenta.json  Propagated Hohmann transfer
   ground-contacts.terramenta.json  Ground station contacts and eclipses

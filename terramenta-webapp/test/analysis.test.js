@@ -46,14 +46,14 @@ test("analysis is typed and cross-checked", () => {
       v({
         analysis: {
           plots: [{ id: "x", quantity: "mass", spacecraft: [] }],
-          porkchops: [{ ...STUDY, origin: "Venus", steps: 1 }],
+          porkchops: [{ ...STUDY, origin: "Pluto", steps: 1 }],
         },
       }),
     ),
     [
       "analysis.plots[0].quantity: expected one of altitudeKm, radiusKm, speedKmS, smaKm, eccentricity, inclinationDeg, raanDeg, argPerigeeDeg, trueAnomalyDeg, periodMin, perigeeAltKm, apogeeAltKm, sigmaRadialM, sigmaInTrackM, sigmaCrossTrackM, sigmaPositionM, got \"mass\"",
       "analysis.plots[0].spacecraft: expected ≥ 1 items, got []",
-      "analysis.porkchops[0].origin: expected one of Sun, Earth, Mars, got \"Venus\"",
+      "analysis.porkchops[0].origin: expected one of Sun, Venus, Earth, Mars, got \"Pluto\"",
       "analysis.porkchops[0].steps: expected a number ≥ 2, got 1",
     ],
   );

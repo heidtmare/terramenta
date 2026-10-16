@@ -46,9 +46,22 @@ use crate::solar::{FloatingOrigin, SolarBody, SolarSystem, TrackedSpacecraft};
 use crate::time::SimClock;
 use crate::view::ViewState;
 
-/// Where the spacecraft has been.
+/// Where the spacecraft has been: heliocentric legs white, each SOI leg
+/// tinted by body (origin, flyby, destination).
 const PAST_PAINT: Paint = Paint {
     color: Srgba::new(1.0, 1.0, 1.0, 0.85),
+    size_px: 2.0,
+};
+const ORIGIN_PAINT: Paint = Paint {
+    color: Srgba::new(0.45, 0.7, 1.0, 0.95),
+    size_px: 2.0,
+};
+const VIA_PAINT: Paint = Paint {
+    color: Srgba::new(1.0, 0.6, 0.25, 0.95),
+    size_px: 2.0,
+};
+const DESTINATION_PAINT: Paint = Paint {
+    color: Srgba::new(1.0, 0.4, 0.35, 0.95),
     size_px: 2.0,
 };
 /// Where the mission plan has it going — the same yellow as its marker.
@@ -85,6 +98,8 @@ const DASH_FRACTION: f32 = 0.012;
 #[derive(Debug, Clone, Copy)]
 struct Sample {
     unix_seconds: f64,
+    /// Spacecraft primary when recorded; plan samples carry the leg's.
+    primary: FrameId,
     /// Relative to the mission's origin body — what the globe view draws.
     origin_km: DVec3,
     /// Relative to the barycentre — what the heliocentric view draws.
@@ -97,40 +112,41 @@ struct Sample {
 pub(crate) struct MissionTrail {
     origin_frame: FrameId,
     destination_frame: FrameId,
+    via_frame: Option<FrameId>,
     past: Vec<Sample>,
     /// The departure hyperbola, relative to the origin body, out to its
     /// sphere of influence. `root_km` is unused.
     planned_departure: Vec<Sample>,
-    /// The Lambert transfer, relative to the barycentre. `origin_km` is
+    /// The Lambert legs, relative to the barycentre. `origin_km` is
     /// unused.
     planned_transfer: Vec<Sample>,
 }
 
 impl MissionTrail {
     /// The plan for a spacecraft launched on `departure_state` — relative to
-    /// `origin_frame`, on `plan.departure` — as [`crate::mission`] launches
-    /// it.
+    /// the first leg's origin, on its departure — as [`crate::mission`]
+    /// launches it. `legs`: each Lambert leg with the frame it departs.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn plan(
         solar_system: &SolarSystem,
-        plan: &TransferPlan,
-        origin_frame: FrameId,
+        legs: &[(FrameId, TransferPlan)],
         destination_frame: FrameId,
+        via_frame: Option<FrameId>,
         sun_frame: FrameId,
         departure_state: StateVector,
         origin_gm_km3_s2: f64,
         origin_soi_km: f64,
     ) -> Self {
         let tree = solar_system.tree();
-        let departure_seconds = plan.departure.to_unix_seconds();
-        let arrival_seconds = plan.arrival.to_unix_seconds();
+        let (origin_frame, first) = legs[0];
+        let departure_seconds = first.departure.to_unix_seconds();
         // Elements run on TT; samples keep the clock's Unix seconds.
         let tt = |unix: f64| Epoch::from_unix_seconds(unix).tt_seconds();
 
         let hyperbola = OrbitalElements::from_state(
             departure_state,
             origin_gm_km3_s2,
-            plan.departure.tt_seconds(),
+            first.departure.tt_seconds(),
         );
         let mut planned_departure = Vec::new();
         let mut t = departure_seconds;
@@ -138,6 +154,7 @@ impl MissionTrail {
             let state = hyperbola.state_at(origin_gm_km3_s2, tt(t));
             planned_departure.push(Sample {
                 unix_seconds: t,
+                primary: origin_frame,
                 origin_km: state.position_km,
                 root_km: DVec3::ZERO,
             });
@@ -149,38 +166,56 @@ impl MissionTrail {
             t += (radius / speed * HYPERBOLA_STEP_FRACTION).max(1.0);
         }
 
-        let origin_at_departure =
-            tree.state_of_relative_to(origin_frame, sun_frame, plan.departure);
-        let transfer_start = StateVector::new(
-            origin_at_departure.position_km,
-            origin_at_departure.velocity_km_s + plan.departure_delta_v_km_s,
-        );
-        let transfer =
-            OrbitalElements::from_state(transfer_start, GM_SUN_KM3_S2, plan.departure.tt_seconds());
-        let steps = ((arrival_seconds - departure_seconds) / TRANSFER_STEP_SECONDS)
-            .ceil()
-            .max(1.0) as usize;
-        let planned_transfer = (0..=steps)
-            .map(|step| {
-                let t = departure_seconds
-                    + (arrival_seconds - departure_seconds) * step as f64 / steps as f64;
+        let mut planned_transfer = Vec::new();
+        for &(from, leg) in legs {
+            let start_seconds = leg.departure.to_unix_seconds();
+            let end_seconds = leg.arrival.to_unix_seconds();
+            let from_state = tree.state_of_relative_to(from, sun_frame, leg.departure);
+            let transfer_start = StateVector::new(
+                from_state.position_km,
+                from_state.velocity_km_s + leg.departure_delta_v_km_s,
+            );
+            let transfer = OrbitalElements::from_state(
+                transfer_start,
+                GM_SUN_KM3_S2,
+                leg.departure.tt_seconds(),
+            );
+            let steps = ((end_seconds - start_seconds) / TRANSFER_STEP_SECONDS)
+                .ceil()
+                .max(1.0) as usize;
+            planned_transfer.extend((0..=steps).map(|step| {
+                let t = start_seconds + (end_seconds - start_seconds) * step as f64 / steps as f64;
                 let sun = tree
                     .state_relative_to_root(sun_frame, Epoch::from_unix_seconds(t))
                     .position_km;
                 Sample {
                     unix_seconds: t,
+                    primary: sun_frame,
                     origin_km: DVec3::ZERO,
                     root_km: sun + transfer.state_at(GM_SUN_KM3_S2, tt(t)).position_km,
                 }
-            })
-            .collect();
+            }));
+        }
 
         Self {
             origin_frame,
             destination_frame,
+            via_frame,
             past: Vec::new(),
             planned_departure,
             planned_transfer,
+        }
+    }
+
+    fn paint(&self, primary: FrameId) -> Paint {
+        if primary == self.origin_frame {
+            ORIGIN_PAINT
+        } else if Some(primary) == self.via_frame {
+            VIA_PAINT
+        } else if primary == self.destination_frame {
+            DESTINATION_PAINT
+        } else {
+            PAST_PAINT
         }
     }
 }
@@ -227,7 +262,9 @@ fn record_trails(
         trail.past.truncate(kept);
 
         let primary = craft.0.primary_frame();
-        let near_body = primary == trail.origin_frame || primary == trail.destination_frame;
+        let near_body = primary == trail.origin_frame
+            || primary == trail.destination_frame
+            || Some(primary) == trail.via_frame;
         let interval = if near_body {
             NEAR_BODY_SAMPLE_SECONDS
         } else {
@@ -243,6 +280,7 @@ fn record_trails(
         let origin_frame = trail.origin_frame;
         trail.past.push(Sample {
             unix_seconds: now,
+            primary,
             origin_km: tree
                 .state_of_relative_to(body.0, origin_frame, epoch)
                 .position_km,
@@ -314,8 +352,39 @@ fn draw_trails(
             }
         };
 
-        let mut past: Vec<Vec3> = trail.past.iter().map(|s| to_local(pick(s))).collect();
-        past.push(Vec3::ZERO);
+        // One path per primary run; consecutive runs share an endpoint.
+        let mut past: Vec<WorldPath> = Vec::new();
+        let mut run_primary = None;
+        for sample in &trail.past {
+            let point = to_local(pick(sample));
+            if run_primary != Some(sample.primary) {
+                let mut points = Vec::new();
+                if let Some(last) = past.last().and_then(|path| path.points.last()) {
+                    points.push(*last);
+                }
+                past.push(WorldPath {
+                    points,
+                    paint: Some(trail.paint(sample.primary)),
+                });
+                run_primary = Some(sample.primary);
+            }
+            past.last_mut().unwrap().points.push(point);
+        }
+        let current = craft.0.primary_frame();
+        if run_primary != Some(current) {
+            let points = past
+                .last()
+                .and_then(|path| path.points.last().copied())
+                .into_iter()
+                .collect();
+            past.push(WorldPath {
+                points,
+                paint: Some(trail.paint(current)),
+            });
+        }
+        if let Some(path) = past.last_mut() {
+            path.points.push(Vec3::ZERO);
+        }
 
         // Captured at the destination, the plan has nothing left to say.
         let arrived = craft.0.primary_frame() == trail.destination_frame;
@@ -342,10 +411,7 @@ fn draw_trails(
             })
             .collect();
 
-        let past_mesh = world_line_mesh(&[WorldPath {
-            points: past,
-            paint: None,
-        }]);
+        let past_mesh = world_line_mesh(&past);
         let planned_mesh = world_line_mesh(&dashes);
 
         let Some(drawing) = drawing else {

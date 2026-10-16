@@ -34,8 +34,10 @@ const PROPAGATION = {
 const SPACECRAFT = [{ id: "sc", label: "Craft", propagation: PROPAGATION }];
 const MISSION = { id: "mars", origin: "Earth", destination: "Mars" };
 
-const phases = (times = {}) =>
-  ["departure", "escape", "arrival", "capture"].map((id) => ({
+const DIRECT = ["departure", "escape", "arrival", "capture"];
+const FLYBY = ["departure", "escape", "encounter", "flyby", "exit", "arrival", "capture"];
+const phases = (times = {}, ids = DIRECT) =>
+  ids.map((id) => ({
     id,
     label: id,
     unixSeconds: times[id] ?? null,
@@ -292,7 +294,43 @@ test("missionFlight is a timeline preset", () => {
   const ids = timelineEvents({ missions: missions(known) }, new Map())
     .filter((event) => event.source === "director")
     .map((event) => event.id);
-  assert.deepEqual(ids, ["director-approach", "director-departure", "director-cruise", "director-capture"]);
+  assert.deepEqual(ids.slice(0, 4), ["director-approach", "director-departure", "director-cruise", "director-capture"]);
+  assert.ok(
+    timelineEvents({ missions: missions(known) }, new Map())
+      .filter((event) => event.id.startsWith("director-flyby"))
+      .every((event) => event.unixSeconds === null),
+    "flyby events stay unresolved without a flyby phase",
+  );
+});
+
+test("missionFlight zooms through a flyby", () => {
+  openTimeline(v({ missions: [MISSION], director: { type: "missionFlight", mission: "mars", flybyTimeScale: 500 } }));
+  const flyby = T0 + 1_000_000;
+  const known = { departure: T0 + 1000, escape: T0 + 5000, flyby };
+  const missions = [{ id: "mars", phases: phases(known, FLYBY) }];
+  const run = (offset) => {
+    calls.length = 0;
+    runTimeline(state(offset, { view: "heliocentric", missions }), new Map());
+    return sent();
+  };
+  run(6000);
+  assert.deepEqual(run(1_000_000 - 3 * 86_400), [
+    ["setTimeScale", 4000],
+    ["setHeliocentricDistance", 0.03],
+    ["faceFlyby", "mars"],
+  ]);
+  assert.deepEqual(run(1_000_000 - 8 * 3_600), [
+    ["setTimeScale", 500],
+    ["setHeliocentricDistance", 0.0015],
+  ]);
+  assert.deepEqual(run(1_000_000 + 8 * 3_600), [
+    ["setTimeScale", 4000],
+    ["setHeliocentricDistance", 0.03],
+  ]);
+  assert.deepEqual(run(1_000_000 + 3 * 86_400), [
+    ["setTimeScale", 1e6],
+    ["setHeliocentricDistance", 1.5],
+  ]);
 });
 
 // --- Editing and saving ----------------------------------------------------------

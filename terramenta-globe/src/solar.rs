@@ -27,6 +27,7 @@
 
 use bevy::prelude::*;
 use terramenta_solare::bodies::ASTRONOMICAL_UNIT_KM;
+use terramenta_solare::flyby::FlybyGuidance;
 use terramenta_solare::spacecraft::{PatchedConicSpacecraft, Primary};
 use terramenta_solare::{Epoch, FrameId, FrameTree, StateVector};
 
@@ -96,6 +97,11 @@ pub struct SolarBody(pub FrameId);
 #[derive(Component)]
 pub struct TrackedSpacecraft(pub PatchedConicSpacecraft);
 
+/// Flyby guidance driving a [`TrackedSpacecraft`] in place of
+/// [`PatchedConicSpacecraft::update`].
+#[derive(Component)]
+pub struct Guidance(pub FlybyGuidance);
+
 pub struct SolarSystemPlugin;
 
 impl Plugin for SolarSystemPlugin {
@@ -151,11 +157,20 @@ pub fn spawn_spacecraft(
 fn update_spacecraft(
     mut solar_system: ResMut<SolarSystem>,
     clock: Res<SimClock>,
-    mut spacecraft: Query<&mut TrackedSpacecraft>,
+    mut spacecraft: Query<(&mut TrackedSpacecraft, Option<&mut Guidance>)>,
 ) {
     let epoch = Epoch::from_unix_seconds(clock.unix_seconds);
-    for mut craft in &mut spacecraft {
-        craft.0.update(&mut solar_system.tree, epoch);
+    for (mut craft, guidance) in &mut spacecraft {
+        match guidance {
+            Some(mut guidance) => {
+                guidance
+                    .0
+                    .advance(&mut craft.0, &mut solar_system.tree, epoch);
+            }
+            None => {
+                craft.0.update(&mut solar_system.tree, epoch);
+            }
+        }
     }
 }
 

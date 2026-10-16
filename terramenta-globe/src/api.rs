@@ -127,6 +127,11 @@ pub enum GlobeCommand {
     /// current yaw, pitch and distance. A no-op outside the heliocentric
     /// view — see [`crate::heliocentric`].
     SetHeliocentricAnchor(HeliocentricAnchor),
+    /// Heliocentric camera distance from its anchor, AU; eased, clamped.
+    SetHeliocentricDistance(f32),
+    /// Turns the heliocentric camera to look down onto mission `id`'s flyby
+    /// plane. No-op until the flyby is planned.
+    FaceFlyby(String),
     /// Locks the heliocentric camera onto a mission's spacecraft, by the id
     /// it was added under, keeping the camera's current yaw, pitch and
     /// distance. Until the mission launches the camera sits on its origin
@@ -922,6 +927,18 @@ fn apply_commands(
             GlobeCommand::SetHeliocentricAnchor(anchor) => {
                 if let Some(mut helio) = helio.iter_mut().next() {
                     helio.set_anchor(anchor, &solar_system);
+                }
+            }
+            GlobeCommand::SetHeliocentricDistance(au) => {
+                if let Some(mut helio) = helio.iter_mut().next() {
+                    helio.set_distance(au);
+                }
+            }
+            GlobeCommand::FaceFlyby(id) => {
+                if let (Some(mut helio), Some(normal)) =
+                    (helio.iter_mut().next(), missions.flyby_normal(&id))
+                {
+                    helio.face(normal);
                 }
             }
             GlobeCommand::FollowMission(id) => {

@@ -43,7 +43,7 @@
         "lon": { "type": "number" },
         "altitudeKm": { "type": "number", "exclusiveMinimum": 0 },
         "follow": { "type": "string", "description": "Mission id." },
-        "anchor": { "enum": ["sun", "earth", "mars", "barycenter"] }
+        "anchor": { "enum": ["sun", "venus", "earth", "mars", "barycenter"] }
       }
     },
     "imagery": {
@@ -253,8 +253,17 @@
         "arrivalSearchStartDays": { "type": "number", "minimum": 0 },
         "arrivalSearchEndDays": { "type": "number", "exclusiveMinimum": 0 },
         "searchSteps": { "type": "integer", "minimum": 1 },
-        "parkingAltitudeKm": { "type": "number", "minimum": 0 }
+        "parkingAltitudeKm": { "type": "number", "minimum": 0 },
+        "via": { "type": "string", "description": "Gravity-assist body; replaces the arrival search with firstLegDays × secondLegDays." },
+        "firstLegDays": { "$ref": "#/$defs/dayRange", "description": "Origin → via, [min, max] days; default [80, 250]." },
+        "secondLegDays": { "$ref": "#/$defs/dayRange", "description": "Via → destination, [min, max] days; default [120, 400]." }
       }
+    },
+    "dayRange": {
+      "type": "array",
+      "items": { "type": "number", "exclusiveMinimum": 0 },
+      "minItems": 2,
+      "maxItems": 2
     },
     "groundStation": {
       "type": "object",
@@ -573,8 +582,8 @@
       "properties": {
         "id": { "type": "string" },
         "label": { "type": "string" },
-        "origin": { "enum": ["Sun", "Earth", "Mars"] },
-        "destination": { "enum": ["Sun", "Earth", "Mars"] },
+        "origin": { "enum": ["Sun", "Venus", "Earth", "Mars"] },
+        "destination": { "enum": ["Sun", "Venus", "Earth", "Mars"] },
         "departure": { "$ref": "#/$defs/dateRange" },
         "arrival": { "$ref": "#/$defs/dateRange" },
         "retrograde": { "type": "boolean", "description": "Long-way transfer; default false." },
@@ -614,7 +623,7 @@
           "properties": {
             "event": {
               "type": "string",
-              "description": "<spacecraft>.start|end|burnN|finiteN|finiteN.end, <mission>.departure|escape|arrival|capture, or a timeline event id."
+              "description": "<spacecraft>.start|end|burnN|finiteN|finiteN.end, <mission>.departure|escape|encounter|flyby|exit|arrival|capture, or a timeline event id."
             },
             "offsetS": { "type": "number" }
           }
@@ -659,6 +668,8 @@
           }
         },
         "follow": { "type": "string", "description": "Mission id; heliocentric camera lock." },
+        "helioDistanceAu": { "type": "number", "minimum": 0.0001, "maximum": 6, "description": "Heliocentric camera distance from its anchor; eased." },
+        "faceFlyby": { "type": "string", "description": "Mission id; heliocentric camera looks down onto its flyby plane." },
         "camera": {
           "type": "object",
           "required": ["lat", "lon"],
@@ -693,7 +704,8 @@
         "mission": { "type": "string", "description": "Mission id." },
         "launchLeadSeconds": { "type": "number", "exclusiveMinimum": 0 },
         "departureTimeScale": { "type": "number", "exclusiveMinimum": 0 },
-        "departureDoublingSeconds": { "type": "number", "exclusiveMinimum": 0 }
+        "departureDoublingSeconds": { "type": "number", "exclusiveMinimum": 0 },
+        "flybyTimeScale": { "type": "number", "exclusiveMinimum": 0, "description": "Clock rate through flyby periapsis; default 900." }
       }
     },
     "elements": {
