@@ -5,8 +5,8 @@
 //! magnitude / thrust / Isp scaled by `1 + N(0, σ²)`, direction rotated by
 //! `N(0, σ²)` about each of two axes normal to it.
 //!
-//! [`Guidance::Open`] flies the nominal target solutions ([`sequence::freeze`]);
-//! [`Guidance::Closed`] re-solves each target from the trial's true state (perfect
+//! [`Guidance::Open`] flies the nominal target and optimize solutions ([`sequence::freeze`]);
+//! [`Guidance::Closed`] re-solves each target and optimize from the trial's true state (perfect
 //! navigation). Trials are independent: trial `k` draws from [`Rng::trial`]`(seed, k)`.
 
 use glam::DVec3;
@@ -35,10 +35,10 @@ pub struct Dispersions {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Guidance {
-    /// Nominal target solutions.
+    /// Nominal target and optimize solutions.
     #[default]
     Open,
-    /// Targets re-solved per trial.
+    /// Targets and optimizes re-solved per trial.
     Closed,
 }
 

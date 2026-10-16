@@ -43,6 +43,7 @@ pub mod mission;
 pub mod monte_carlo;
 pub mod moon;
 pub mod od;
+pub mod optimize;
 pub mod orbit;
 pub mod planets;
 pub mod propagate;

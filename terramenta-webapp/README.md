@@ -310,19 +310,28 @@ options)`, which re-runs the propagation.
 - A spacecraft's `sequence` is an ordered command list run from its
   propagation's `initial` state at `start`; the propagation then has no
   `stop`, `durationS`, `maneuvers` or `finiteBurns`. Commands: optional
-  `label` plus one of `propagate`, `maneuver`, `finiteBurn`, `target` (schema
-  `sequenceCommand`).
+  `label` plus one of `propagate`, `maneuver`, `finiteBurn`, `target`,
+  `optimize` (schema `sequenceCommand`).
+- `optimize`: bounded variables (`lower`/`upper`), `minimize` (`deltaV` or a
+  quantity) or `maximize` (a quantity) at the end of its `sequence`,
+  `constraints` (`equal`/`atLeast`/`atMost`, tolerance), `objectiveTolerance`
+  (default 1e-5), `maxIterations` (default 50). Each iteration runs the body
+  once per variable plus trial steps; coarse crossing `stepS` keeps it fast.
+  |e| is not differentiable at 0: bound eccentricity rather than equating it
+  or the apsides to a circular value.
 - The run resolves burn epochs, Δv and stop into the flown propagation; it is
   what the layer, reports, events, coverage, conjunctions, OD and timeline
   (`<id>.burnN`, `<id>.finiteN`) use. Saving writes the source propagation and
   sequence. Burn references are counted from the sequence before it runs.
 - Validation: one action per command, one stop per propagate, unique labels,
-  target variables naming a labelled command of the right kind in their own
-  `sequence`.
+  target/optimize variables naming a labelled command of the right kind in
+  their own `sequence`, bounds in order, one optimize objective.
 - Spacecraft tab: the editor takes the sequence as JSON (LEO → GEO template);
   each sequenced spacecraft lists its segments (span, Δv, altitude, e, i,
-  target convergence); a row sets the clock to its start.
-- Example: `projects/geo-transfer.terramenta.json`.
+  target convergence, optimize status and objective); a row sets the clock to
+  its start.
+- Examples: `projects/geo-transfer.terramenta.json`,
+  `projects/optimal-transfer.terramenta.json`.
 
 ## Targeting
 
@@ -629,6 +638,7 @@ projects/
   leo-transfer.terramenta.json  Propagated Hohmann transfer
   ground-contacts.terramenta.json  Ground station contacts and eclipses
   targeted-transfer.terramenta.json  Differential correction of burns
+  optimal-transfer.terramenta.json  SQP minimum-Δv plane-change split
   attitude-modes.terramenta.json  Pointing laws, body axes, sensor angles
   differential-drag.terramenta.json  Plate drag/SRP and body-frame thrust under attitude
   coverage-study.terramenta.json  Imager constellation, footprints, H3 coverage

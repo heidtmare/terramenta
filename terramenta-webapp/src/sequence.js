@@ -12,12 +12,17 @@
  *   tolerance}], sequence, maxIterations?}`; variables name labelled commands in
  *   its `sequence` (`dv1`–`dv3` on a maneuver, `durationS` on a finite burn or a
  *   `durationS` propagate); goals hold at its end.
+ * - `optimize`: `{variables: [{command, parameter, lower?, upper?}], minimize |
+ *   maximize, objectiveTolerance?, constraints?: [{quantity, relation?, value,
+ *   tolerance}], sequence, maxIterations?}`; `minimize`: `deltaV` or a
+ *   quantity, `maximize`: a quantity, both at its end; `relation`: `equal`
+ *   (default), `atLeast`, `atMost`.
  *
  * The run resolves to the flown propagation (burn epochs, Δv, stop), which
  * every analysis takes unchanged.
  */
 
-export const ACTIONS = ["propagate", "maneuver", "finiteBurn", "target"];
+export const ACTIONS = ["propagate", "maneuver", "finiteBurn", "target", "optimize"];
 export const STOPS = ["durationS", "epoch", "to", "quantity"];
 export const APSIDES_AND_NODES = ["periapsis", "apoapsis", "ascendingNode", "descendingNode"];
 
@@ -29,8 +34,9 @@ export function actionOf(command) {
 
 /**
  * Structural errors beyond the schema (paths from `path`): one action per
- * command, one stop per propagate, unique labels, target variables naming a
- * labelled command of the right kind in their own body.
+ * command, one stop per propagate, unique labels, target/optimize variables
+ * naming a labelled command of the right kind in their own body, bounds in
+ * order, one optimize objective.
  */
 export function sequenceErrors(sequence, path = "sequence") {
   const errors = [];
@@ -54,18 +60,24 @@ export function sequenceErrors(sequence, path = "sequence") {
           errors.push(`${here}.propagate: quantity needs value`);
         }
       }
-      if (action === "target") {
-        const body = command.target.sequence;
-        command.target.variables.forEach((variable, v) => {
+      if (action === "target" || action === "optimize") {
+        const body = command[action].sequence;
+        command[action].variables.forEach((variable, v) => {
           const found = labelled(body, variable.command);
           const problem = !found
-            ? `no command "${variable.command}" in this target's sequence`
+            ? `no command "${variable.command}" in this ${action}'s sequence`
             : !fits(found, variable.parameter)
               ? `"${variable.command}" has no ${variable.parameter}`
-              : null;
-          if (problem) errors.push(`${here}.target.variables[${v}]: ${problem}`);
+              : variable.lower > variable.upper
+                ? "lower above upper"
+                : null;
+          if (problem) errors.push(`${here}.${action}.variables[${v}]: ${problem}`);
         });
-        walk(body, `${here}.target.sequence`);
+        if (action === "optimize" && (command.optimize.minimize === undefined) === (command.optimize.maximize === undefined)) {
+          errors.push(`${here}.optimize: exactly one of minimize, maximize`);
+        }
+        if (command.optimize?.maximize === "deltaV") errors.push(`${here}.optimize.maximize: deltaV can only be minimized`);
+        walk(body, `${here}.${action}.sequence`);
       }
     });
   walk(sequence, path);
@@ -75,10 +87,16 @@ export function sequenceErrors(sequence, path = "sequence") {
 function labelled(commands, label) {
   for (const command of commands) {
     if (command.label === label) return command;
-    const inner = command.target && labelled(command.target.sequence, label);
+    const body = bodyOf(command);
+    const inner = body && labelled(body, label);
     if (inner) return inner;
   }
   return null;
+}
+
+/** Nested commands of a target or optimize. */
+function bodyOf(command) {
+  return (command.target ?? command.optimize)?.sequence;
 }
 
 function fits(command, parameter) {
@@ -94,7 +112,8 @@ export function burnCounts(sequence) {
     for (const command of commands) {
       if (command.maneuver) maneuvers++;
       if (command.finiteBurn) finiteBurns++;
-      if (command.target) walk(command.target.sequence);
+      const body = bodyOf(command);
+      if (body) walk(body);
     }
   };
   walk(sequence);
@@ -134,15 +153,21 @@ export function describeCommand(command) {
     const t = command.target;
     return `${label}target ${t.variables.length} variable${t.variables.length > 1 ? "s" : ""} → ${t.goals.map((g) => g.quantity).join(", ")}`;
   }
+  if (command.optimize) {
+    const o = command.optimize;
+    const goal = o.minimize !== undefined ? `minimize ${o.minimize}` : `maximize ${o.maximize}`;
+    const n = o.constraints?.length ?? 0;
+    return `${label}optimize ${o.variables.length} variable${o.variables.length > 1 ? "s" : ""}: ${goal}${n ? `, ${n} constraint${n > 1 ? "s" : ""}` : ""}`;
+  }
   return `${label}?`;
 }
 
-const KIND = { propagate: "Propagate", maneuver: "Maneuver", finiteBurn: "Finite burn", target: "Target" };
+const KIND = { propagate: "Propagate", maneuver: "Maneuver", finiteBurn: "Finite burn", target: "Target", optimize: "Optimize" };
 
 /**
  * Report rows from a `runSequence` result: `[{name, depth, start, stop,
  * durationS, deltaVMS, massKg, altitudeKm, smaKm, eccentricity,
- * inclinationDeg, status}]`; `status` for targets.
+ * inclinationDeg, status}]`; `status` for targets and optimizes.
  */
 export function segmentRows(result) {
   return result.segments.map((segment) => ({
@@ -157,8 +182,13 @@ export function segmentRows(result) {
     smaKm: segment.elements.smaKm,
     eccentricity: segment.elements.eccentricity,
     inclinationDeg: segment.elements.inclinationDeg,
-    status: segment.target
-      ? `${segment.target.converged ? "converged" : "NOT converged"} in ${segment.target.iterations}`
-      : null,
+    status: status(segment),
   }));
+}
+
+function status({ target, optimize }) {
+  if (target) return `${target.converged ? "converged" : "NOT converged"} in ${target.iterations}`;
+  if (!optimize) return null;
+  const outcome = optimize.converged ? "optimal" : optimize.feasible ? "NOT optimal" : "NOT feasible";
+  return `${outcome} in ${optimize.iterations} · f ${optimize.objective.toPrecision(6)}`;
 }

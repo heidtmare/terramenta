@@ -462,7 +462,7 @@ test("sequences are typed and cross-checked", () => {
     [
       "spacecraft[0].propagation: no stop, durationS, maneuvers or finiteBurns with a sequence",
       "spacecraft[1].sequence[0].propagate: exactly one of durationS, epoch, to, quantity",
-      "spacecraft[1].sequence[1]: exactly one of propagate, maneuver, finiteBurn, target",
+      "spacecraft[1].sequence[1]: exactly one of propagate, maneuver, finiteBurn, target, optimize",
       'spacecraft[1].sequence[2].label: duplicate "x"',
       "spacecraft[1].sequence[2].propagate: quantity needs value",
       'spacecraft[1].sequence[3].target.variables[0]: no command "x" in this target\'s sequence',
