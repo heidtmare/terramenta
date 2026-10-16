@@ -89,7 +89,7 @@ Details and the NRLMSISE-00 driver caveat: [terramenta-solare](terramenta-solare
 ### Mission planning app — [`terramenta-webapp`](terramenta-webapp/)
 
 - Projects as JSON Schema-validated `*.terramenta.json` files with versioned
-  migrations; open, save, autosave and recovery; switch in place.
+  migrations; open, save, autosave and recovery; undo/redo; switch in place.
 - Editors for spacecraft (Keplerian, GCRF, TLE, OMM initial states), forces,
   burns, plates, covariance, sequences, targets, attitude profiles and ground
   stations (horizon from terrain).

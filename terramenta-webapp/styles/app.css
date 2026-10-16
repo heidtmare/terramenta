@@ -587,6 +587,17 @@ body.panel-collapsed #panel {
   border-color: var(--accent);
 }
 
+.button:disabled {
+  color: var(--ink-faint);
+  border-color: var(--line);
+  cursor: default;
+  opacity: 0.5;
+}
+
+.button:disabled:active {
+  transform: none;
+}
+
 .places .button {
   /* Nine places in a column this narrow: let them pack rather than stretch. */
   flex: 0 1 auto;

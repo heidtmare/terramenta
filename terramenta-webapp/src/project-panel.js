@@ -1,6 +1,6 @@
 /**
  * Project section: open project, unsaved state, autosave recovery, recent and
- * bundled projects, open (file/URL/drop), save. Opening switches in place —
+ * bundled projects, open (file/URL/drop), save, undo/redo. Opening switches in place —
  * see `workspace.js`.
  */
 
@@ -44,6 +44,8 @@ export function mountProjectSection({ signal }) {
     placeholder: `projects/…${PROJECT_EXTENSION}`,
   });
 
+  const undoButton = button("Undo", workspace.undo, { title: "Undo (⌘Z / Ctrl+Z)" });
+  const redoButton = button("Redo", workspace.redo, { title: "Redo (⇧⌘Z / Ctrl+Y)" });
   const name = el("p", { class: "project-name" });
   const description = el("p", { class: "detail" });
   const source = el("p", { class: "detail" });
@@ -69,6 +71,8 @@ export function mountProjectSection({ signal }) {
     description.textContent = current.project.description ?? "";
     description.hidden = !current.project.description;
     source.textContent = `${current.source ?? "not saved"}${current.dirty ? " · unsaved changes" : ""}`;
+    undoButton.disabled = !current.canUndo;
+    redoButton.disabled = !current.canRedo;
 
     recovery.replaceChildren();
     if (current.recovery) {
@@ -111,9 +115,10 @@ export function mountProjectSection({ signal }) {
       "div",
       { class: "buttons" },
       button("Open file…", () => fileInput.click()),
-      button("Save…", workspace.save),
+      button("Save…", workspace.save, { title: "Save (⌘S / Ctrl+S)" }),
       button("New", () => run(workspace.openEmpty)),
     ),
+    el("div", { class: "buttons" }, undoButton, redoButton),
     fileInput,
     recovery,
     row("URL", urlInput),

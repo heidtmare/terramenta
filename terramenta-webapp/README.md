@@ -108,6 +108,8 @@ toggles, local-file overlay refresh timers, unsaved porkchop inputs.
 | Open | Project tab (file, URL, recent, examples) or drop a file on the page. Switches in place: abort old panel → `globe.reset()` → apply → mount. |
 | Unsaved changes | Any scene-changing `globe.js` command outside `globe.quietly`, or a timeline, analysis, station or event-option edit, marks the project dirty (`•` in title and Project tab). Camera moves, view switches, pins, refreshes, project application and the timeline runner do not. Opening another project asks; leaving the page prompts. |
 | Autosave | Dirty scene captured to IndexedDB 3 s after the last change; cleared on save or discard. One left at boot is offered under the Project tab (Recover / Dismiss). |
+| Undo/redo | Whole-scene snapshots, 50 deep, recorded 400 ms after edits settle. ⌘/Ctrl+Z undo, ⇧⌘/Ctrl+Shift+Z or Ctrl+Y redo (text fields keep their own); Undo / Redo under the Project tab. Clock time, rate, pause, camera position and view are not history and stay live. Restoring reapplies the scene in place, keeping tab and scroll; returning to the saved scene clears the unsaved marker. Cleared on open. |
+| Save shortcut | ⌘/Ctrl+S downloads the project (same as Save…). |
 | Recent | Last 8 opened projects (IndexedDB). Local files keep their text up to 4 MB. |
 
 ### Bundled projects
@@ -138,7 +140,7 @@ spacecraft, Coverage, Conjunctions and Orbit determination while it has neither 
 
 | Tab | Section | Controls |
 | --- | --- | --- |
-| **Project** | Project | Name, description, source, unsaved marker; open file/URL; save; new; recover; recent; bundled projects |
+| **Project** | Project | Name, description, source, unsaved marker; open file/URL; save; new; undo/redo; recover; recent; bundled projects |
 | **Layers** | Imagery | The eight presets grouped by protocol (WMS/WMTS) with tile size, format and depth; previous/next; streaming on/off |
 | | Vector tiles | Source (MapLibre boundaries, OSM Shortbread), its source layers and depth, colour, ring fill, streaming on/off |
 | | GeoJSON overlays | Add from URL or local file; bundled samples and USGS feeds; refresh period; picking on/off. Per layer: visibility, colour, clamp to surface, extrude, simplestyle on/off, refresh, remove, feature counts and age |
@@ -605,12 +607,12 @@ data/
 styles/app.css           Styles
 src/
   main.js                Boot: project → workspace → globe; per-project UI mount
-  workspace.js           Open project: in-place switching, dirty tracking, autosave, recent, drop
+  workspace.js           Open project: in-place switching, dirty tracking, autosave, undo/redo, shortcuts, recent, drop
   store.js               IndexedDB key-value store
   project.js             Project load, upgrade, validate, apply, capture, save
   environment.js         Propagation environment: EOP, space weather, kernel
   schema.js              JSON Schema subset validator
-  project-panel.js       Project section (open, save, recover, recent, examples)
+  project-panel.js       Project section (open, save, undo/redo, recover, recent, examples)
   director.js            Timeline presets (missionFlight)
   timeline.js            Timeline: scene/project/director events, resolution, runner
   analysis.js            Project analysis: saved plots and porkchop studies
