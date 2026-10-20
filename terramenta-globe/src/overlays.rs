@@ -2147,7 +2147,9 @@ fn span_degrees(from: DVec2, to: DVec2) -> f64 {
 
 fn longest_edge_degrees(corners: &[DVec2], indices: &[u32]) -> f64 {
     indices
-        .as_chunks::<3>().0.iter()
+        .as_chunks::<3>()
+        .0
+        .iter()
         .flat_map(|triangle| {
             [
                 (triangle[0], triangle[1]),
@@ -2518,7 +2520,9 @@ mod tests {
     /// Planar area of a triangulation, in square degrees.
     fn area(corners: &[DVec2], indices: &[u32]) -> f64 {
         indices
-            .as_chunks::<3>().0.iter()
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|triangle| {
                 let corner = |index: u32| corners[index as usize];
                 let (a, b, c) = (
