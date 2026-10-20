@@ -289,9 +289,9 @@ pub fn write_spk(segments: &[SpkSegment], internal_name: &str) -> Result<Vec<u8>
         for (j, seg) in chunk.iter().enumerate() {
             let (start, end) = spans[b * SUMMARIES_PER_RECORD + j];
             let (begin, last) = (addr, addr + seg.data_len() - 1);
-            let words = out[(begin - 1) * 8..last * 8].chunks_exact_mut(8);
-            for (dst, w) in words.zip(seg.data()) {
-                dst.copy_from_slice(&w.to_le_bytes());
+            let (words, _) = out[(begin - 1) * 8..last * 8].as_chunks_mut::<8>();
+            for (dst, w) in words.iter_mut().zip(seg.data()) {
+                *dst = w.to_le_bytes();
             }
             addr = last + 1;
             summaries.extend(start.to_le_bytes());

@@ -74,7 +74,9 @@ impl MercatorTiles {
             });
         }
         let heights_m = rgba
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|p| {
                 if p[3] == 0 {
                     f32::NAN
