@@ -669,7 +669,7 @@ fn stream_tiles(
     }
 
     // Promote anything that finished loading since the last frame.
-    for (_, slot) in cache.slots.iter_mut() {
+    for slot in cache.slots.values_mut() {
         if slot.state != TileState::Pending {
             continue;
         }

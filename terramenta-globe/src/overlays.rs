@@ -2069,7 +2069,7 @@ fn refine(corners: &mut Vec<DVec2>, mut indices: Vec<u32>) -> Vec<u32> {
 
     loop {
         let mut splitting: HashSet<(u32, u32)> = HashSet::new();
-        for triangle in indices.chunks_exact(3) {
+        for triangle in indices.as_chunks::<3>().0 {
             for (from, to) in [
                 (triangle[0], triangle[1]),
                 (triangle[1], triangle[2]),
@@ -2089,7 +2089,7 @@ fn refine(corners: &mut Vec<DVec2>, mut indices: Vec<u32>) -> Vec<u32> {
         }
 
         let mut refined = Vec::with_capacity(indices.len() * 2);
-        for triangle in indices.chunks_exact(3) {
+        for triangle in indices.as_chunks::<3>().0 {
             let (a, b, c) = (triangle[0], triangle[1], triangle[2]);
             let mut split = |from, to| {
                 splitting
@@ -2147,7 +2147,7 @@ fn span_degrees(from: DVec2, to: DVec2) -> f64 {
 
 fn longest_edge_degrees(corners: &[DVec2], indices: &[u32]) -> f64 {
     indices
-        .chunks_exact(3)
+        .as_chunks::<3>().0.iter()
         .flat_map(|triangle| {
             [
                 (triangle[0], triangle[1]),
@@ -2518,7 +2518,7 @@ mod tests {
     /// Planar area of a triangulation, in square degrees.
     fn area(corners: &[DVec2], indices: &[u32]) -> f64 {
         indices
-            .chunks_exact(3)
+            .as_chunks::<3>().0.iter()
             .map(|triangle| {
                 let corner = |index: u32| corners[index as usize];
                 let (a, b, c) = (

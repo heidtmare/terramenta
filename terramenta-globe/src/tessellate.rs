@@ -343,7 +343,7 @@ mod tests {
         let (corners, indices) = triangulate(set.polygon(0).1);
         assert_eq!(indices.len() % 3, 0);
         indices
-            .chunks_exact(3)
+            .as_chunks::<3>().0.iter()
             .map(|triangle| {
                 let corner = |index: u32| corners[index as usize];
                 let (a, b, c) = (
